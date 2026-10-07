@@ -2,6 +2,10 @@
 
 [**한국어 HTML 사용 설명서 바로 읽기**](https://mkyoon80-alt.github.io/nvof-potplayer/)
 
+매뉴얼 다운로드: [HTML 파일](https://github.com/mkyoon80-alt/nvof-potplayer/releases/download/v0.2.0-preview.9/NvofPotPlayer-0.2.0-preview.9-Manual-ko.html) · [오프라인 ZIP](https://github.com/mkyoon80-alt/nvof-potplayer/releases/download/v0.2.0-preview.9/NvofPotPlayer-0.2.0-preview.9-Manual-ko.zip)
+
+HTML 파일은 내려받아 바로 열면 됩니다. ZIP 파일은 압축을 모두 푼 뒤 `index.html`을 열어 주세요.
+
 ## 설치
 
 `NvofPotPlayer-0.2.0-preview.9-Setup-x64.exe`를 내려받아 실행하세요. 팟플레이어와 NVOF 설정 창을 먼저 종료해야 합니다. NVIDIA 구성요소 약관은 기본 선택되지 않으며 사용자가 직접 동의해야 설치됩니다.
@@ -14,7 +18,14 @@
 
 ## 변경 사항
 
-이번 버전은 preview.8의 개선된 **×2 보간을 기본값으로 유지**하며, **GPU 중간 프레임 보정**과 **형태 변화 보호**를 각각 켜고 끄는 옵션을 추가합니다. 형태 변화 보호는 입을 인식하는 기능이 아니라 급격한 모양 변화에 대한 보수적인 보호입니다. 둘 다 끄면 기본 NvOFFRUC ×2 보간만 사용하며, 장면 전환·탐색 보호는 유지합니다. 변경 후 영상을 다시 열면 적용됩니다. 60p·120p 고정 출력은 제공하지 않습니다.
+**화질 보정을 원하는 대로 선택할 수 있습니다.**
+
+새로운 **화질 보정** 탭에서 두 기능을 각각 켜고 끌 수 있습니다.
+
+- **GPU 중간 프레임 보정** — 느린 움직임과 얇은 선을 더 안정적으로 표현합니다.
+- **형태 변화 보호** — 모양이 빠르게 바뀌는 부분의 보간 깨짐을 줄입니다.
+
+두 기능은 기본으로 켜져 있습니다. 설정을 바꾼 뒤 영상을 다시 열어 주세요.
 
 README, third-party notices와 라이선스 안내를 앱 포함 배포 방식에 맞춰 갱신했습니다. 공급자 런타임은 프로젝트 MIT 대상이 아닙니다. `NvOFFRUC.dll`은 설치 프로그램 안에만 포함하며 DLL 단독 파일을 릴리스 자산으로 제공하지 않습니다.
 
