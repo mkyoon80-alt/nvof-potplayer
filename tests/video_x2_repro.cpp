@@ -14,7 +14,7 @@ int wmain(int argc,wchar_t** argv){try{
  require(bool(adapter),"NVIDIA missing");ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;D3D_FEATURE_LEVEL levels[]={D3D_FEATURE_LEVEL_11_1,D3D_FEATURE_LEVEL_11_0};
  check(D3D11CreateDevice(adapter.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_VIDEO_SUPPORT|D3D11_CREATE_DEVICE_BGRA_SUPPORT,levels,2,D3D11_SDK_VERSION,&device,nullptr,&context),"D3D");
  ComPtr<ID3D10Multithread> lock;check(context.As(&lock),"context protection");lock->SetMultithreadProtected(TRUE);
- GpuFrucEngine engine(std::filesystem::path(argv[1]),device.Get(),context.Get(),nullptr,optimized?GpuCompletionMode::context_ordered:GpuCompletionMode::blocking,optimized,optimized);
+ GpuFrucEngine engine(std::filesystem::path(argv[1]),device.Get(),context.Get(),nullptr,optimized?GpuCompletionMode::context_ordered:GpuCompletionMode::blocking,optimized,optimized,optimized);
  std::ifstream input(std::filesystem::path(argv[2]),std::ios::binary),timestamps{std::filesystem::path(argv[3])};require(bool(input)&&bool(timestamps),"Input missing");
  std::ofstream raw(directory/L"output.nv12",std::ios::binary),events(directory/L"pairs.csv"),outtimes(directory/L"output.csv");
  events<<"source_index,previous_pts,current_pts,phase_pts,scene_cut,repeated_mask,identical_skipped,midpoint_pass,process_ms\n";

@@ -26,6 +26,7 @@ double mouth_error(const nvof::Frame& f,const nvof::Frame& expected,double shift
  return e/n;
 }
 }
+#ifndef NVOF_APPEARANCE_HELPERS_ONLY
 int wmain(int argc,wchar_t**argv){try{
  require(argc==2,"appearance_midpoint_quality <runtime>");TestGpu gpu;int cases=0;std::vector<std::string> failures;
  for(double radius:{48.,24.,12.})for(double speed:{0.,1.,3.})for(bool closing:{false,true}){
@@ -34,6 +35,11 @@ int wmain(int argc,wchar_t**argv){try{
   auto a=expression(0,closing,radius,0),b=expression(speed,!closing,radius,1000000),truth=expression(speed*.5,closing,radius,500000);
   auto batch=engine.interpolate_pair(a,b,{500000});require(batch.frames.size()==1,"Missing midpoint");
   auto evaluate=[&](nvof::FractionalRefiner& refiner){auto ga=gpu.texture(&a),gb=gpu.texture(&b),f=gpu.texture(&batch.frames[0]),out=gpu.texture();auto fy=gpu.srv(f.Get(),false),fu=gpu.srv(f.Get(),true);auto oy=gpu.rtv(out.Get(),false),ou=gpu.rtv(out.Get(),true);refiner.prepare(ga.Get(),gb.Get(),width,height);refiner.render_midpoint(oy.Get(),ou.Get(),fy.Get(),fu.Get());auto result=gpu.readback(out.Get(),500000);require(gpu.readback(ga.Get(),0).pixels==a.pixels&&gpu.readback(gb.Get(),1000000).pixels==b.pixels,"Source changed");return result;};
+  nvof::FractionalRefiner bypass(gpu.device.Get(),gpu.context.Get(),false,false),mouthOnly(gpu.device.Get(),gpu.context.Get(),true,false);
+  auto unchanged=evaluate(bypass),protectedOnly=evaluate(mouthOnly);
+  require(unchanged.pixels==batch.frames[0].pixels,"Both disabled must preserve raw FRUC bytes");
+  if(speed>0)require(protectedOnly.pixels==batch.frames[0].pixels,"Mouth-only must not correct or freeze camera movement");
+  if(speed==0)require(mouth_error(protectedOnly,truth,0,radius)<=mouth_error(batch.frames[0],truth,0,radius)*.35+3,"Mouth-only protection did not preserve a stationary expression");
   auto before=evaluate(old),after=evaluate(fix);double e0=mouth_error(before,truth,speed*.5,radius),e1=mouth_error(after,truth,speed*.5,radius);
   std::cout<<"EXPRESSION radius="<<radius<<" speed="<<speed<<" closing="<<closing<<" before="<<e0<<" after="<<e1<<std::endl;
   if(speed==0&&e1>e0*.35+3)failures.push_back("Still-view discrete expression not sufficiently protected");
@@ -43,3 +49,5 @@ int wmain(int argc,wchar_t**argv){try{
  for(auto& f:failures)std::cout<<"QUALITY_FAILURE "<<f<<std::endl;
  require(failures.empty(),"Appearance protection regression");std::cout<<"PASS appearance cases="<<cases<<" sources unchanged\n";return 0;
 }catch(const std::exception&e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}
+
+#endif

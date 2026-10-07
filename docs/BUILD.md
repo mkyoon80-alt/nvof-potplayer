@@ -1,6 +1,6 @@
 # Build from source
 
-Playback users can use a locally built complete Windows x64 ZIP. This repository currently publishes source only; the complete NVIDIA runtime ZIP is not publicly distributed. Build tools are needed only to compile the source.
+Playback users can use the self-contained Windows x64 installer. Build tools are needed only to compile the source. NVIDIA, CUDA and Microsoft components remain under their own terms; see the distribution basis and unresolved license interpretation in [licenses/README.md](../licenses/README.md).
 
 ## Native filter
 
@@ -31,7 +31,7 @@ After reviewing the external licenses, acquire the pinned runtime and build the 
 .\tools\build-local-package.ps1
 ```
 
-The acquisition script uses a SHA256-pinned NVEnc release and checks all extracted DLLs. It also needs the pinned licensed Visual C++ release DLLs from the build machine's Visual Studio `VC/Redist` folder. You can pass `-VcRedistDirectory` explicitly; a different version is refused until the manifest is reviewed and updated. None of these build tools are required on the playback machine. The complete ZIP is generated in `dist/` for local use and is not cleared for public NVIDIA binary redistribution.
+The acquisition script uses a SHA256-pinned NVEnc release and checks all extracted DLLs. It also needs the pinned licensed Visual C++ release DLLs from the build machine's Visual Studio `VC/Redist` folder. You can pass `-VcRedistDirectory` explicitly; a different version is refused until the manifest is reviewed and updated. None of these build tools are required on the playback machine. The complete ZIP is generated in `dist/` as a local installer payload. Public releases provide the app installer with explicit NVIDIA component consent, not a standalone DLL or portable runtime ZIP.
 
 The package script uses explicit release inputs and an isolated `dist` directory. It includes the controller publish output, native filter and registration utility, default INI, runtime components and license notices. It never copies local playback logs, personal settings, backups or test screenshots. Keep the complete extracted directory together.
 
@@ -42,6 +42,7 @@ The project-built bridge replaces the historical NVEnc adapter in the complete p
 `tools/build.ps1` runs the CPU-only CTest suite after building. NVIDIA hardware is needed for the additional GPU tests:
 
 ```powershell
+.\build\Release\enhancement_options_gpu.exe <staged-runtime>
 .\build\Release\fruc_bridge_smoke.exe <staged-runtime>
 .\build\Release\phase_engine_smoke.exe <staged-runtime>
 .\build\Release\phase_endpoint_smoke.exe --schedule-only 240
@@ -59,15 +60,23 @@ The DirectShow harness reads the INI next to the staged filter. Use `config\Nvof
 
 The `NVOF_ENABLE_EXPERIMENTAL_SUBPIXEL` option defaults to OFF. Preview.4 enabled it and was rejected in actual playback for frame mixing; the installed filter was rolled back to preview.3. Do not enable this option or distribute its build as an accepted quality fix. Standalone refiner diagnostics remain available for investigation.
 
-## Standalone installer readiness
+## Windows installer
 
-The complete **local** preview.8 ZIP is about 61 MiB. The WPF controller already contains .NET Desktop Runtime, project native binaries use static MSVC linkage, and NVIDIA's required CUDA/VC DLLs are app-local. The dependency audit loaded all six native runtime DLLs from the package; no installed Visual C++ runtime was selected. Users still need Windows x64, PotPlayer x64 and a supported NVIDIA GPU/driver. Driver DLLs and PotPlayer must not be bundled as project dependencies.
+Use the official Inno Setup **7.1.0 x64** compiler. Its upstream setup SHA256 is `0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f` (Authenticode publisher: Pyrsys B.V.). Obtain it from [the upstream release](https://github.com/jrsoftware/issrc/releases/tag/is-7_1_0). It can be unpacked by its `/PORTABLE=1 /VERYSILENT /DIR=...` installation mode into a build-tools folder. The compiler is not bundled in the app.
 
-A public download-and-install release needs the following remaining work:
+```powershell
+.\tools\build-local-package.ps1 -Version 0.2.0-preview.9
+.\tools\build-installer.ps1 -CompilerPath "C:\BuildTools\Inno\ISCC.exe"
+```
 
-1. Establish the precompiled NvOFFRUC runtime redistribution grant and applicable recipient terms. Official SDK 5.0.7 DLL hashes now match the tested package, but the SDK's accompanying 2022 license remains narrower than the older download-page agreement. See the license audit; no vendor contact has been sent.
-2. Wrap the approved self-contained folder in a per-user installer under LocalAppData, register the filter, add a settings shortcut and an uninstaller. Close-player detection, INI preservation, rollback, correct unregister-before-removal behavior and optional elevated registration must be covered. Users still choose the filter in PotPlayer; no silent reset of player preferences is required.
-3. Validate first install, upgrade, uninstall, paths with spaces/non-ASCII characters and a fresh Windows environment without development tools or preinstalled .NET/VC. GPU playback needs a physical supported NVIDIA machine; a VM alone is insufficient.
-4. For a public release, record installer hashes and exact source revision, bundle applicable notices and test the downloaded asset. Authenticode signing is recommended for publisher identity; a certificate must be obtained separately and signing does not guarantee SmartScreen reputation immediately.
+`build-installer.ps1` checks every payload hash and required manual/terms file, then creates the setup EXE and SHA256 file in `dist/`. Publish these two files, not the intermediate ZIP. The application binaries use static MSVC linkage; NVIDIA-required CUDA/VC DLLs and the self-contained .NET Desktop Runtime remain app-local. The NVIDIA driver and PotPlayer are prerequisites, not bundled dependencies.
 
-An installer wrapper does not remove the remaining runtime license issue. The public preview.8 release is explicitly **source-only**, not an incomplete file presented as a ready-to-run setup. Current local users can keep the complete extracted directory and register through the existing controller.
+The installer uses the current user's LocalAppData folder and HKCU registration. It refuses installation/removal while PotPlayer or NVOF Control is running. It preserves INI settings, records explicit component consent locally, and unregisters only the filter path it owns. Existing machine-wide registration is left unchanged. Use PotPlayer normally (not elevated); deliberately update or remove machine-wide registration through the controller if elevated playback is needed.
+
+Interactive component acceptance is unchecked by default. For a deployment where the operator has read and accepted the bundled terms, the explicit silent parameter is `/NVIDIATERMS=2026-10-07`; `/VERYSILENT` alone must not install. A changed terms version requires new explicit acceptance. This parameter is an assent mechanism, not an additional distribution grant.
+
+The installer is **unsigned**. Its release notes distinguish packaging checks on the development PC from a fresh-Windows test; a clean machine without development tools and additional supported GPUs still need validation. See [RELEASE.md](../RELEASE.md) for the exact release checks and limits. The prior preview.8 release remains source-only.
+
+## Optional GPU enhancement configuration
+
+`GpuMidpointCorrection=1` and `AppearanceProtection=1` in the `[Nvof]` INI section are independent and default to enabled when absent. The filter snapshots them when the graph creates it; reopen the video after changing them. Both disabled skip the optional flow refiner entirely. Appearance-only still estimates flow for motion vetoing but uses the FRUC picture outside protected areas. These options do not disable scene-cut handling, exact-source preservation or seek re-priming. Extra passes require the native GPU path and retain the existing area/rate budget. Telemetry reports the session options separately from the UI's saved choices; pass counts do not claim every pixel was corrected.

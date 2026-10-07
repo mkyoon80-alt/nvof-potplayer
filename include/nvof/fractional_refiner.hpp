@@ -12,9 +12,9 @@ namespace nvof {
 // Inputs are single-slice NV12 snapshots; prepare owns its GPU copies.
 class FractionalRefiner {
 public:
-    // Disabling appearance protection is for comparison diagnostics.
+    // Independent controls. Appearance protection still uses flow for motion gating.
     FractionalRefiner(ID3D11Device* device, ID3D11DeviceContext* context,
-                      bool protect_appearance = true);
+                      bool protect_appearance = true, bool stabilize_midpoint = true);
     ~FractionalRefiner();
     FractionalRefiner(const FractionalRefiner&) = delete;
     FractionalRefiner& operator=(const FractionalRefiner&) = delete;

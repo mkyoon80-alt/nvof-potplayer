@@ -39,7 +39,7 @@ RWTexture2D<uint> motionStatsOutput:register(u4);
 SamplerState linearClamp:register(s0);
 cbuffer Parameters:register(b0) {
     float4 dimensions; // width, height, grid, phase
-    uint4 flags;      // chroma plane, appearance protection enabled
+    uint4 flags;      // chroma plane, appearance protection, midpoint correction
 };
 float4 vs(uint vertex:SV_VertexID):SV_Position {
     float2 p=vertex==0?float2(-1,-1):(vertex==1?float2(-1,3):float2(3,-1));
@@ -283,7 +283,8 @@ float4 slowMidpoint(float4 screen) {
     return float4(0.5*(stableColor(a,false)+stableColor(b,true)),0,1);
 }
 float4 psSlow(float4 screen:SV_Position):SV_Target {
-    float4 regular=slowMidpoint(screen);
+    float4 regular=float4(fallbackPlane.Load(int3(int2(screen.xy),0)),0,1);
+    if(flags.z!=0)regular=slowMidpoint(screen);
     if(flags.y==0)return regular;
     float2 p=screen.xy*(flags.x!=0?2.0:1.0);
     float4 guide=appearanceGuide.SampleLevel(linearClamp,p/(ceil(dimensions.xy/4.0)*4.0),0);
@@ -329,8 +330,9 @@ struct FractionalRefiner::Impl {
     uint32_t grid=0;
     bool prepared=false,hasHistory=false;
     bool appearanceProtection=true;
+    bool midpointCorrection=true;
 
-    Impl(ID3D11Device* d,ID3D11DeviceContext* c,bool protect):device(d),context(c),appearanceProtection(protect) {
+    Impl(ID3D11Device* d,ID3D11DeviceContext* c,bool protect,bool stabilize):device(d),context(c),appearanceProtection(protect),midpointCorrection(stabilize) {
         if(!d||!c) throw std::invalid_argument("Fractional refiner requires a D3D11 device and context");
         ComPtr<ID3D11Device> owner;c->GetDevice(&owner);
         if(owner.Get()!=d||c->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)
@@ -506,7 +508,7 @@ struct FractionalRefiner::Impl {
     }
     void draw(float t,unsigned plane,ID3D11RenderTargetView* target,ID3D11ShaderResourceView* fallback,bool slow=false) {
         struct Parameters {float dimensions[4];uint32_t flags[4];};
-        const Parameters parameters{{float(width),float(height),float(grid),t},{plane,appearanceProtection?1u:0u,0,0}};
+        const Parameters parameters{{float(width),float(height),float(grid),t},{plane,appearanceProtection?1u:0u,midpointCorrection?1u:0u,0}};
         context->UpdateSubresource(constants.Get(),0,nullptr,&parameters,0,0);
         ID3D11ShaderResourceView* views[]={yViews[0].Get(),yViews[1].Get(),uvViews[0].Get(),uvViews[1].Get(),flowViews[0].Get(),flowViews[1].Get(),fallback,protectionView.Get(),guideView.Get()};
         ID3D11Buffer* cb=constants.Get();ID3D11SamplerState* sp=sampler.Get();
@@ -525,7 +527,7 @@ struct FractionalRefiner::Impl {
     }
 };
 
-FractionalRefiner::FractionalRefiner(ID3D11Device* d,ID3D11DeviceContext* c,bool protect):impl_(std::make_unique<Impl>(d,c,protect)){}
+FractionalRefiner::FractionalRefiner(ID3D11Device* d,ID3D11DeviceContext* c,bool protect,bool stabilize):impl_(std::make_unique<Impl>(d,c,protect,stabilize)){}
 FractionalRefiner::~FractionalRefiner()=default;
 void FractionalRefiner::reset() noexcept {impl_->reset();}
 void FractionalRefiner::invalidate_history() noexcept {impl_->hasHistory=false;impl_->prepared=false;}

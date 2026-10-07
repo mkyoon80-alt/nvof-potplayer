@@ -31,7 +31,7 @@ D3D11_TEXTURE2D_DESC d{};d.Width=w;d.Height=h;d.MipLevels=d.ArraySize=1;d.Format
  for(int round=0;round<rounds;++round)for(int order=0;order<2;++order){
   const bool optimized=(order+(round&1))%2;
   const bool control=argc>8&&!quality_compare;
-  GpuFrucEngine engine(std::filesystem::path(argv[1]),device.Get(),context.Get(),nullptr,(quality_compare||optimized&&!control)?GpuCompletionMode::context_ordered:GpuCompletionMode::blocking,quality_compare||optimized&&argc>7&&!control,!quality_compare||optimized);
+  GpuFrucEngine engine(std::filesystem::path(argv[1]),device.Get(),context.Get(),nullptr,(quality_compare||optimized&&!control)?GpuCompletionMode::context_ordered:GpuCompletionMode::blocking,quality_compare||optimized&&argc>7&&!control,!quality_compare||optimized,!quality_compare||optimized);
   std::vector<double> submit,held_cost,motion_cost;auto previous=engine.copy(source[0]);GpuFrame last;std::vector<GpuFrame> outputs;size_t skipped=0;
   auto total=std::chrono::steady_clock::now();
   for(int i=1;i<=count;++i){

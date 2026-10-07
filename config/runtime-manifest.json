@@ -2,7 +2,7 @@
   "schema_version": 1,
   "audited_on": "2026-10-07",
   "platform": "windows-x64",
-  "public_distribution": "Project source only. Proprietary runtime binaries are excluded from public repository and release assets pending applicable NVIDIA distribution-grant clarification.",
+  "public_distribution": "Application installer includes app-local NVIDIA runtime; no standalone DLL release asset. Publisher relies on 2017 download-page agreement 1.1(ii); bundled 2022 grant relationship remains unconfirmed, and click-through does not expand rights.",
   "archive": {
     "url": "https://github.com/rigaya/NVEnc/releases/download/9.37/NVEncC_9.37_x64.7z",
     "sha256": "26358C59FA4F97A2B3A1F25DD1E001AD13CE18A02E57F597277F3E2302B0ACBF",

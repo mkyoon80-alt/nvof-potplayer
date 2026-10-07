@@ -33,7 +33,8 @@ public:
                   HANDLE borrowed_decoder_mutex = nullptr,
                   GpuCompletionMode completion = GpuCompletionMode::blocking,
                   bool skip_identical_warp = true,
-                  bool stabilize_midpoint = true); // false values retain regression oracles.
+                  bool stabilize_midpoint = true,
+                  bool protect_appearance = true); // Independent optional GPU passes.
     ~GpuFrucEngine();
     GpuFrucEngine(const GpuFrucEngine&) = delete;
     GpuFrucEngine& operator=(const GpuFrucEngine&) = delete;

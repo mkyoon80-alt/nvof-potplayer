@@ -204,3 +204,7 @@ target_link_libraries(midpoint_stability_quality PRIVATE nvof_fractional_refiner
 
 add_executable(appearance_midpoint_quality tests/appearance_midpoint_quality.cpp)
 target_link_libraries(appearance_midpoint_quality PRIVATE nvof_fractional_refiner nvof_engine nvof_phase_pipeline)
+
+# Explicit GPU regression for independent enhancement switches; not automatic CTest.
+add_executable(enhancement_options_gpu tests/enhancement_options_gpu.cpp)
+target_link_libraries(enhancement_options_gpu PRIVATE nvof_fractional_refiner nvof_gpu_engine nvof_engine nvof_phase_pipeline)

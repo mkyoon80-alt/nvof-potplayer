@@ -14,6 +14,8 @@ struct PairQuality {
     // Midpoint-only slow-motion pass; unreliable/fast pixels retain FRUC.
     // This counts a shader pass, not accepted pixels.
     uint32_t midpoint_stabilized_mask = 0;
+    // Appearance shader was enabled; does not imply that any mouth was detected.
+    uint32_t appearance_protected_mask = 0;
     bool midpoint_stabilization_unavailable = false;
     bool midpoint_budget_limited = false;
 };

@@ -49,7 +49,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.2.0-preview.8";
+constexpr char kFilterBuild[]="0.2.0-preview.9";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -434,6 +434,8 @@ public:
             probe_services_ = GetPrivateProfileIntW(L"Nvof", L"ProbeServices", 0, ini.c_str()) != 0;
             native_feature_enabled_ = GetPrivateProfileIntW(L"Nvof", L"NativeD3D11", 0, ini.c_str()) != 0;
             enabled_ = GetPrivateProfileIntW(L"Nvof", L"Enabled", 1, ini.c_str()) != 0;
+            gpu_correction_=GetPrivateProfileIntW(L"Nvof",L"GpuMidpointCorrection",1,ini.c_str())!=0;
+            appearance_protection_=GetPrivateProfileIntW(L"Nvof",L"AppearanceProtection",1,ini.c_str())!=0;
             input_rate_mask_=GetPrivateProfileIntW(L"Nvof",L"InputRateMask",nvof::kAllInputRates,ini.c_str()) & nvof::kAllInputRates;
             // Fixed-rate modes were removed. Legacy INI keys cannot reactivate them.
             target_ = {0, 1};
@@ -549,7 +551,7 @@ public:
         catch(...) {return E_OUTOFMEMORY;}
         CAutoLock receive(&m_csReceive);
         try {
-            auto engine=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",device,context,duplicate,nvof::GpuCompletionMode::context_ordered);
+            auto engine=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",device,context,duplicate,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_);
             auto* output=static_cast<nvof::transport::OutputPin*>(m_pOutput);
             const HRESULT transport=output ? output->set_gpu_mode(true) : E_UNEXPECTED;
             if(FAILED(transport)) {
@@ -806,6 +808,7 @@ public:
         last_duration_ = input_.duration > 0 ? input_.duration :
             nvof::supported_output_rate(target_)?rate_duration(target_):kUnits/24;
         failed_ = false;
+        appearance_pass_frames_=0;
         output_frames_ = source_frames_ = near_endpoint_frames_ = 0;motion_frames_=protected_frames_=scene_cuts_=repeated_pairs_=subpixel_pass_frames_=identical_frames_=midpoint_pass_frames_=midpoint_limited_frames_=0;subpixel_unavailable_=midpoint_unavailable_=false;quality_state_="waiting";
         gpu_delivery_verified_=false;
         sample_probed_ = false;
@@ -1010,7 +1013,7 @@ private:
     HRESULT receive_gpu(IMediaSample* sample,int64_t start,int64_t stop,bool discontinuity) {
         auto input=nvof::extract_gpu_frame(sample,input_.width,input_.height,start);
         if(!gpu_engine_)gpu_engine_=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",
-            native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered);
+            native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_);
         // Submit capture while the upstream sample is held. Decoder reuse and
         // renderer reads are ordered on this device's shared immediate context;
         // keep an owned output lease without a per-frame CPU completion wait.
@@ -1104,6 +1107,7 @@ private:
         else{
             motion_frames_+=count;quality_state_="motion-interpolation";
             for(uint32_t bits=quality.midpoint_stabilized_mask;bits;bits>>=1)midpoint_pass_frames_+=bits&1U;
+            for(uint32_t bits=quality.appearance_protected_mask;bits;bits>>=1)appearance_pass_frames_+=bits&1U;
             for(uint32_t bits=quality.subpixel_refined_mask;bits;bits>>=1)subpixel_pass_frames_+=bits&1U;
         }
     }
@@ -1227,6 +1231,9 @@ private:
                     << ",\"sampleTransport\":" << json_string(sample_transport_)
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
                     << ",\"doubleRate\":" << (double_rate_?"true":"false")
+                    << ",\"gpuMidpointCorrection\":" << (gpu_correction_?"true":"false")
+                    << ",\"appearanceProtection\":" << (appearance_protection_?"true":"false")
+                    << ",\"appearancePassFrames\":" << appearance_pass_frames_
                     << ",\"inputRateMask\":" << input_rate_mask_
                     << ",\"inputRateGroup\":" << json_string(input_rate_group())
                     << ",\"bypassReason\":" << json_string(bypass_reason())
@@ -1249,7 +1256,7 @@ private:
                     << ",\"qualityState\":" << json_string(quality_state_)
                     << ",\"buildVersion\":" << json_string(kFilterBuild)
                     << ",\"gpuCompletion\":" << json_string(gpu_engine_&&gpu_engine_->queued_completion()?"context-ordered":"blocking")
-                    << ",\"algorithm\":" << json_string(midpoint_pass_frames_?"x2-slow-motion-stabilized":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
+                    << ",\"algorithm\":" << json_string(midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
                     << ",\"message\":" << json_string(message) << "}\n";
                 stream.flush();
                 if (!stream) return;
@@ -1286,6 +1293,8 @@ private:
     bool enabled_ = true;
     static constexpr bool double_rate_=true;
     unsigned input_rate_mask_=nvof::kAllInputRates;
+    bool gpu_correction_=true,appearance_protection_=true;
+    uint64_t appearance_pass_frames_=0;
     bool input_rate_selected_=true;
     bool engine_active_ = false;
     uint64_t output_frames_ = 0,source_frames_=0,near_endpoint_frames_=0;

@@ -92,6 +92,7 @@ struct GpuFrucEngine::Impl {
     GpuCompletionMode completion_mode=GpuCompletionMode::blocking;
     bool skip_identical_warp=true;
     bool stabilize_midpoint=true;
+    bool protect_appearance=true;
     HANDLE decoder_mutex=nullptr; // Borrowed, never closed here.
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -149,7 +150,7 @@ struct GpuFrucEngine::Impl {
         ~DeviceScope(){owner.context1->SwapDeviceContextState(old_state.Get(),nullptr);if(owns_multithread)owner.multithread->Leave();if(owns_mutex)ReleaseMutex(owner.decoder_mutex);}
     };
 
-    Impl(const std::filesystem::path& directory,ID3D11Device* d,ID3D11DeviceContext* c,HANDLE shared_mutex,GpuCompletionMode mode,bool skip,bool stabilize):completion_mode(mode),skip_identical_warp(skip),stabilize_midpoint(stabilize),decoder_mutex(shared_mutex),device(d),context(c){
+    Impl(const std::filesystem::path& directory,ID3D11Device* d,ID3D11DeviceContext* c,HANDLE shared_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect):completion_mode(mode),skip_identical_warp(skip),stabilize_midpoint(stabilize),protect_appearance(protect),decoder_mutex(shared_mutex),device(d),context(c){
         try{
             if(!d||!c)throw std::invalid_argument("A decoder D3D11 device and immediate context are required");
             if(c->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)throw std::invalid_argument("D3D11 immediate context required");
@@ -368,7 +369,7 @@ struct GpuFrucEngine::Impl {
 
 };
 
-GpuFrucEngine::GpuFrucEngine(const std::filesystem::path& runtime,ID3D11Device* device,ID3D11DeviceContext* context,HANDLE decoder_mutex,GpuCompletionMode mode,bool skip,bool stabilize):impl_(std::make_unique<Impl>(runtime,device,context,decoder_mutex,mode,skip,stabilize)){}
+GpuFrucEngine::GpuFrucEngine(const std::filesystem::path& runtime,ID3D11Device* device,ID3D11DeviceContext* context,HANDLE decoder_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect):impl_(std::make_unique<Impl>(runtime,device,context,decoder_mutex,mode,skip,stabilize,protect)){}
 GpuFrucEngine::~GpuFrucEngine()=default;
 std::string GpuFrucEngine::device_name()const{return impl_->name;}
 bool GpuFrucEngine::queued_completion()const{return impl_->completion_mode==GpuCompletionMode::context_ordered;}
@@ -415,7 +416,7 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
         const int64_t duration=current.pts-previous.pts;
         const auto fractional=[&](int64_t pts){return std::abs((pts-previous.pts)*2-duration)>1;};
         const bool fractional_requested=NVOF_ENABLE_EXPERIMENTAL_SUBPIXEL&&!analysis.identical&&std::any_of(timestamps.begin(),timestamps.end(),fractional);
-        const bool has_midpoint=impl_->stabilize_midpoint&&!analysis.identical&&
+        const bool has_midpoint=(impl_->stabilize_midpoint||impl_->protect_appearance)&&!analysis.identical&&
             std::any_of(timestamps.begin(),timestamps.end(),[&](int64_t pts){return !fractional(pts);});
         // RTX 5090 measurements: ~10 ms/pair at 1080p, ~34 ms at 2160p.
         // Keep headroom for the renderer/VSR; high-rate large frames retain
@@ -431,7 +432,7 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
             if(impl_->fractional_unavailable)return false;
             Impl::DeviceScope scope(*impl_);
             try{
-                if(!impl_->fractional_refiner)impl_->fractional_refiner=std::make_unique<FractionalRefiner>(impl_->device.Get(),impl_->context.Get());
+                if(!impl_->fractional_refiner)impl_->fractional_refiner=std::make_unique<FractionalRefiner>(impl_->device.Get(),impl_->context.Get(),impl_->protect_appearance,impl_->stabilize_midpoint);
                 auto a=impl_->shader_source_texture(previous),b=impl_->shader_source_texture(current);
                 impl_->fractional_refiner->prepare(a.Get(),b.Get(),previous.width,previous.height);
                 prepared=true;
@@ -464,7 +465,8 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
                     const float t=refine_phase?float(double(pts-previous.pts)/double(duration)):-1.0f;
                     result.frames.push_back(impl_->output_gpu(pts,t,stable_phase));
                     if(refine_phase)result.quality.subpixel_refined_mask|=uint32_t(1)<<i;
-                    if(stable_phase)result.quality.midpoint_stabilized_mask|=uint32_t(1)<<i;
+                    if(stable_phase&&impl_->stabilize_midpoint)result.quality.midpoint_stabilized_mask|=uint32_t(1)<<i;
+                    if(stable_phase&&impl_->protect_appearance)result.quality.appearance_protected_mask|=uint32_t(1)<<i;
                 }
             }
         }

@@ -42,6 +42,10 @@ namespace NvofControl
             Write("InputRateMask", value.ToString(CultureInfo.InvariantCulture));
         }
         public void SetEnabled(bool value) { Write("Enabled", value ? "1" : "0"); }
+        public bool GpuCorrection { get { return GetPrivateProfileInt("Nvof", "GpuMidpointCorrection", 1, path) != 0; } }
+        public bool AppearanceProtection { get { return GetPrivateProfileInt("Nvof", "AppearanceProtection", 1, path) != 0; } }
+        public void SetGpuCorrection(bool value) { Write("GpuMidpointCorrection", value ? "1" : "0"); }
+        public void SetAppearanceProtection(bool value) { Write("AppearanceProtection", value ? "1" : "0"); }
         private void Write(string key, string value)
         {
             if (!WritePrivateProfileString("Nvof", key, value, path))
@@ -62,6 +66,8 @@ namespace NvofControl
         public bool InputRateSelected = true;
         public int InputRateMask = 63;
         public bool DoubleRate;
+        public bool? GpuCorrection, AppearanceProtection;
+        public long MidpointPassFrames, AppearancePassFrames;
         public string TransportLabel
         {
             get
@@ -120,6 +126,10 @@ namespace NvofControl
                 status.InputRateSelected = Value<bool>(data, "inputRateSelected", true);
                 status.InputRateMask = Value<int>(data, "inputRateMask", 63);
                 status.DoubleRate = Value<bool>(data, "doubleRate", false);
+                status.GpuCorrection = Value<bool?>(data, "gpuMidpointCorrection", null);
+                status.AppearanceProtection = Value<bool?>(data, "appearanceProtection", null);
+                status.MidpointPassFrames = Value<long>(data, "midpointPassFrames", 0);
+                status.AppearancePassFrames = Value<long>(data, "appearancePassFrames", 0);
                 status.UpdatedUtc = File.GetLastWriteTimeUtc(path);
                 status.Exists = true;
                 if (status.ProcessId > 0)
@@ -256,7 +266,7 @@ namespace NvofControl
         private bool preview;
         private string diagnostics = "";
         private string lastActionError = "";
-        private ToggleButton enabled;
+        private ToggleButton enabled, gpuCorrection, appearanceProtection;
         private readonly CheckBox[] inputRates = new CheckBox[6];
         private TextBlock rateSelectionHint, outputRateHint;
         private TextBlock notice, statusTitle, statusDetail, registerNotice;
@@ -276,6 +286,8 @@ namespace NvofControl
             statusDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NvofPotPlayer");
             settings = new SettingsStore(Path.Combine(baseDirectory, "NvofPotPlayer.ini"));
             enabled = Find<ToggleButton>("EnabledToggle");
+            gpuCorrection = Find<ToggleButton>("GpuCorrectionToggle");
+            appearanceProtection = Find<ToggleButton>("AppearanceProtectionToggle");
             outputRateHint = Find<TextBlock>("OutputRateHint");
             for (int index = 0; index < inputRates.Length; index++)
                 inputRates[index] = Find<CheckBox>("InputRate" + index);
@@ -294,6 +306,8 @@ namespace NvofControl
                 catch (Exception ex) { Notify("설정 정리에 실패했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
             }
             enabled.Click += delegate { SaveEnabled(); };
+            gpuCorrection.Click += delegate { SaveEnhancement(true); };
+            appearanceProtection.Click += delegate { SaveEnhancement(false); };
             foreach (CheckBox rate in inputRates) rate.Click += delegate { SaveInputRates(); };
             Find<Button>("CloseButton").Click += delegate { window.Close(); };
             Find<Button>("LaunchButton").Click += delegate { LaunchPlayer(); };
@@ -316,6 +330,8 @@ namespace NvofControl
         {
             loading = true;
             enabled.IsChecked = settings.Enabled;
+            gpuCorrection.IsChecked = settings.GpuCorrection;
+            appearanceProtection.IsChecked = settings.AppearanceProtection;
             UpdateOutputHint();
             int mask = settings.InputRateMask;
             for (int index = 0; index < inputRates.Length; index++)
@@ -329,6 +345,18 @@ namespace NvofControl
             try { settings.SetEnabled(enabled.IsChecked == true); Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false); }
             catch (Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
         }
+        private void SaveEnhancement(bool gpu)
+        {
+            if (loading || preview) return;
+            try
+            {
+                if (gpu) settings.SetGpuCorrection(gpuCorrection.IsChecked == true);
+                else settings.SetAppearanceProtection(appearanceProtection.IsChecked == true);
+                Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false);
+            }
+            catch (Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
+        }
+        private static string Choice(bool? value) { return value.HasValue ? (value.Value ? "켜짐" : "꺼짐") : "이전 필터 · 보고 없음"; }
         private int SelectedRateMask()
         {
             int mask = 0;
@@ -448,7 +476,7 @@ namespace NvofControl
                 statusDetail.Text = "팟플레이어가 관리자 권한으로 실행 중입니다. 연결 설정에서 관리자용 필터를 등록하세요.";
             }
             StringBuilder text = new StringBuilder();
-            text.AppendLine("NVOF for PotPlayer 0.1");
+            text.AppendLine("NVOF for PotPlayer 0.2.0-preview.9");
             if (registration != null)
             {
                 text.AppendLine("팟플레이어 권한: " + registration.PlayerDescription);
@@ -464,6 +492,8 @@ namespace NvofControl
             for (int index = 0; index < inputRates.Length; index++)
                 if (inputRates[index].IsChecked == true) selectedLabels.Add(rateLabels[index]);
             text.AppendLine("보간할 원본 프레임: " + (selectedLabels.Count == 0 ? "선택 없음" : String.Join(", ", selectedLabels.ToArray()) + " fps"));
+            text.AppendLine("저장된 GPU 보정: " + Choice(gpuCorrection.IsChecked));
+            text.AppendLine("저장된 형태 변화 보호: " + Choice(appearanceProtection.IsChecked));
             text.AppendLine("영상 전달: " + status.TransportLabel);
             text.AppendLine("필터: " + (File.Exists(Path.Combine(baseDirectory, "NvofPotPlayer.ax")) ? "설치 파일 있음" : "설치 파일 없음"));
             text.AppendLine("상태: " + (status.Exists ? status.State : "아직 보고 없음"));
@@ -472,6 +502,10 @@ namespace NvofControl
                 text.AppendLine("프로세스: " + status.ProcessId + (status.ProcessAlive ? " (실행 중)" : " (종료됨)"));
                 text.AppendLine("FPS: " + Fps(status.InputFps) + " → " + Fps(status.OutputFps));
                 text.AppendLine("출력 프레임: " + status.OutputFrames);
+                text.AppendLine("현재 세션 GPU 보정 옵션: " + Choice(status.GpuCorrection));
+                text.AppendLine("현재 세션 형태 변화 보호 옵션: " + Choice(status.AppearanceProtection));
+                if (status.Transport == "d3d11-gpu") text.AppendLine("GPU 보정 / 형태 변화 보호 단계 실행 프레임: " + status.MidpointPassFrames + " / " + status.AppearancePassFrames + " (픽셀별 적용 여부와는 다름)");
+                else text.AppendLine("추가 보정은 GPU 직접 전달 경로에서만 동작합니다.");
                 text.AppendLine("재생에 적용된 원본 프레임 선택: " + status.InputRateMask);
                 text.AppendLine("재생에 적용된 출력 모드: " + (status.DoubleRate ? "원본의 두 배 (×2)" : "고정 출력 FPS"));
                 if (!String.IsNullOrEmpty(status.BypassReason)) text.AppendLine("원본 재생 이유: " + (status.BypassReason == "source-rate" ? "원본 프레임 선택에서 제외" : status.BypassReason == "disabled" ? "보간 사용 꺼짐" : status.BypassReason == "at-or-above-target" ? "출력 FPS 이상" : status.BypassReason == "unknown-source-rate" ? "원본 FPS 확인 불가" : status.BypassReason == "output-rate-unsupported" ? "두 배 출력 FPS가 지원 범위 밖" : status.BypassReason));
@@ -633,6 +667,7 @@ namespace NvofControl
                 ShowStatus(fixture);
             }
             if (state == "setup") Find<TabItem>("SetupTab").IsSelected = true;
+            if (state == "enhancements") Find<TabItem>("EnhancementsTab").IsSelected = true;
             if (state == "expanded" || state == "double-expanded") { Find<TabItem>("SetupTab").IsSelected = true; Find<TabItem>("DiagnosticsTab").IsSelected = true; }
         }
     }
@@ -742,6 +777,12 @@ namespace NvofControl
                 File.WriteAllText(settingsPath, "[Nvof]\r\nNativeD3D11=1\r\nProbeServices=0\r\n");
                 SettingsStore store = new SettingsStore(settingsPath);
                 if (store.InputRateMask != 63) throw new Exception("Missing source-rate selection must preserve all-rates behavior.");
+                if (!store.GpuCorrection || !store.AppearanceProtection) throw new Exception("Existing INIs must retain both enhancements by default.");
+                foreach (bool gpu in new bool[] {false,true}) foreach (bool mouth in new bool[] {false,true})
+                {
+                    store.SetGpuCorrection(gpu); store.SetAppearanceProtection(mouth); store.SetEnabled(false); store.MigrateToDoubleRate();
+                    if (store.GpuCorrection != gpu || store.AppearanceProtection != mouth) throw new Exception("Independent enhancement settings were coupled or migration reset them.");
+                }
                 foreach (int oldTarget in new int[] { 60, 120 })
                 {
                     File.WriteAllText(settingsPath, "[Nvof]\r\nNativeD3D11=1\r\nProbeServices=0\r\nEnabled=0\r\nInputRateMask=5\r\nTargetFps=" + oldTarget + "\r\nDoubleRate=0\r\n");
@@ -774,6 +815,7 @@ namespace NvofControl
                 RuntimeStatus systemTransport = new RuntimeStatus { Transport="system-memory" };
                 if (!systemTransport.TransportLabel.Contains("RAM") || !systemTransport.TransportDetail.Contains("아직 확인되지")) throw new Exception("System-memory transport must not claim verified native GPU delivery.");
                 RuntimeStatus missingTransport = new RuntimeStatus();
+                if (missingTransport.GpuCorrection.HasValue || missingTransport.AppearanceProtection.HasValue) throw new Exception("Old telemetry cannot invent enhancement settings.");
                 if (missingTransport.TransportLabel != "아직 보고 없음") throw new Exception("Missing transport must not imply a known path.");
                 RuntimeStatus unknownTransport = new RuntimeStatus { Transport="d3d11-native" };
                 if (!unknownTransport.TransportLabel.StartsWith("확인되지 않은")) throw new Exception("Unknown transport must not be assumed native.");
@@ -795,6 +837,12 @@ namespace NvofControl
                 if (((TextBlock)testWindow.FindName("StatusTitle")).Text != "프레임 보간 꺼짐" || rate24.IsEnabled || rate60.IsEnabled || rate24.IsChecked != saved24 || rate60.IsChecked != saved60) throw new Exception("Master-off must disable source-rate controls without clearing their selection.");
                 ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked = true;
                 if (!rate24.IsEnabled || !rate60.IsEnabled) throw new Exception("Master-on must restore source-rate controls.");
+                ToggleButton gpuToggle=(ToggleButton)testWindow.FindName("GpuCorrectionToggle"), mouthToggle=(ToggleButton)testWindow.FindName("AppearanceProtectionToggle");
+                gpuToggle.IsChecked=false; mouthToggle.IsChecked=true;
+                ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=false;
+                if(gpuToggle.IsEnabled||mouthToggle.IsEnabled||gpuToggle.IsChecked!=false||mouthToggle.IsChecked!=true) throw new Exception("Master-off changed enhancement selection.");
+                ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=true;
+                if(!gpuToggle.IsEnabled||!mouthToggle.IsEnabled||gpuToggle.IsChecked!=false||mouthToggle.IsChecked!=true) throw new Exception("Independent enhancement selection lost.");
                 testController.PreviewState("double");
                 if (testWindow.FindName("Fps60") != null || testWindow.FindName("Fps120") != null || !((TextBlock)testWindow.FindName("OutputRateSummary")).Text.Contains("×2") || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("47.952")) throw new Exception("Controller must expose only double-rate output.");
                 testController.PreviewState("error");
@@ -813,6 +861,16 @@ namespace NvofControl
                         if (bounds.Left < 0 || bounds.Right > width || bounds.Top < 0 || bounds.Bottom > footerTop) throw new Exception("Essential control clipped at " + width + ": " + controlName);
                     }
                 }
+                ((TabItem)testWindow.FindName("EnhancementsTab")).IsSelected=true;
+                FrameworkElement optionClient=(FrameworkElement)testWindow.Content;
+                optionClient.Measure(new Size(464,461)); optionClient.Arrange(new Rect(0,0,464,461)); optionClient.UpdateLayout();
+                double optionFooter=((TextBlock)testWindow.FindName("SaveNotice")).TransformToAncestor(optionClient).Transform(new Point(0,0)).Y-8;
+                foreach(string name in new[]{"GpuCorrectionToggle","AppearanceProtectionToggle","EnhancementHint"}) {
+                    FrameworkElement item=(FrameworkElement)testWindow.FindName(name);
+                    Rect b=item.TransformToAncestor(optionClient).TransformBounds(new Rect(0,0,item.ActualWidth,item.ActualHeight));
+                    if(b.Left<0||b.Right>464||b.Bottom>optionFooter)throw new Exception("Enhancement control clipped: "+name);
+                }
+                ((TabItem)testWindow.FindName("InterpolationTab")).IsSelected=true;
                 System.Windows.Input.FocusManager.SetFocusedElement(testWindow, rate24);
                 if (!rate24.Focusable || !rate24.IsTabStop || !rate24.IsFocused) throw new Exception("Native checkbox logical focus is unavailable.");
                 ((TabItem)testWindow.FindName("SetupTab")).IsSelected = true;

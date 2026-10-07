@@ -166,6 +166,28 @@
           <TextBlock Text="원본 프레임 사이에 중간 프레임을 하나 추가합니다." Style="{StaticResource Subtle}" Margin="0,8,0,0"/>
         </StackPanel>
       </TabItem>
+      <TabItem x:Name="EnhancementsTab" Header="화질 보정">
+        <StackPanel TextElement.Foreground="{StaticResource Ink}" TextElement.FontWeight="Normal">
+          <Grid Margin="0,0,0,18">
+            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="108"/></Grid.ColumnDefinitions>
+            <StackPanel Margin="0,0,14,0">
+              <TextBlock Text="GPU 중간 프레임 보정" FontWeight="SemiBold"/>
+              <TextBlock Text="느린 이동의 중간 위치와 얇은 선을 다듬습니다." Style="{StaticResource Subtle}" Margin="0,5,0,0"/>
+            </StackPanel>
+            <ToggleButton x:Name="GpuCorrectionToggle" Grid.Column="1" Style="{StaticResource MasterSwitch}" VerticalAlignment="Top" HorizontalAlignment="Right" IsEnabled="{Binding IsChecked, ElementName=EnabledToggle}" AutomationProperties.Name="GPU 중간 프레임 보정"/>
+          </Grid>
+          <Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="0,18,0,0" Margin="0,0,0,18">
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="108"/></Grid.ColumnDefinitions>
+              <StackPanel Margin="0,0,14,0">
+                <TextBlock Text="형태 변화 보호" FontWeight="SemiBold"/>
+                <TextBlock Text="입모양처럼 갑자기 달라지는 형태의 깨짐을 줄입니다. 화면 이동 시에는 자동으로 보호를 줄입니다." Style="{StaticResource Subtle}" Margin="0,5,0,0"/>
+              </StackPanel>
+              <ToggleButton x:Name="AppearanceProtectionToggle" Grid.Column="1" Style="{StaticResource MasterSwitch}" VerticalAlignment="Top" HorizontalAlignment="Right" IsEnabled="{Binding IsChecked, ElementName=EnabledToggle}" AutomationProperties.Name="형태 변화 보호"/>
+            </Grid>
+          </Border>
+          <TextBlock x:Name="EnhancementHint" Text="각각 따로 선택할 수 있습니다. 둘 다 끄면 기본 ×2 보간만 사용합니다. 형태 변화 보호만 켜도 GPU로 움직임을 분석합니다." Style="{StaticResource Subtle}"/>
+        </StackPanel>
+      </TabItem>
       <TabItem x:Name="SetupTab" Header="연결 설정">
         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" TextElement.Foreground="{StaticResource Ink}" TextElement.FontWeight="Normal">
           <StackPanel>

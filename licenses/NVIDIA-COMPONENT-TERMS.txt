@@ -1,0 +1,481 @@
+﻿NVIDIA COMPONENT TERMS / NVIDIA 구성요소 이용 약관
+Version / 버전: 2026-10-07
+
+NVOF for PotPlayer includes proprietary NVIDIA NvOFFRUC and CUDA runtime components. The project MIT license does not cover these files. NVIDIA retains ownership. This is the project's component-use notice, not a new license issued by NVIDIA.
+
+이 설치 프로그램에는 NVIDIA 소유의 NvOFFRUC 및 CUDA 런타임이 포함됩니다. NVIDIA 파일은 프로젝트 MIT 라이선스 대상이 아닙니다. 아래 원문과 함께 제공되는 공급자 약관이 각 구성요소에 적용됩니다.
+
+By accepting, you agree to use the NVIDIA components only with the application on supported NVIDIA hardware, retain proprietary notices, and comply with applicable vendor license grants, restrictions and export rules. Do not redistribute the NVIDIA components as a standalone product, relicense them under MIT, remove notices, reverse engineer or bypass protection except where the governing license or mandatory law permits. No NVIDIA sponsorship or endorsement is claimed. Any warranty and liability provisions are those in the applicable vendor terms, subject to mandatory law.
+
+동의하면 지원되는 NVIDIA 하드웨어에서 앱의 구성요소로 사용하고, 소유권 고지를 유지하며, 적용되는 공급자 이용 조건을 준수해야 합니다. NVIDIA DLL 단독 배포나 MIT 재라이선스를 허용하는 동의가 아닙니다. 원문에 명시된 권리보다 넓은 권한을 부여하지 않습니다.
+
+The publisher relies on the 2017 download-page agreement's application-bundling provision. The SDK includes a differently worded 2022 agreement. NVIDIA has not separately confirmed their relationship for this prebuilt FRUC DLL. This click-through records user acceptance; it does not resolve that scope or create distribution permission.
+
+CUDA 11.2 terms and all other component notices are installed under licenses/. You may cancel installation if you do not agree. Acceptance version, installer version and local time are recorded on this PC only.
+
+Original NVIDIA agreements follow. These unmodified source terms govern over the project summary to the extent applicable.
+
+
+=== NVIDIA DOWNLOAD-PAGE AGREEMENT, 2017 ===
+SOFTWARE DEVELOPER KITS, SAMPLES AND TOOLS LICENSE AGREEMENT
+(with distribution rights)
+IMPORTANT – READ BEFORE DOWNLOADING, INSTALLING, COPYING OR USING THE LICENSED SOFTWARE
+READ CAREFULLY: This Software Developer Kits, Samples and Tools License Agree ment ("Agreement”), made and entered into as of
+the time and date of click through action (“Effective Date”), is a legal agreement between you and NVIDIA Corporation ("NVIDI A")
+and governs the use of the following NVIDIA deliverables to the extent provided  to you under this Agreement: API’s, source code
+and header files, data sets and assets (examples include images, textures, models, scenes, videos, native API input/output fi les),
+binary software and/or documentation (collectively, "Licensed Software"). By  downloading, installing, copying, or otherwise using
+the Licensed Software, you agree to be bound by the terms of this Agreement. If you do NOT AGREE TO THE TERMS OF THIS
+AGREEMENT, DO NOT DOWNLOAD, INSTALL, COPY OR USE THE NVIDIA LICENSED SOFTWARE. IF YO U ARE ENTERING INTO THIS
+AGREEMENT ON BEHALF OF A COMPANY OR OTHER LEGAL ENTITY, YOU REPRESENT THAT YOU HAVE THE LEGAL AUTHORITY TO
+BIND THE ENTITY TO THIS AGREEMENT, IN WHICH CASE “YOU” WILL MEAN THE ENTITY YOU REPRESENT. IF YOU DON’T HAVE SUCH
+AUTHORITY, OR IF YOU DON’T ACCEPT ALL THE TERMS AND CONDITIONS OF THIS AGREEMENT, THEN NVIDIA IS UNWILLING TO
+LICENSE THE LICENSED SOFTWARE TO YOU, AND YOU MAY NOT DOWNLOAD, INSTALL, COPY OR USE IT.
+
+1. LICENSE.
+
+1.1 License Grant. Subject to the terms of this Agree ment, NVIDIA hereby grants you a nonexclusive, non -transferable, worldwide,
+revocable, limited, royalty-free, fully paid-up license during the term of this Agreement to:
+(i) install, use and reproduce the Licensed Software delivered by NVIDIA plus make modifi cations and create derivative
+works of the source code and header files delivered by NVIDIA, provided that the software is executed only in hardware produc ts as
+specified by NVIDIA in the accompanying documentation (such as release notes) as supported, to develop, test and service your
+products (each, a “Customer Product”) that are interoperable with supported hardware products. If the NVIDIA documentation is
+silent, the supported hardware consists of certain NVIDIA GPUs; and
+(ii) incorporate Licensed Software as delivered by NVIDIA (including source code and header files as modified by you) into a
+Customer Product in binary format only and sub -license and distribute a Customer Product for use by your recipients only in the
+hardware products specified by NVIDIA as supported, provided that: (a) all such distributions by you or your distribution channels
+are consistent with the terms of this Agreement; and (b) you must enter into enforceable agreements with your recipients that  binds
+them to terms that are consiste nt with the terms set forth in this Agreement for their use of the software binaries, including
+(without limitation) terms relating to the license grant and license restrictions, confidentiality and protection of NVIDIA’s  intellectual
+property rights in an d to the software you distributed. You are liable for the distribution and the use of distributed software if you
+failed to comply or enforce the distribution requirements of this Agreement. You agree to notify NVIDIA in writing of any kno wn or
+suspected use or distribution of the Licensed Software that are not in compliance with the terms of this Agreement.
+
+1.2 Enterprise and Contractor Usage . Under this Agreement you may allow (i) your Enterprise employees, and (ii) individuals who
+work primarily for you r Enterprise on a contractor basis and from your secure network (each a "Contractor") to access and use the
+Licensed Software pursuant to the terms in Section 1 solely to perform work on your behalf, provided further that with respec t to
+Contractors: (i) you obtain a written agreement from the Contractor which contains terms and obligations with respect to access to
+or use of Licensed Software no less protective of NVIDIA than those set forth in this Agreement, and (ii) such Contractor’s a ccess and
+use expressly excludes any sublicensing or distribution rights for the Licensed Software. You are responsible for the compliance with
+the terms and conditions of this Agreement by your Enterprise and Contractors. Any act or omission that if committed by you w ould
+constitute a breach of this Agreement shall be deemed to constitute a breach of this Agreement if committed by your Enterpris e or
+Contractors. “Enterprise” means you or any company or legal entity for which you accepted the terms of this Agreement, and the ir
+subsidiaries of which your company or legal entity owns more than fifty percent (50%) of the issued and outstanding equity.
+
+
+1.3 No Support. NVIDIA is under no obligation to provide support for the Licensed Software or to provide any error corrections or
+updates to the Licensed Software under this Agreement.
+
+1.4 Product Specific Terms. With respect to the Iray Developer Edition Licensed Software, a separate license is required from NVIDIA
+to enable or use the Iray runtime in any given machine.
+
+1.5 Notification. You are required to notify NVIDIA prior to use of the NVIDIA DesignWorks Licensed Software in a commercial
+application (including a plug-in to a commercial application). Please send notification by visiting https://developer.nvidia.com/sw-
+
+DESIGNWORKS NVIDIA SDKS, SAMPLES AND TOOLS AGREEMENT, DISTRIBUTION RIGHTS (V.13.06.2017) 1
+notification and submitting the web form requested information. NVIDIA will request company name, DesignWorks software and
+version used, platform, commercial application release date, and weblink to product/video. Failure to notify NVIDIA pursuant to this
+section shall be considered a material breach of this Agreement.
+
+2. LIMITATIONS.
+
+2.1 License Restrictions. Except as expressly authorized in this Agreement, you agree that you will not (nor authorize third parties
+to): (i) copy and use software that was licensed to you for use in one or more devices i n other unlicensed devices (provided that
+copies solely for backup purposes are allowed); (ii) reverse engineer, decompile, disassemble (except to the extent applicabl e laws
+specifically require that such activities be permitted) or attempt to derive the s ource code, underlying ideas, algorithm or structure
+of software provided to you in object code form; (iii) sell, transfer, assign, distribute, rent, loan, lease, sublicense or o therwise make
+available the Licensed Software or its functionality to third pa rties (a) as an application services provider or service bureau, (b) by
+operating hosted/virtual system environments, (c) by hosting, time sharing or providing any other type of services, or
+(d) otherwise by means of the internet; (iv) modify, translate or ot herwise create any derivative works of any of the Licensed Software; (v)
+remove, alter, cover or obscure any proprietary notice that appears on or with the Licensed Software or any copies thereof; ( vi) use the
+Licensed Software, or allow its use, transfer,  transmission or export in violation of any applicable export control laws, rules or regulations;
+(vii) distribute, permit access to, or sublicense the Licensed Software as a stand -alone product; (viii) bypass, disable, circumvent or remove
+any form of copy protection, encryption, security or digital rights management or authentication mechanism used by NVIDIA in connection
+with the Licensed Software, or use the Licensed Software together with any authorization code, serial number, or other copy p rotection
+device not supplied by NVIDIA directly or through an authorized reseller; (ix) use the Licensed Software for the purpose of d eveloping
+competing products or technologies or assisting a third party in such activities; (x) use the Licensed Software with any system or application
+where the use or failure of such system or application can reasonably be expected to threaten or result in personal injury, d eath, or
+catastrophic loss including, without limitation, use in connection with any nuclear, avionics, navig ation, military, medical, life support or
+other life critical application (“Critical Applications”), unless the parties have entered into a Critical Applications agree ment; (xi) distribute
+any modification or derivative work you make to the Licensed Softwa re under or by reference to the same name as used by NVIDIA; or (xii)
+use the Licensed Software in any manner that would cause the Licensed Software to become subject to an Open Source License. N othing in
+this Agreement shall be construed to give you a right to use, or otherwise obtain access to, any source code from which the software or any
+portion thereof is compiled or interpreted. You acknowledge that NVIDIA does not design, test, manufacture or certify the Lic ensed
+Software for use in the context of a  Critical Application and NVIDIA shall not be liable to you or any third party, in whole or in part, for any
+claims or damages arising from such use. You agree to defend, indemnify and hold harmless NVIDIA and its affiliates, and thei r respective
+employees, contractors, agents, officers and directors, from and against any and all claims, damages, obligations, losses, liabilities , costs or
+debt, fines, restitutions and expenses (including but not limited to attorney’s fees and costs incident to establishing the right of
+indemnification) arising out of or related to you and your Enterprise, and their respective employees, contractors, agents, d istributors,
+resellers, end users, officers and directors use of Licensed Software outside of the scope of this Agreement or any other breach of the terms
+of this Agreement. “ Open Source License” includes, without limitation, a software license that requires as a condition of use, modification,
+and/or distribution of such software that the software be (x) disclosed or dis tributed in source code form; (y) be licensed for the purpose of
+making derivative works; or (z) be redistributable at no charge.
+
+
+2.2 Third Party License Obligations . You acknowledge and agree that the Licensed Software may include or incorporate third p arty
+technology (collectively “Third Party Components”), which is provided for use in or with the software and not otherwise used
+separately. If the Licensed Software includes or incorporates Third Party Components, then the third -party pass-through terms and
+conditions (“Third Party Terms”) for the particular Third Party Component will be bundled with the software or otherwise made
+available online as indicated by NVIDIA and will be incorporated by reference into this Agreement. In the event of any confli ct
+between the terms in this Agreement and the Third Party Terms, the Third Party Terms shall govern. Copyright to Third Party
+Components are held by the copyright holders indicated in the copyright notices indicated in the Third Party Terms.
+
+Audio/Video E ncoders and Decoders. You acknowledge and agree that it is your sole responsibility to obtain any additional third
+party licenses required to make, have made, use, have used, sell, import, and offer for sale your products or services that i nclude or
+incorporate any Third Party Components and content relating to audio and/or video encoders and decoders from, including but not
+limited to, Microsoft, Thomson, Fraunhofer IIS, Sisvel S.p.A., MPEG -LA, and Coding Technologies as NVIDIA does not grant to you
+under this Agreement any necessary patent rights with respect to audio and/or video encoders and decoders.
+
+2.3 Limited Rights. Your rights in the Licensed Software are limited to those expressly granted in Section 1 and no other licenses are
+granted whether by implication, estoppel or otherwise. NVIDIA reserves all rights, title and interest in and to the Licensed Software
+not expressly granted under this Agreement.
+DESIGNWORKS NVIDIA SDKS, SAMPLES AND TOOLS AGREEMENT, DISTRIBUTION RIGHTS (V.13.06.2017) 2
+3. CONFIDENTIALITY. Neither party will use the other party’s Confidential Information, except as necessary for the performance of
+this Agreement, nor will either party disclose such Confidential Information to any third party, except to personnel of NVIDI A and its
+affiliates, you, your Enterprise, your Enterprise Contractors, and each party’s legal and financial advisors that have a need  to know
+such Confidential Information for the performance of this Agreement, provided that each such personnel, employee and Co ntractor
+is subject to a written agreement that includes confidentiality obligations consistent with those set forth herein. Each part y will use
+all reasonable efforts to maintain the confidentiality of all of the other party’s Confidential Information in its possession or control,
+but in no event less than the efforts that it ordinarily uses with respect to its own Confidential Information of similar nat ure and
+importance. The foregoing obligations will not restrict either party from disclosing the other p arty’s Confidential Information or the
+terms and conditions of this Agreement as required under applicable securities regulations or pursuant to the order or requir ement
+of a court, administrative agency, or other governmental body, provided that the party  required to make such disclosure (i) gives
+reasonable notice to the other party to enable it to contest such order or requirement prior to its disclosure (whether throu gh
+protective orders or otherwise), (ii) uses reasonable effort to obtain confidential treatment or similar protection to the fullest extent
+possible to avoid such public disclosure, and (iii) discloses only the minimum amount of information necessary to comply with  such
+requirements.
+
+“Confidential Information ” means the Licensed Software ( unless made publicly available by NVIDIA without confidentiality
+obligations), and any NVIDIA business, marketing, pricing, research and development, know -how, technical, scientific, financial
+status, proposed new products or other information disclosed by  NVIDIA to you which, at the time of disclosure, is designated in
+writing as confidential or proprietary (or like written designation), or orally identified as confidential or proprietary or is otherwise
+reasonably identifiable by parties exercising reason able business judgment as confidential. Confidential Information does not and
+will not include information that: (i) is or becomes generally known to the public through no fault of or breach of this Agre ement by
+the receiving party; (ii) is rightfully known by the receiving party at the time of disclosure without an obligation of confidentiality;
+(iii) is independently developed by the receiving party without use of the disclosing party’s Confidential Information; or (iv) is
+rightfully obtained by the receiving party from a third party without restriction on use or disclosure.
+
+4. OWNERSHIP.
+
+4.1 Ownership of Licensed Software . The Licensed Software, and the respective intellectual property rights therein, is and will
+remain the sole and exclusive property of NVI DIA and its licensors, whether the Licensed Software is separate from or combined
+with any other products or materials. You shall not knowingly engage in any act or omission that would impair NVIDIA’s and/or  its
+licensors’ intellectual property rights in t he Licensed Software or any other materials, information, processes or subject matter
+proprietary to NVIDIA. NVIDIA’s licensors are intended third party beneficiaries with the right to enforce provisions of this
+Agreement with respect to their Confidential Information and/or intellectual property rights.
+
+4.2 Modifications. You have no obligation to provide your permitted modifications to NVIDIA. You hold all rights, title and interest in
+and to the modifications to and derivative works of the NVIDIA source  code and header files that you create as permitted
+hereunder, subject to NVIDIA’s underlying intellectual property rights in and to the NVIDIA software; provided, however that you
+grant NVIDIA, its affiliates and their respective customers an irrevocable,  perpetual, nonexclusive, worldwide, royalty -free paid-up
+license to make, have made, use, have used, reproduce, sell, license, distribute, sublicense, transfer and otherwise commerci alize
+modifications and derivative works including (without limitation) w ith the Licensed Software or other products, technologies or
+materials.
+
+5. FEEDBACK. You have no obligation to provide Feedback to NVIDIA. However, NVIDIA and/or its affiliates may use and include
+any Feedback that you provide to improve the Licensed Softwar e or other NVIDIA products, technologies or materials. Accordingly, if
+you provide Feedback, you agree that NVIDIA and/or its affiliates may at their option, and may permit its licensees, to make,  have
+made, use, have used, reproduce, sell, license, distri bute, sublicense, transfer and otherwise commercialize the Feedback in the
+Licensed Software or in other products, technologies or materials without the payment of any royalties or fees to you. All Fe edback
+becomes the sole property of NVIDIA and may be us ed in any manner NVIDIA sees fit, and you hereby assign to NVIDIA all of your
+right, title and interest in and to any Feedback. NVIDIA has no obligation to respond to Feedback or to incorporate Feedback into the
+Licensed Software. “Feedback” means any and all suggestions, feature requests, comments or other feedback relating to the
+Licensed Software, including possible enhancements or modifications thereto.
+
+6. NO WARRANTIES. THE LICENSED SOFTWARE IS PROVIDED BY NVIDIA “AS IS” AND “WITH ALL FAULTS,” AND NVIDIA  EXPRESSLY
+DISCLAIMS ALL WARRANTIES OF ANY KIND OR NATURE, WHETHER EXPRESS, IMPLIED OR STATUTORY, INCLUDING, BUT NOT LIMITED
+TO, ANY WARRANTIES OF OPERABILITY, CONDITION, VALUE, ACCURACY OF DATA, OR QUALITY, AS WELL AS
+DESIGNWORKS NVIDIA SDKS, SAMPLES AND TOOLS AGREEMENT, DISTRIBUTION RIGHTS (V.13.06.2017) 3
+ANY WARRANTIES OF MERCHANTABILITY, SYSTEM INTEGRATION, W ORKMANSHIP, SUITABILITY, NON -INFRINGEMENT, FITNESS FOR
+A PARTICULAR PURPOSE, OR THE ABSENCE OF ANY DEFECTS THEREIN, WHETHER LATENT OR PATENT. N O WARRANTY IS MADE BY
+NVIDIA ON THE BASIS OF TRADE USAGE, COURSE OF DEALING OR COURSE OF TRADE. NVIDIA DOES NOT WARRANT THAT THE
+LICENSED SOFTWARE WILL MEET YOUR REQUIREMENTS OR THAT THE OPERATION THEREOF WILL BE UNINTERRUPTED OR ERROR -
+FREE, OR THAT ALL ER RORS WILL BE CORRECTED. YOU ACKNOWLEDGE THAT NVIDIA’S OBLIGATIONS UNDER THIS AGREEMENT ARE
+FOR THE BENEFIT OF YOU ONLY. Nothing in this warranty section affects any statutory rights of consumers or other recipients t o the
+extent that they cannot be waived or limited by contract under applicable law.
+
+7. LIMITATION OF LIABILITY. TO THE MAXIMUM EXTENT PERMITTED BY LAW NVIDIA OR ITS LICENSORS SHALL NOT BE LIABLE FOR
+ANY SPECIAL, INCIDENTAL, PUNITIVE OR CONSEQUENTIAL DAMAGES, OR ANY LOST PROFITS, LOSS OF USE, LOSS  OF DATA OR LOSS
+OF GOODWILL), OR THE COSTS OF PROCURING SUBSTITUTE PRODUCTS, ARISING OUT OF OR IN CONNECTION WITH THIS
+AGREEMENT OR THE USE OR PERFORMANCE OF THE LICENSED SOFTWARE, WHETHER SUCH LIABILITY ARISES FROM ANY CLAIM
+BASED UPON BREACH OF CONTRACT , BREACH OF WARRANTY, TORT (INCLUDING NEGLIGENCE), PRODUCT LIABILITY OR ANY OTHER
+CAUSE OF ACTION OR THEORY OF LIABILITY. IN NO EVENT WILL NVIDIA’S TOTAL CUMULATIVE LIABILITY UNDER OR ARISING OUT OF
+THIS AGREEMENT EXCEED THE GREATER OF THE NET AMOUNT NVIDI A RECEIVED FOR YOUR USE OF THE LICENSED SOFTWARE ONE
+HUNDRED U.S. DOLLARS (US $100). THE NATURE OF THE LIABILITY, THE NUMBER OF CLAIMS OR SUITS OR THE NUMBER OF PARTIES
+WITHIN YOUR ENTERPRISE THAT ACCEPTED THE TERMS OF THIS AGREEMENT SHALL NOT ENLARGE OR E XTEND THIS LIMIT. THE
+FOREGOING LIMITATIONS SHALL APPLY REGARDLESS OF WHETHER NVIDIA OR ITS LICENSORS HAS BEEN ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGES AND REGARDLESS OF WHETHER ANY REMEDY FAILS ITS ESSENTIAL PURPOSE.
+
+8. TERM AND TERMINATION . This Agreemen t and your licenses hereunder shall become effective upon the Effective Date and
+shall remain in effect unless and until terminated as follows: (i) automatically if you breach any of the terms of this Agreement; or (ii)
+by either party upon written notice if the other party becomes the subject of a voluntary or involuntary petition in bankruptcy or any
+proceeding relating to insolvency, receivership, liquidation or composition for the benefit of creditors, if that petition or  proceeding
+is not dismissed wit h prejudice within sixty (60) days after filing, or if a party ceases to do business; (iii) by you, upon ceasing to use
+the Licensed Software provided under this Agreement; or (iv) by NVIDIA upon written notice if you commence or participate in any
+legal proceeding against NVIDIA, with respect to the Licensed Software that is the subject of the proceeding during the pendency of
+such legal proceeding. Termination of this Agreement regardless of cause or nature shall be without prejudice to any other ri ghts or
+remedies of the parties and shall be without liability for any loss or damage occasioned thereby. Upon any expiration or term ination
+of this Agreement (i) you must promptly discontinue use of the Licensed Software, and (ii) you must promptly destroy or r eturn to
+NVIDIA all copies of the Licensed Software and all portions thereof in your possession or control, and each party will prompt ly
+destroy or return to the other all of the other party’s Confidential Information within its possession or control, prov ided that your
+prior distributions in accordance with this Agreement are not affected by the expiration or termination of this Agreement. Up on
+written request, you will certify in writing that you have complied with your obligations under this section. Sec tions 2 through 9 will
+survive the expiration or termination of this Agreement for any reason.
+
+9. GENERAL.
+
+This Agreement constitutes the entire agreement of the parties with respect to the subject matter hereto and supersedes all p rior
+negotiations, conversations, or discussions between the parties relating to the subject matter hereto, oral or written, and all past
+dealings or industry custom. Any additional and/or conflicting terms and conditions on purchase order(s) or any other documen ts
+issued by you a re null, void, and invalid. Any amendment or waiver under this Agreement must be in writing and signed by
+representatives of both parties.
+
+This Agreement and the rights and obligations thereunder may not be assigned by you, in whole or in part, including by merger,
+consolidation, dissolution, operation of law, or any other manner, without written consent of NVIDIA, and any purported assig nment
+in violation of this provision shall be void and of no effect. NVIDIA may assign, delegate or transfer this Agreem ent and its rights and
+obligations hereunder, and if to a non-affiliate you will be notified.
+
+Each party acknowledges and agrees that the other is an independent contractor in the performance of this Agreement, and each
+party is solely responsible for all  of its employees, agents, contractors, and labor costs and expenses arising in connection therewith.
+The parties are not partners, joint ventures or otherwise affiliated, and neither has any authority to make any statements,
+representations or commitments of any kind to bind the other party without prior written consent.
+
+Neither party will be responsible for any failure or delay in its performance under this Agreement (except for any payment
+obligations) to the extent due to causes beyond its reasonable control for so long as such force majeure event continues in effect.
+DESIGNWORKS NVIDIA SDKS, SAMPLES AND TOOLS AGREEMENT, DISTRIBUTION RIGHTS (V.13.06.2017) 4
+This Agreement will be governed by and construed under the laws of the State of Delaware and t he United States without regard to
+the conflicts of law provisions thereof and without regard to the United Nations Convention on Contracts for the Internationa l Sale
+of Goods. The parties consent to the personal jurisdiction of the federal and state court s located in Santa Clara County, California.
+You acknowledge and agree that a breach of any of your promises or agreements contained in this Agreement may result in
+irreparable and continuing injury to NVIDIA for which monetary damages may not be an adequa te remedy and therefore NVIDIA is
+entitled to seek injunctive relief as well as such other and further relief as may be appropriate. If any court of competent jurisdiction
+determines that any provision of this Agreement is illegal, invalid or unenforceable , the remaining provisions will remain in full force
+and effect. Unless otherwise specified, remedies are cumulative.
+
+The Licensed Software has been developed entirely at private expense and is “commercial items” consisting of “commercial
+computer softwar e” and “commercial computer software documentation” provided with RESTRICTED RIGHTS. Use, duplication or
+disclosure by the U.S. Government or a U.S. Government subcontractor is subject to the restrictions set forth in this Agreeme nt
+pursuant to DFARS 227.7 202-3(a) or as set forth in subparagraphs (c)(1) and (2) of the Commercial Computer Software - Restricted
+Rights clause at FAR 52.227 -19, as applicable. Contractor/manufacturer is NVIDIA, 2701 San Tomas Expressway, Santa Clara, CA
+95050.
+
+You acknowledge t hat the Licensed Software described under this Agreement is subject to export control under the U.S. Export
+Administration Regulations (EAR) and economic sanctions regulations administered by the U.S. Department of Treasury’s Office of
+Foreign Assets Contr ol (OFAC). Therefore, you may not export, reexport or transfer in -country the Licensed Software without first
+obtaining any license or other approval that may be required by BIS and/or OFAC. You are responsible for any violation of the  U.S. or
+other applic able export control or economic sanctions laws, regulations and requirements related to the Licensed Software. By
+accepting this SLA, you confirm that you are not a resident or citizen of any country currently embargoed by the U.S. and tha t you
+are not otherwise prohibited from receiving the Licensed Software.
+
+Any notice delivered by NVIDIA to you under this Agreement will be delivered via mail, email or fax. Please direct your legal  notices
+or other correspondence to NVIDIA Corporation, 2701 San Tomas Exp ressway, Santa Clara, California 95050, United States of
+America, Attention: Legal Department.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+DESIGNWORKS NVIDIA SDKS, SAMPLES AND TOOLS AGREEMENT, DISTRIBUTION RIGHTS (V.13.06.2017) 5
+=== NVIDIA SDK-BUNDLED AGREEMENT, 2022 ===
+
+
+NVIDIA DesignWorks SDK License
+
+This license is a legal agreement between you and  NVIDIA Corporation ("NVIDIA") and governs  the use of a NVIDIA
+DesignWorks software development kit made available to you under this license (the “SDK”).
+This license can be accepted only by an adult of legal age of majority in the country in which the SDK is used. If you are under
+the legal age of majority, you must ask your parent or legal guardian to consent to this license. If you are entering this license
+on behalf of a company or other legal entity, you represent that you have legal authority and “you” w ill mean the entity you
+represent.
+By using the SDK, you affirm that you have reached the legal age of majority, you accept the terms of this license, and you
+take legal and financial responsibility for the actions of your permitted users.
+
+You agree to use the SDK only for purposes that are permitted by (a) this license, and (b) any applicable law, regulation or
+generally accepted practices or guidelines in the relevant jurisdictions.
+
+1. LICENSE. Subject to the terms of this license, NVIDIA hereby grants you a non-exclusive, non-transferable license, without
+the right to sublicense (except as expressly provided in this license) to:
+a. Install and use the SDK,
+b. Modify and create derivative works of sample source code delivered in the SDK, and
+c. Distribute any sample source code delivered in the SDK and derivative works of such sample source code , as incorporated
+in object code format into a software application subject to the distribution requirements indicated in this license.
+
+2. DISTRIBUTION REQUIREMENTS. These are the distribution requirements for you to exercise the grants above:
+a. An application must have material additional functionality, beyond the included portions of the SDK.
+b. The distributable portions of the SDK shall only be accessed by your application.
+c. The following notice shall be included in modifications and derivative works of sour ce code distributed: “This software
+contains source code provided by NVIDIA Corporation.”
+d. You agree to distribute the SDK subject to the terms at least as protective as the terms of this license , including (without
+limitation) terms relating to the licens e grant , license restrictions and protection of NVIDIA’s intellectual property rights.
+Additionally, you agree that you will protect the privacy, security and legal rights of your application users.
+e. You agree to notify NVIDIA in writing of any known or suspected distribution or use of the SDK not in compliance with the
+requirements of this license, and to enforce the terms of your agreements with respect to  the distributed portions of the
+SDK.
+3. AUTHORIZED USERS. You may allow employees and contractors of your entity or of your subsidiary(ies) to access and use
+the SDK from your secure network to perform work on your behalf. If you are an academic institution you may allow users
+enrolled or employed by the academic institution to access and use the SDK from your secure network. You are responsible
+for the compliance with the terms of this license by your authorized users.
+
+4. LIMITATIONS. Your license to use the SDK is restricted as follows:
+a. You may not reverse engineer, decompile or disassemble, or remove copyright or other proprietary notices from any
+portion of the SDK or copies of the SDK.
+b. Except as expressly provided in this license, you may not copy, sell, rent, sublicense, transfer, distribute, modify, or create
+derivative works of any portion of the SDK. For clarity, you may not distribute or sublicense the SDK as a stand-alone product.
+c.  Unless you have an agreement with NVIDIA for this purpose, you may not i ndicate that an application created with the
+SDK is sponsored or endorsed by NVIDIA.
+d.  You may not bypass, disable, or circumvent any technical limitation, encryption, security, digital rights management or
+authentication mechanism in the SDK.
+e. You may not  use the SDK in any manner that would cause it to become subject to an open source software license. As
+examples, licenses that require as a condition of use, modification, and/or distribution that the SDK be: (i) disclosed or
+distributed in source code form; (ii) licensed for the purpose of making derivative works; or (iii) redistributable at no charge.
+
+
+f. You acknowledge that the SDK as delivered is not tested or certified by NVIDIA for use in connection with the design,
+construction, maintenance, and/or operation of any system where the use or failure of such system could result in a situation
+that threatens the safety of human life or results in catastrophic damages (each, a “Critical Application”). Examples of Critical
+Applications include use in avionics,  navigation, autonomous vehicle applications, ai solutions for automotive products,
+military, medical, life support or other life critical applications. NVIDIA shall not be liable to you or any third party, in  whole
+or in part, for any claims or damages ar ising from such uses. You are solely responsible for ensuring that any product or
+service developed with the SDK as a whole includes sufficient features to comply with all applicable legal and regulatory
+standards and requirements.
+g. You agree to defend, indemnify and hold harmless NVIDIA and its affiliates, and their respective employees, contractors,
+agents, officers and directors, from and against any and all claims, damages, obligations, losses, liabilities, costs or debt, fines,
+restitutions and expenses  (including but not limited to attorney’s fees and costs incident to establishing the right of
+indemnification) arising out of or related to products or services that use the SDK in or for Critical Applications, and for use
+of the SDK outside of the scope of this Agreement or not in compliance with its terms.
+
+5. UPDATES. NVIDIA may, at its option, make available patches, workarounds or other updates to this SDK. Unless the updates
+are provided with their separate governing terms, they are deemed part of the SDK licensed to you as provided in this license.
+You agree that the form and content of the SDK that NVIDIA provides may change without prior notice to you. While NVIDIA
+generally maintains compatibility between versions, NVIDIA may in some cases make changes that introduce incompatibilities
+in future versions of the SDK.
+
+6. PRE-RELEASE VERSIONS. SDK versions identified as alpha, beta, preview, early access or otherwise as pre-release may not
+be fully functional, may contain errors or design flaws, and may have reduced or different security, privacy, availability, a nd
+reliability standards relative to commercial versions of NVIDIA software and materials. You may use a pre-release SDK version
+at your own risk, understanding that these versions are not intended for use in production or business-critical systems. NVIDIA
+may choose not to make available a commercial version of any pre -release SDK. NVIDIA may also choose to abandon
+development and terminate the availability of a pre-release SDK at any time without liability.
+
+7. COMPONENTS UNDER OTHER LICENSES. The SOFTWARE may include NVIDIA or third-party components with separate legal
+notices or terms as may be described in proprietary notices accompanying the SOFTWARE, such as components governed by
+open source software licenses. If and to the extent there is a conflict between the terms in this license and the license terms
+associated with a component, the license terms associated with the components control only to the extent necessary to
+resolve the conflict.
+
+You acknowledge and agree that it is your sole res ponsibility to obtain any additional third -party licenses required to make,
+have made, use, have used, sell, import, and offer for sale your products or services that include or incorporate any third -
+party software and content relating to audio and/or vide o encoders and decoders from, including but not limited to,
+Microsoft, Thomson, Fraunhofer IIS, Sisvel S.p.A., MPEG -LA, and Coding Technologies. NVIDIA does not grant to you under
+this license any necessary patent or other rights with respect to any audio and/or video encoders and decoders.
+
+8. OWNERSHIP.
+
+8.1 NVIDIA reserves all rights, title and interest in and to the SDK not expressly granted to you under this license. NVIDIA and
+its suppliers hold all rights, title and interest in and to the SDK, including their respective intellectual property rights. The SDK
+is copyrighted and protected by the laws of the United States and other countries, and international treaty provisions.
+
+8.2 Subject to the rights of NVIDIA and its suppliers in the SDK, you hold all rights, title and interest in and to your applications
+and your derivative works of the sample source code delivered in the SDK including their respective intellectual property
+rights.
+
+9. FEEDBACK. You m ay, but are not obligated to,  provide Feedback to NVIDIA. “Feedback” means all  suggestions, fixes,
+modifications, feature requests or other feedback regarding the SDK. Feedback, even if designated as confidential by you,
+shall not create any confidentiality obligation for NVIDIA. NVIDIA and its designees have a perpetual, non -exclusive,
+worldwide, irrevocable license to use, reproduce, publicly display, modify, create derivative works of, license, sublicense, and
+
+
+otherwise distribute and exploit Feedback as NVIDIA sees fit  without payment and without obligation or restriction of any
+kind on account of intellectual property rights or otherwise.
+
+10. NO WARRANTIES. THE SDK IS PROVIDED AS -IS. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW NVIDIA AND
+ITS AFFILIATES EXPRESSLY DISCLAIM ALL WARRANTIES OF ANY KIND OR NATURE, WHETHER EXPRESS, IMPLIED OR STATUTORY,
+INCLUDING, BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY, NON-INFRINGEMENT, OR FITNESS FOR A PARTICULAR
+PURPOSE. NVIDIA DOES NOT WARRANT THAT THE SDK WILL MEET YOUR REQUIREMENTS OR THAT THE OPERATION
+THEREOF WILL BE UNINTERRUPTED OR ERROR-FREE, OR THAT ALL ERRORS WILL BE CORRECTED.
+
+11. LIMITATIONS OF LIABILITY. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW NVIDIA AND ITS AFFILIATES SHALL
+NOT BE LIABLE FOR ANY SPECIAL, INCIDENTAL, PUNITIVE OR CONSEQUENTIAL DAMAGES, OR FOR ANY LOST PROFITS,
+PROJECT DELAYS, LOSS OF USE, LOSS OF DATA OR LOSS OF GOODWILL, OR THE COSTS OF PROCURING SUBSTITUTE
+PRODUCTS, ARISING OUT OF OR IN CONNECTION WITH THIS LICENSE OR THE USE OR PERFORMANCE OF THE SDK, WHETHER
+SUCH LIABILITY ARISES FROM ANY CLAIM BASED UPON BREACH OF CONTRACT , BREACH OF WARRANTY, TORT (INCLUDING
+NEGLIGENCE), PRODUCT LIABILITY OR ANY OTHER CAUSE OF ACTION OR THEORY OF LIABILITY, EVEN IF NVIDIA HAS
+PREVIOUSLY BEEN ADVISED OF, OR COULD REASONABLY HAVE FORESEEN, THE POSSIBILITY OF SUCH DAMAGES. IN NO EVENT
+WILL NVIDIA’S AND ITS AFFILIATES TOTAL CUMULATIVE LIABILITY UNDER OR ARISING OUT OF THIS LICENSE EXCEED US$10.00.
+THE NATURE OF THE LIABILITY OR THE NUMBER OF CLAIMS OR SUITS SHALL NOT ENLARGE OR EXTEND THIS LIMIT.
+
+12. TERMINATION. Your rights under this license will terminate automatically without notice from NVIDIA if you fail to comply
+with any term and condition of this license or if you commence or participate in any legal proceeding against NVIDIA with
+respect to the SDK. NVIDIA may terminate this license with advance written notice to you, if NVIDIA decides to no longer
+provide the SDK in a country or, in NVIDIA’s sole discretion, the continued use of it is no longer commercially viable . Upon
+any termination of this license, you agree to promptly discontinue use of the SDK and destroy all copies in your possession or
+control. Your prior  distributions in accordance with this license are not affected by the termination of this license. All
+provisions of this license will survive termination, except for the license granted to you.
+
+13. APPLICABLE LAW. This license will be governed in all respects by the laws of the United States and of the State of Delaware,
+without regard to the conflicts of laws principles. The United Nations Convention on Contracts for the International Sale of
+Goods is specifically disclaimed. Y ou agree to all terms of this license in the English language. The state or federal courts
+residing in Santa Clara County, California shall have exclusive jurisdiction over any dispute or claim arising out of this license.
+Notwithstanding this, you agree that NVIDIA shall still be allowed to apply for injunctive remedies or urgent legal relief in any
+jurisdiction.
+
+14. NO ASSIGNMENT. This license and your rights and obligations thereunder may not be assigned by you by any means or
+operation of law without NVIDIA’s permission. Any attempted assignment not approved by NVIDIA  in writing shall be void
+and of no effect. NVIDIA may assign, delegate or transfer this license and its rights and obligations.
+
+15. EXPORT. The SDK is subject to United States export laws and regulations. You agree to comply with all applicable U.S. and
+international export laws, including the Export Administration Regulations (EAR) administered by the U.S. Department of
+Commerce and economic sanctio ns administered by the U.S. Department of Treasury’s Office of Foreign Assets Control
+(OFAC). These laws include restrictions on destinations, end -users and end -use. By accepting this license, you confirm that
+you are not currently residing in a country or  region currently embargoed by the U.S. and that you are not otherwise
+prohibited from receiving the SDK.
+
+16. GOVERNMENT USE. The SDK is, and shall be treated as being, “Commercial Items” as that term is defined at 48 CFR §
+2.101, consisting of “commercial computer software” and “commercial computer software documentation”, respectively, as
+such terms are used in, respectively, 48 CFR § 12.212 and 48 CFR §§ 227.7202 & 252.227 -7014(a)(1). Use, duplication or
+disclosure by the U.S. Government or a U.S. Gover nment subcontractor is subject to the restrictions in this license pursuant
+to 48 CFR § 12.212 or 48 CFR § 227.7202. In no event shall the US Government user acquire rights in the SDK beyond those
+specified in 48 C.F.R. 52.227-19(b)(1)-(2).
+
+17. NOTICES. You agree that any notices that NVIDIA sends you electronically , such as via email,  will satisfy any legal
+
+
+communication requirements.  Please direct your legal notices or other correspondence to NVIDIA Corporation, 2788 San
+Tomas Expressway, Santa Clara, California 95051, United States of America, Attention: Legal Department.
+
+18. ENTIRE AGREEMENT. This license is the final, complete and exclusive agreement between the parties relating to the
+subject matter of this license and supe rsedes all prior or contemporaneous understandings and agreements relating to this
+subject matter, whether oral or written. If any court of competent jurisdiction determines that any provision of this license is
+illegal, invalid or unenforceable, the remaining provisions will remain in full force and effect. Any amendment or waiver under
+this license shall be in writing and signed by representatives of both parties.
+
+(v. May 10, 2022)
