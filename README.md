@@ -2,6 +2,7 @@
 
 **현재 설치형 미리보기: [v0.2.0-preview.9](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.2.0-preview.9)** · ×2 전용 · Windows x64
 
+[**한국어 HTML 사용 설명서 바로 읽기 →**](https://mkyoon80-alt.github.io/nvof-potplayer/)
 팟플레이어 내장 디코더·렌더러와 함께 사용하는 **NVIDIA Optical Flow 프레임 보간 필터**입니다. Windows x64용 DirectShow 필터와 작은 설정창으로 구성됩니다.
 
 NVIDIA Optical Flow frame interpolation for PotPlayer, with a native D3D11 GPU path, seek-aware re-priming, and a compact controller. **Preview release — validated on an RTX 5090.**
@@ -33,7 +34,7 @@ NVIDIA Optical Flow frame interpolation for PotPlayer, with a native D3D11 GPU p
 
 Windows 10/11 x64, 지원 NVIDIA GPU·드라이버, 팟플레이어 x64는 별도로 필요합니다. **CUDA Toolkit이나 Visual Studio는 필요하지 않습니다.** 실행 파일은 코드 서명되지 않았습니다. 게시자 인증서와 새 PC 설치 검증의 범위는 릴리스 문서에서 확인하세요.
 
-- [한국어 사용 설명서](docs/manual/index.html) — 설치 파일에도 포함되며 인터넷 없이 열립니다. GitHub에서는 HTML 소스가 보일 수 있으므로 설치 후 시작 메뉴의 **사용 설명서**를 열어 주세요.
+- [한국어 HTML 사용 설명서](https://mkyoon80-alt.github.io/nvof-potplayer/) — 웹에서 바로 읽을 수 있습니다. 설치 파일에도 포함되며 시작 메뉴의 **사용 설명서**에서 인터넷 없이 열립니다.
 - [텍스트로 읽는 팟플레이어 설정 방법](docs/POTPLAYER_SETUP.ko.md)
 - [소스 빌드 및 설치 프로그램 제작](docs/BUILD.md)
 - [릴리스 변경 내역·검증 범위](RELEASE.md)

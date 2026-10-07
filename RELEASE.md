@@ -1,5 +1,7 @@
 # v0.2.0-preview.9 — Windows x64 installer and offline guide
 
+[**한국어 HTML 사용 설명서 바로 읽기**](https://mkyoon80-alt.github.io/nvof-potplayer/)
+
 ## 설치
 
 `NvofPotPlayer-0.2.0-preview.9-Setup-x64.exe`를 내려받아 실행하세요. 팟플레이어와 NVOF 설정 창을 먼저 종료해야 합니다. NVIDIA 구성요소 약관은 기본 선택되지 않으며 사용자가 직접 동의해야 설치됩니다.

@@ -1,0 +1,44 @@
+name: Publish HTML manual
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/manual/**'
+      - 'licenses/**'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'tools/build-manual-site.py'
+      - '.github/workflows/manual-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Stage the manual and validate local links
+        run: python3 tools/build-manual-site.py
+      - name: Upload the manual
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: build/manual-site
+      - name: Deploy the manual
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
