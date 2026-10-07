@@ -9,6 +9,7 @@
 #include <cuda.h>
 #include <cudaD3D11.h>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <chrono>
 #include <mutex>
@@ -33,7 +34,7 @@ struct MappedPlanes {
     CUgraphicsResource* resources;bool mapped=false;
     explicit MappedPlanes(CUgraphicsResource* r):resources(r){cu_check(cuGraphicsMapResources(2,resources,0),"Map CUDA Y/UV planes");mapped=true;}
     ~MappedPlanes(){if(mapped)cuGraphicsUnmapResources(2,resources,0);}
-    void close(){cu_check(cuGraphicsUnmapResources(2,resources,0),"Unmap CUDA Y/UV planes");mapped=false;}
+    void close(const char* action){cu_check(cuGraphicsUnmapResources(2,resources,0),action);mapped=false;}
     CUarray array(unsigned plane){CUarray result=nullptr;cu_check(cuGraphicsSubResourceGetMappedArray(&result,resources[plane],0,0),"Get CUDA Y/UV array");return result;}
 };
 uint32_t blend_weight(int64_t elapsed,int64_t interval){
@@ -56,6 +57,16 @@ float4 ps(float4 position:SV_Position):SV_Target {
  uint4 b=uint4(round(currentTexture.Load(p)*255.0f));
  uint4 value=(a*(65536u-weight)+b*weight+32768u)>>16;
  return float4(value)/255.0f;
+}
+)";
+// P010 stores its 10-bit code value in the upper bits of each 16-bit word.
+// Divide code values by four, not by 1023: this preserves video black/white
+// and neutral chroma (64/940/512 -> 16/235/128). No RGB/range conversion.
+const char* p010_shader=R"(
+Texture2D<uint4> source:register(t0);
+float4 ps(float4 position:SV_Position):SV_Target {
+ uint4 code=source.Load(int3(int2(position.xy),0))>>6;
+ return float4(min((code+2u)>>2,255u))/255.0f;
 }
 )";
 const char* scene_shader=R"(
@@ -84,12 +95,15 @@ groupshared uint different;
  InterlockedAdd(stats[5+(a>>3)],1);InterlockedAdd(stats[37+(b>>3)],1);
 }
 )";
-ComPtr<ID3DBlob> compile_shader(const char* entry,const char* target){ComPtr<ID3DBlob>blob,error;HRESULT hr=D3DCompile(shader_source,strlen(shader_source),"nvof-gpu-blend",nullptr,nullptr,entry,target,D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&blob,&error);if(FAILED(hr))throw std::runtime_error(std::string("Shader compilation failed: ")+(error?static_cast<const char*>(error->GetBufferPointer()):"unknown"));return blob;}
+ComPtr<ID3DBlob> compile_shader(const char* entry,const char* target,const char* source=shader_source){ComPtr<ID3DBlob>blob,error;HRESULT hr=D3DCompile(source,strlen(source),"nvof-gpu-blend",nullptr,nullptr,entry,target,D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&blob,&error);if(FAILED(hr))throw std::runtime_error(std::string("Shader compilation failed: ")+(error?static_cast<const char*>(error->GetBufferPointer()):"unknown"));return blob;}
 }
 
 struct GpuFrucEngine::Impl {
     std::mutex mutex;
     GpuCompletionMode completion_mode=GpuCompletionMode::blocking;
+    // P010 decoder interoperability uses explicit completion boundaries until
+    // queued conversion is validated with the real host decoder and renderer.
+    std::atomic<bool> p010_completion{false};
     bool skip_identical_warp=true;
     bool stabilize_midpoint=true;
     bool protect_appearance=true;
@@ -109,7 +123,10 @@ struct GpuFrucEngine::Impl {
     struct OutputSlot {ComPtr<ID3D11Texture2D> texture;std::array<ComPtr<ID3D11ShaderResourceView>,2> views;std::array<ComPtr<ID3D11RenderTargetView>,2> targets;int width=0,height=0;};
     std::vector<std::shared_ptr<OutputSlot>> output_pool;
     ComPtr<ID3D11VertexShader> vertex_shader;
-    ComPtr<ID3D11PixelShader> pixel_shader;
+    ComPtr<ID3D11PixelShader> pixel_shader,p010_pixel_shader;
+    ComPtr<ID3D11Texture2D> p010_capture;
+    std::array<ComPtr<ID3D11ShaderResourceView>,2> p010_views;
+    int p010_width=0,p010_height=0;
     ComPtr<ID3D11Buffer> weight_buffer;
     ComPtr<ID3D11RasterizerState> rasterizer;
     // Y and UV are point-copied without an RGB conversion or chroma resampling.
@@ -224,10 +241,10 @@ struct GpuFrucEngine::Impl {
         if(completion_event){CloseHandle(completion_event);completion_event=nullptr;}
         if(wrapper_module){FreeLibrary(wrapper_module);wrapper_module=nullptr;}if(nvidia_module){FreeLibrary(nvidia_module);nvidia_module=nullptr;}
     }
-    void validate(const GpuFrame& f) const {
+    void validate(const GpuFrame& f,bool allow_p010=false) const {
         if(!f.texture||f.width<2||f.height<2||f.width>8192||f.height>8192||(f.width&1)||(f.height&1))throw std::invalid_argument("GPU frame must be even-size NV12");
         D3D11_TEXTURE2D_DESC desc{};f.texture->GetDesc(&desc);
-        if(desc.Format!=DXGI_FORMAT_NV12||desc.Width<UINT(f.width)||desc.Height<UINT(f.height)||desc.ArraySize<=f.array_slice||desc.SampleDesc.Count!=1||desc.MipLevels!=1)throw std::invalid_argument("GPU NV12 texture format, dimensions or array slice invalid");
+        if((desc.Format!=DXGI_FORMAT_NV12&&!(allow_p010&&desc.Format==DXGI_FORMAT_P010))||desc.Width<UINT(f.width)||desc.Height<UINT(f.height)||desc.ArraySize<=f.array_slice||desc.SampleDesc.Count!=1||desc.MipLevels!=1)throw std::invalid_argument("GPU NV12 texture format, dimensions or array slice invalid");
         ComPtr<ID3D11Device> source_device;f.texture->GetDevice(&source_device);if(source_device.Get()!=device.Get())throw std::invalid_argument("GPU input texture belongs to another D3D11 device");
     }
     void wait_gpu(){
@@ -283,14 +300,39 @@ struct GpuFrucEngine::Impl {
         auto result=make_texture(DXGI_FORMAT_NV12,frame.width,frame.height);D3D11_BOX box{0,0,0,UINT(frame.width),UINT(frame.height),1};
         context->CopySubresourceRegion(result.Get(),0,0,0,0,frame.texture.Get(),frame.array_slice,&box);return result;
     }
-    void draw_plane(ID3D11RenderTargetView* target,ID3D11ShaderResourceView* a,ID3D11ShaderResourceView* b,int w,int h,uint32_t weight){
+    void draw_plane(ID3D11RenderTargetView* target,ID3D11ShaderResourceView* a,ID3D11ShaderResourceView* b,int w,int h,uint32_t weight,ID3D11PixelShader* override_shader=nullptr){
         const uint32_t constants[4]={weight,0,0,0};context->UpdateSubresource(weight_buffer.Get(),0,nullptr,constants,0,0);
         ID3D11ShaderResourceView* views[]={a,b};ID3D11Buffer* constant=weight_buffer.Get();
-        context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vertex_shader.Get(),nullptr,0);context->GSSetShader(nullptr,nullptr,0);context->HSSetShader(nullptr,nullptr,0);context->DSSetShader(nullptr,nullptr,0);context->PSSetShader(pixel_shader.Get(),nullptr,0);
+        context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vertex_shader.Get(),nullptr,0);context->GSSetShader(nullptr,nullptr,0);context->HSSetShader(nullptr,nullptr,0);context->DSSetShader(nullptr,nullptr,0);context->PSSetShader(override_shader?override_shader:pixel_shader.Get(),nullptr,0);
         context->OMSetRenderTargets(1,&target,nullptr);context->OMSetBlendState(nullptr,nullptr,0xffffffff);context->OMSetDepthStencilState(nullptr,0);context->RSSetState(rasterizer.Get());
         D3D11_VIEWPORT viewport{0,0,float(w),float(h),0,1};context->RSSetViewports(1,&viewport);context->PSSetShaderResources(0,2,views);context->PSSetConstantBuffers(0,1,&constant);context->Draw(3,0);
         // D3D11 treats the two NV12 planes as the same resource for hazards.
         ID3D11ShaderResourceView* empty[]={nullptr,nullptr};context->PSSetShaderResources(0,2,empty);context->OMSetRenderTargets(0,nullptr,nullptr);
+    }
+    void normalize_p010(const GpuFrame& input,const GpuFrame& output) {
+        if(!p010_pixel_shader) {
+            auto shader=compile_shader("ps","ps_5_0",p010_shader);
+            hr_check(device->CreatePixelShader(shader->GetBufferPointer(),shader->GetBufferSize(),nullptr,&p010_pixel_shader),"Create P010 normalization shader");
+        }
+        if(!p010_capture || p010_width!=input.width || p010_height!=input.height) {
+            D3D11_TEXTURE2D_DESC desc{};desc.Width=input.width;desc.Height=input.height;
+            desc.MipLevels=1;desc.ArraySize=1;desc.Format=DXGI_FORMAT_P010;desc.SampleDesc.Count=1;
+            desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+            ComPtr<ID3D11Texture2D> capture;hr_check(device->CreateTexture2D(&desc,nullptr,&capture),"Create P010 capture texture");
+            std::array<ComPtr<ID3D11ShaderResourceView>,2> views;
+            views[0]=source_view(capture.Get(),DXGI_FORMAT_R16_UINT);
+            views[1]=source_view(capture.Get(),DXGI_FORMAT_R16G16_UINT);
+            p010_capture=std::move(capture);p010_views=std::move(views);
+            p010_width=input.width;p010_height=input.height;
+        }
+        // Copy the selected decoder slice while its sample is retained. This
+        // removes decoder padding without reading video pixels back to the CPU.
+        D3D11_BOX box{0,0,0,UINT(input.width),UINT(input.height),1};
+        context->CopySubresourceRegion(p010_capture.Get(),0,0,0,0,input.texture.Get(),input.array_slice,&box);
+        for(unsigned plane=0;plane<2;++plane) {
+            auto target=target_view(output.texture.Get(),plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM);
+            draw_plane(target.Get(),p010_views[plane].Get(),nullptr,plane?input.width/2:input.width,plane?input.height/2:input.height,0,p010_pixel_shader.Get());
+        }
     }
     void configure(int w,int h){
         if(width==w&&height==h)return;
@@ -321,7 +363,8 @@ struct GpuFrucEngine::Impl {
             CUDA_MEMCPY2D copy{};copy.srcMemoryType=CU_MEMORYTYPE_ARRAY;copy.srcArray=mapped.array(plane);copy.dstMemoryType=CU_MEMORYTYPE_DEVICE;copy.dstDevice=buffers[index]+(plane?size_t(width)*height:0);copy.dstPitch=width;copy.WidthInBytes=width;copy.Height=plane?height/2:height;
             cu_check(cuMemcpy2D(&copy),"GPU Y/UV plane to packed NV12");
         }
-        mapped.close();
+        if(p010_completion.load())cu_check(cuCtxSynchronize(),"Complete P010 CUDA input transfer");
+        mapped.close("Unmap CUDA input Y/UV planes");
     }
     GpuFrame output_gpu(int64_t pts,float refined_phase=-1.0f,bool midpoint_stable=false){
         DeviceScope scope(*this);
@@ -330,7 +373,8 @@ struct GpuFrucEngine::Impl {
                 CUDA_MEMCPY2D copy{};copy.srcMemoryType=CU_MEMORYTYPE_DEVICE;copy.srcDevice=buffers[2]+(plane?size_t(width)*height:0);copy.srcPitch=width;copy.dstMemoryType=CU_MEMORYTYPE_ARRAY;copy.dstArray=mapped.array(plane);copy.WidthInBytes=width;copy.Height=plane?height/2:height;
                 cu_check(cuMemcpy2D(&copy),"GPU packed NV12 to Y/UV plane");
             }
-            mapped.close();
+            if(p010_completion.load())cu_check(cuCtxSynchronize(),"Complete P010 CUDA output transfer");
+            mapped.close("Unmap CUDA output Y/UV planes");
         }
         auto result=make_output(width,height,pts);
         if(refined_phase>=0.0f||midpoint_stable){
@@ -372,7 +416,7 @@ struct GpuFrucEngine::Impl {
 GpuFrucEngine::GpuFrucEngine(const std::filesystem::path& runtime,ID3D11Device* device,ID3D11DeviceContext* context,HANDLE decoder_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect):impl_(std::make_unique<Impl>(runtime,device,context,decoder_mutex,mode,skip,stabilize,protect)){}
 GpuFrucEngine::~GpuFrucEngine()=default;
 std::string GpuFrucEngine::device_name()const{return impl_->name;}
-bool GpuFrucEngine::queued_completion()const{return impl_->completion_mode==GpuCompletionMode::context_ordered;}
+bool GpuFrucEngine::queued_completion()const{return impl_->completion_mode==GpuCompletionMode::context_ordered&&!impl_->p010_completion.load();}
 void GpuFrucEngine::reset()noexcept{
     std::lock_guard<std::mutex> lock(impl_->mutex);
     try{
@@ -382,9 +426,15 @@ void GpuFrucEngine::reset()noexcept{
     }catch(...){OutputDebugStringA("NVOF: shared D3D11 lock unavailable during history reset\n");}
 }
 GpuFrame GpuFrucEngine::copy(const GpuFrame& input){
-    std::lock_guard<std::mutex> lock(impl_->mutex);impl_->validate(input);Impl::DeviceScope device(*impl_);
+    std::lock_guard<std::mutex> lock(impl_->mutex);impl_->validate(input,true);Impl::DeviceScope device(*impl_);
     auto result=impl_->make_output(input.width,input.height,input.pts);
-    D3D11_BOX box{0,0,0,UINT(input.width),UINT(input.height),1};impl_->context->CopySubresourceRegion(result.texture.Get(),0,0,0,0,input.texture.Get(),input.array_slice,&box);if(!queued_completion())impl_->wait_gpu();return result;
+    D3D11_TEXTURE2D_DESC desc{};input.texture->GetDesc(&desc);
+    if(desc.Format==DXGI_FORMAT_P010){impl_->p010_completion.store(true);impl_->normalize_p010(input,result);}
+    else {
+        D3D11_BOX box{0,0,0,UINT(input.width),UINT(input.height),1};
+        impl_->context->CopySubresourceRegion(result.texture.Get(),0,0,0,0,input.texture.Get(),input.array_slice,&box);
+    }
+    if(!queued_completion())impl_->wait_gpu();return result;
 }
 GpuFrame GpuFrucEngine::midpoint(const GpuFrame& previous,const GpuFrame& current){
     const auto time=previous.pts+(current.pts-previous.pts)/2;auto batch=interpolate_pair(previous,current,{time});

@@ -49,7 +49,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.2.0-preview.9";
+constexpr char kFilterBuild[]="0.2.0-beta.1";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -813,6 +813,7 @@ public:
         gpu_delivery_verified_=false;
         sample_probed_ = false;
         sample_transport_ = "unknown";
+        input_surface_format_="unknown";input_conversion_="none";
         engine_active_ = false;
         reset_history();
         write_status(interpolation_requested()?"waiting":"bypass",interpolation_requested()?"Waiting for the next adjacent frame":bypass_message());
@@ -1011,7 +1012,15 @@ public:
 
 private:
     HRESULT receive_gpu(IMediaSample* sample,int64_t start,int64_t stop,bool discontinuity) {
-        auto input=nvof::extract_gpu_frame(sample,input_.width,input_.height,start);
+        auto input=nvof::extract_gpu_frame(sample,input_.width,input_.height,start,input_.native_color_supported);
+        D3D11_TEXTURE2D_DESC surface{};input.texture->GetDesc(&surface);
+        const bool p010=surface.Format==DXGI_FORMAT_P010;
+        const std::string format=p010?"P010":"NV12";
+        if(input_surface_format_!=format) {
+            input_surface_format_=format;
+            input_conversion_=p010?"p010-to-nv12-gpu":"none";
+            write_log("GPU input surface="+format+" output=NV12 conversion="+input_conversion_);
+        }
         if(!gpu_engine_)gpu_engine_=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",
             native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_);
         // Submit capture while the upstream sample is held. Decoder reuse and
@@ -1142,9 +1151,16 @@ private:
 
     HRESULT report_error(const std::string& text, HRESULT hr) noexcept {
         failed_ = true;
+        // Capture the D3D failure before releasing history; a CUDA interop
+        // error can be a delayed report of an earlier device removal.
+        std::string detail=text;
+        if(native_device_) {
+            const HRESULT reason=native_device_->GetDeviceRemovedReason();
+            if(FAILED(reason))detail+=" D3D11DeviceRemovedReason="+std::to_string(static_cast<unsigned long>(reason));
+        }
+        write_log(detail + " HRESULT=" + std::to_string(static_cast<unsigned long>(hr)));
         reset_history();
-        write_log(text + " HRESULT=" + std::to_string(static_cast<unsigned long>(hr)));
-        write_status("error", text);
+        write_status("error", detail);
         NotifyEvent(EC_ERRORABORT, hr, 0);
         return hr;
     }
@@ -1229,6 +1245,8 @@ private:
                     << ",\"nativeInputRequested\":" << (native_input_requested_.load(std::memory_order_acquire) ? "true" : "false")
                     << ",\"nativeRendererSupported\":" << (native_renderer_supported_.load(std::memory_order_acquire) ? "true" : "false")
                     << ",\"sampleTransport\":" << json_string(sample_transport_)
+                    << ",\"inputSurfaceFormat\":" << json_string(input_surface_format_)
+                    << ",\"inputConversion\":" << json_string(input_conversion_)
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
                     << ",\"doubleRate\":" << (double_rate_?"true":"false")
                     << ",\"gpuMidpointCorrection\":" << (gpu_correction_?"true":"false")
@@ -1290,6 +1308,7 @@ private:
     std::atomic<bool> native_renderer_supported_{false};
     bool sample_probed_ = false;
     std::string sample_transport_ = "unknown";
+    std::string input_surface_format_="unknown",input_conversion_="none";
     bool enabled_ = true;
     static constexpr bool double_rate_=true;
     unsigned input_rate_mask_=nvof::kAllInputRates;

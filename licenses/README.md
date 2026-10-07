@@ -14,7 +14,7 @@ Audit date: **2026-10-07**
 
 `NvOFFRUC.dll` is proprietary NVIDIA software dynamically loaded through the project-built NvofFrucBridge.
 
-Git source history and source archives do not contain `NvOFFRUC.dll`. The preview.9 application installer includes it as an app-local component. No standalone DLL release asset is provided. Acquisition, packaging and user consent do not confer additional redistribution rights.
+Git source history and source archives do not contain `NvOFFRUC.dll`. The beta.1 application installer includes it as an app-local component. No standalone DLL release asset is provided. Acquisition, packaging and user consent do not confer additional redistribution rights.
 
 ### Provenance check
 
@@ -62,7 +62,7 @@ The Optical Flow SDK 5.0 release notes identify the package as containing an NVI
 
 ### Current distribution decision and remaining uncertainty
 
-For preview.9 the publisher has chosen application-bundled distribution based on the 2017 download-page agreement's section 1.1(ii). The installer presents component terms for explicit acceptance and retains original notices and vendor agreements. NVIDIA binaries are outside MIT and are used only as application components on supported NVIDIA hardware. No standalone NVIDIA DLL or complete SDK download is offered.
+Since preview.9 the publisher has chosen application-bundled distribution based on the 2017 download-page agreement's section 1.1(ii). The installer presents component terms for explicit acceptance and retains original notices and vendor agreements. NVIDIA binaries are outside MIT and are used only as application components on supported NVIDIA hardware. No standalone NVIDIA DLL or complete SDK download is offered.
 
 The SDK-bundled 2022 license describes its distribution grant differently. This project has **not** received NVIDIA's written clarification or separate approval for the prebuilt FRUC runtime. Neither official-file hash matching nor click-through acceptance settles which grant governs the runtime. The source-only preview.8 policy is superseded for preview.9 by the application-bundled distribution decision above, without claiming a vendor permission letter.
 

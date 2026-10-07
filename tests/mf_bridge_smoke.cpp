@@ -17,8 +17,11 @@ using namespace nvof;
 namespace {
 void check(HRESULT hr,const char* action){if(FAILED(hr))throw std::runtime_error(std::string(action)+" HRESULT="+std::to_string(static_cast<unsigned long>(hr)));}
 void require(bool test,const char* action){if(!test)throw std::runtime_error(action);}
-enum class Route {DxgiBuffer,MediaBuffer,MediaSample,TextureOnly,NullSuccess,None};
-class Sample final : public IMediaSample,public IMFGetService {
+MIDL_INTERFACE("BC8753F5-0AC8-4806-8E5F-A12B2AFE153E") TestTextureSample : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE GetD3D11Texture(int,ID3D11Texture2D**,UINT*)=0;
+};
+enum class Route {Native,DxgiBuffer,MediaBuffer,MediaSample,TextureOnly,NullSuccess,None};
+class Sample final : public IMediaSample,public IMFGetService,public TestTextureSample {
 public:
     Sample(Route route,IMFMediaBuffer* buffer,ID3D11Texture2D* texture):route_(route),buffer_(buffer),texture_(texture){
         check(MFCreateSample(&sample_),"Create test MF sample");if(buffer)check(sample_->AddBuffer(buffer),"Add test DXGI buffer");
@@ -27,6 +30,7 @@ public:
         if(!result)return E_POINTER;*result=nullptr;
         if(iid==IID_IUnknown || iid==__uuidof(IMediaSample))*result=static_cast<IMediaSample*>(this);
         else if(iid==__uuidof(IMFGetService))*result=static_cast<IMFGetService*>(this);
+        else if(route_==Route::Native && iid==__uuidof(TestTextureSample))*result=static_cast<TestTextureSample*>(this);
         else return E_NOINTERFACE;
         AddRef();return S_OK;
     }
@@ -58,6 +62,11 @@ public:
     STDMETHODIMP SetDiscontinuity(BOOL)override{return E_NOTIMPL;}
     STDMETHODIMP GetMediaTime(LONGLONG*,LONGLONG*)override{return E_NOTIMPL;}
     STDMETHODIMP SetMediaTime(LONGLONG*,LONGLONG*)override{return E_NOTIMPL;}
+    STDMETHODIMP GetD3D11Texture(int,ID3D11Texture2D** texture,UINT* slice)override {
+        if(!texture || !slice)return E_POINTER;
+        *texture=texture_.Get();if(*texture)(*texture)->AddRef();*slice=native_slice;return S_OK;
+    }
+    UINT native_slice=0;
     int pointer_calls=0;
 private:
     std::atomic<ULONG> references_{1};
@@ -103,6 +112,33 @@ int wmain(int argc,wchar_t** argv){
             }
             desc.ArraySize=1;ComPtr<ID3D11Texture2D> singleton;check(bridge.device()->CreateTexture2D(&desc,nullptr,&singleton),"Create singleton texture");
             auto single_sample=make_sample(Route::TextureOnly,nullptr,singleton.Get());require(extract_gpu_frame(single_sample.Get(),w,h,100).array_slice==0,"Singleton direct texture extraction failed");
+            // Reproduce the second-PC failure before FRUC initialization.
+            // Exercise the native interface used by PotPlayer as well as MF.
+            {
+                auto valid_native=make_sample(Route::Native,nullptr,texture.Get());valid_native->native_slice=1;
+                auto extracted=extract_gpu_frame(valid_native.Get(),w,h,100);
+                require(extracted.array_slice==1 && valid_native->pointer_calls==0,"Native indexed texture extraction failed");
+                auto expect_rejection=[&](Sample* sample,int visible_w,int visible_h,const std::vector<std::string>& fields) {
+                    std::string message;
+                    try{extract_gpu_frame(sample,visible_w,visible_h,100);}catch(const std::runtime_error& error){message=error.what();}
+                    for(const auto& field:fields)require(message.find(field)!=std::string::npos,"Surface rejection omitted diagnostic field");
+                    require(sample->pointer_calls==0,"Invalid GPU sample attempted CPU access");
+                    std::cout << "SURFACE_DIAGNOSTIC " << message << "\n";
+                };
+                auto outside=make_sample(Route::Native,nullptr,texture.Get());outside->native_slice=2;
+                expect_rejection(outside.Get(),w,h,{"subresource-out-of-range","route=IMediaSampleD3D11","format=NV12(103)","arraySize=2","subresource=2"});
+                expect_rejection(valid_native.Get(),w+2,h,{"visible-size-exceeds-texture","texture=640x368","visible=642x360"});
+                for(auto format:{DXGI_FORMAT_P010,DXGI_FORMAT_B8G8R8A8_UNORM}) {
+                    auto incompatible=desc;incompatible.Format=format;
+                    ComPtr<ID3D11Texture2D> wrong;check(bridge.device()->CreateTexture2D(&incompatible,nullptr,&wrong),"Create incompatible decoder surface");
+                    auto native_sample=make_sample(Route::Native,nullptr,wrong.Get());
+                    const std::string tag=format==DXGI_FORMAT_P010?"format=P010(104)":"format=BGRA8(87)";
+                    expect_rejection(native_sample.Get(),w,h,{"format-not-NV12",tag,"route=IMediaSampleD3D11","mips=1","samples=1"});
+                    ComPtr<IMFMediaBuffer> wrong_buffer;check(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D),wrong.Get(),0,FALSE,&wrong_buffer),"Wrap incompatible surface");
+                    auto mf_sample=make_sample(Route::DxgiBuffer,wrong_buffer.Get(),wrong.Get());
+                    expect_rejection(mf_sample.Get(),w,h,{"format-not-NV12",tag,"route=IMFDXGIBuffer"});
+                }
+            }
             {
                 GpuFrucEngine engine(std::filesystem::path(argv[1]),bridge.device(),bridge.context(),bridge.mutex());
                 auto sample=make_sample(Route::DxgiBuffer,buffer.Get(),texture.Get());auto borrowed=extract_gpu_frame(sample.Get(),w,h,0);

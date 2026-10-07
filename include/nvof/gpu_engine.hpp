@@ -38,6 +38,9 @@ public:
     ~GpuFrucEngine();
     GpuFrucEngine(const GpuFrucEngine&) = delete;
     GpuFrucEngine& operator=(const GpuFrucEngine&) = delete;
+    // Also accepts P010 SDR and rounds its Y/UV code values to owned 8-bit NV12.
+    // P010 selects conservative GPU completion for the engine lifetime.
+    // This is bit-depth conversion, not HDR tone mapping. Other methods require NV12.
     GpuFrame copy(const GpuFrame& input);
     GpuFrame midpoint(const GpuFrame& previous, const GpuFrame& current);
     PhaseBatch<GpuFrame> interpolate_pair(const GpuFrame& previous, const GpuFrame& current, const std::vector<int64_t>& timestamps);

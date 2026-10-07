@@ -25,5 +25,6 @@ private:
 // No GetPointer, Lock2D or host copy. The caller must retain the original sample
 // until GpuFrucEngine::copy completes; a texture AddRef does not reserve a decoder
 // array slice. Unindexed texture arrays and unsupported formats fail explicitly.
-GpuFrame extract_gpu_frame(IMediaSample* sample, int width, int height, int64_t pts);
+// P010 is opt-in: the caller must normalize supported SDR to NV12 on GPU.
+GpuFrame extract_gpu_frame(IMediaSample* sample, int width, int height, int64_t pts, bool allow_p010 = false);
 }

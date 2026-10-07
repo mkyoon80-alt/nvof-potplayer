@@ -1,5 +1,5 @@
 ﻿#ifndef AppVersion
-#define AppVersion "0.2.0-preview.9"
+#define AppVersion "0.2.0-beta.1"
 #endif
 #ifndef PayloadDir
 #error PayloadDir is required

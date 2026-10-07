@@ -54,6 +54,8 @@ The project-built bridge replaces the historical NVEnc adapter in the complete p
 .\build\Release\gpu_interop_stress.exe <staged-runtime> 30 100 640 360 protected
 .\build\Release\gpu_interop_stress.exe <staged-runtime> 30 100 640 360 mutex
 .\build\Release\directshow_gpu_smoke.exe <absolute-path-to-staged-filter.ax>
+.\build\Release\directshow_gpu_smoke.exe <absolute-path-to-staged-filter.ax> --p010-input
+.\build\Release\gpu_p010_conversion.exe <staged-runtime>
 ```
 
 The DirectShow harness reads the INI next to the staged filter. Use `config\NvofPotPlayer.ini` and the `runtime` subfolder in an isolated test directory. These tests may update local diagnostic status; do not run them during playback. They do not register the staged filter globally.
@@ -65,7 +67,7 @@ The `NVOF_ENABLE_EXPERIMENTAL_SUBPIXEL` option defaults to OFF. Preview.4 enable
 Use the official Inno Setup **7.1.0 x64** compiler. Its upstream setup SHA256 is `0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f` (Authenticode publisher: Pyrsys B.V.). Obtain it from [the upstream release](https://github.com/jrsoftware/issrc/releases/tag/is-7_1_0). It can be unpacked by its `/PORTABLE=1 /VERYSILENT /DIR=...` installation mode into a build-tools folder. The compiler is not bundled in the app.
 
 ```powershell
-.\tools\build-local-package.ps1 -Version 0.2.0-preview.9
+.\tools\build-local-package.ps1 -Version 0.2.0-beta.1
 .\tools\build-installer.ps1 -CompilerPath "C:\BuildTools\Inno\ISCC.exe"
 ```
 
@@ -80,3 +82,18 @@ The installer is **unsigned**. Its release notes distinguish packaging checks on
 ## Optional GPU enhancement configuration
 
 `GpuMidpointCorrection=1` and `AppearanceProtection=1` in the `[Nvof]` INI section are independent and default to enabled when absent. The filter snapshots them when the graph creates it; reopen the video after changing them. Both disabled skip the optional flow refiner entirely. Appearance-only still estimates flow for motion vetoing but uses the FRUC picture outside protected areas. These options do not disable scene-cut handling, exact-source preservation or seek re-priming. Extra passes require the native GPU path and retain the existing area/rate budget. Telemetry reports the session options separately from the UI's saved choices; pass counts do not claim every pixel was corrected.
+
+
+`gpu_p010_conversion` checks P010 integer quantization, padded decoder arrays, retained originals and seek reset. `p010_video_stress <runtime> <1920x1080 raw p010le> queued extras p010 concurrent` exercises real-frame conversion/interpolation against concurrent D3D work without per-frame CPU readback. Supply your own local raw input; media is not included. These tests do not replace real PotPlayer playback with its hardware decoder and renderer.
+
+
+## Manual release assets
+
+Stage the manual with its local license links, then build the standalone HTML and offline ZIP:
+
+```powershell
+python tools/build-manual-site.py --output build/manual-beta1
+python tools/build-manual-assets.py --site-dir build/manual-beta1 --version 0.2.0-beta.1
+```
+
+Both commands refuse to overwrite existing output. Publish the generated HTML and manual ZIP as release assets alongside the installer and SHA256 checksums. The standalone HTML embeds its stylesheet, script and images; the ZIP additionally carries the vendor documents. GitHub Pages publishes the same `docs/manual` source on changes to `main`.

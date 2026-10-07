@@ -8,6 +8,7 @@
 #include <evr.h>
 #include <atomic>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <utility>
 namespace nvof {
@@ -54,23 +55,55 @@ private:
     bool started_=false;
     ComPtr<IMFDXGIDeviceManager> inner_;
 };
-GpuFrame validated(ComPtr<ID3D11Texture2D> texture,UINT subresource,int width,int height,int64_t pts) {
+const char* surface_format(DXGI_FORMAT format) {
+    switch(format) {
+    case DXGI_FORMAT_NV12:return "NV12";
+    case DXGI_FORMAT_P010:return "P010";
+    case DXGI_FORMAT_P016:return "P016";
+    case DXGI_FORMAT_420_OPAQUE:return "420_OPAQUE";
+    case DXGI_FORMAT_B8G8R8A8_UNORM:return "BGRA8";
+    case DXGI_FORMAT_R8G8B8A8_UNORM:return "RGBA8";
+    default:return "OTHER";
+    }
+}
+GpuFrame validated(ComPtr<ID3D11Texture2D> texture,UINT subresource,int width,int height,int64_t pts,const char* route,bool allow_p010) {
     if(!texture || width<2 || height<2 || (width&1) || (height&1))
         throw std::runtime_error("GPU sample has no texture or invalid visible dimensions");
     D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);
     // IMFDXGIBuffer reports the full subresource index, not just an array slice.
     // Our NV12 engine supports a single mip, so the two are identical only here.
-    if(desc.Format!=DXGI_FORMAT_NV12 || desc.MipLevels!=1 || desc.SampleDesc.Count!=1 ||
-       UINT(width)>desc.Width || UINT(height)>desc.Height || subresource>=desc.ArraySize)
-        throw std::runtime_error("GPU sample NV12 format, mip count, dimensions or subresource is unsupported");
+    const bool supported_format=desc.Format==DXGI_FORMAT_NV12 || (allow_p010 && desc.Format==DXGI_FORMAT_P010);
+    if(!supported_format || desc.MipLevels!=1 || desc.SampleDesc.Count!=1 ||
+       UINT(width)>desc.Width || UINT(height)>desc.Height || subresource>=desc.ArraySize) {
+        // Keep the validation strict. Report the actual surface rather than
+        // inferring it from the negotiated NV12 type or the source codec.
+        std::ostringstream detail;
+        detail << "GPU sample rejected: reasons=";
+        if(!supported_format)detail << (allow_p010?"format-not-NV12-or-P010,":"format-not-NV12,");
+        if(desc.MipLevels!=1)detail << "mip-count,";
+        if(desc.SampleDesc.Count!=1)detail << "multisampling,";
+        if(UINT(width)>desc.Width || UINT(height)>desc.Height)detail << "visible-size-exceeds-texture,";
+        if(subresource>=desc.ArraySize)detail << "subresource-out-of-range,";
+        detail << " route=" << route << " format=" << surface_format(desc.Format)
+            << "(" << static_cast<unsigned>(desc.Format) << ")"
+            << " texture=" << desc.Width << "x" << desc.Height
+            << " visible=" << width << "x" << height
+            << " mips=" << desc.MipLevels << " arraySize=" << desc.ArraySize
+            << " subresource=" << subresource << " samples=" << desc.SampleDesc.Count
+            << " sampleQuality=" << desc.SampleDesc.Quality
+            << " usage=" << static_cast<unsigned>(desc.Usage)
+            << " bindFlags=0x" << std::hex << desc.BindFlags
+            << " miscFlags=0x" << desc.MiscFlags;
+        throw std::runtime_error(detail.str());
+    }
     return {std::move(texture),subresource,width,height,pts};
 }
-GpuFrame from_buffer(IMFDXGIBuffer* buffer,int width,int height,int64_t pts) {
+GpuFrame from_buffer(IMFDXGIBuffer* buffer,int width,int height,int64_t pts,bool allow_p010) {
     if(!buffer)throw std::runtime_error("GPU buffer service returned a null interface");
     ComPtr<ID3D11Texture2D> texture;UINT subresource=0;
     check(buffer->GetResource(IID_PPV_ARGS(&texture)),"IMFDXGIBuffer::GetResource");
     check(buffer->GetSubresourceIndex(&subresource),"IMFDXGIBuffer::GetSubresourceIndex");
-    return validated(std::move(texture),subresource,width,height,pts);
+    return validated(std::move(texture),subresource,width,height,pts,"IMFDXGIBuffer",allow_p010);
 }
 bool media_sample_buffer(IMFSample* sample,ComPtr<IMFDXGIBuffer>& found) {
     DWORD count=0;check(sample->GetBufferCount(&count),"IMFSample::GetBufferCount");
@@ -126,34 +159,34 @@ IMFDXGIDeviceManager* MfD3d11Bridge::manager()const noexcept{return impl_->manag
 ID3D11Device* MfD3d11Bridge::device()const noexcept{return impl_->device.Get();}
 ID3D11DeviceContext* MfD3d11Bridge::context()const noexcept{return impl_->context.Get();}
 HANDLE MfD3d11Bridge::mutex()const noexcept{return impl_->mutex;}
-GpuFrame extract_gpu_frame(IMediaSample* sample,int width,int height,int64_t pts) {
+GpuFrame extract_gpu_frame(IMediaSample* sample,int width,int height,int64_t pts,bool allow_p010) {
     if(!sample)throw std::invalid_argument("A retained DirectShow GPU sample is required");
     ComPtr<PublicTextureSample> native;
     if(sample->QueryInterface(IID_PPV_ARGS(&native))==S_OK && native) {
         ComPtr<ID3D11Texture2D> texture;UINT slice=0;
         check(native->GetD3D11Texture(0,&texture,&slice),"IMediaSampleD3D11::GetD3D11Texture");
-        return validated(std::move(texture),slice,width,height,pts);
+        return validated(std::move(texture),slice,width,height,pts,"IMediaSampleD3D11",allow_p010);
     }
     ComPtr<IMFDXGIBuffer> dxgi;
-    if(sample->QueryInterface(IID_PPV_ARGS(&dxgi))==S_OK && dxgi)return from_buffer(dxgi.Get(),width,height,pts);
+    if(sample->QueryInterface(IID_PPV_ARGS(&dxgi))==S_OK && dxgi)return from_buffer(dxgi.Get(),width,height,pts,allow_p010);
     ComPtr<IMFSample> mf_sample;
     if(sample->QueryInterface(IID_PPV_ARGS(&mf_sample))==S_OK && mf_sample && media_sample_buffer(mf_sample.Get(),dxgi))
-        return from_buffer(dxgi.Get(),width,height,pts);
+        return from_buffer(dxgi.Get(),width,height,pts,allow_p010);
     ComPtr<IMFGetService> services;
     if(sample->QueryInterface(IID_PPV_ARGS(&services))==S_OK && services) {
         if(services->GetService(MR_BUFFER_SERVICE,IID_PPV_ARGS(&dxgi))==S_OK && dxgi)
-            return from_buffer(dxgi.Get(),width,height,pts);
+            return from_buffer(dxgi.Get(),width,height,pts,allow_p010);
         mf_sample.Reset();
         if(services->GetService(MR_BUFFER_SERVICE,IID_PPV_ARGS(&mf_sample))==S_OK && mf_sample && media_sample_buffer(mf_sample.Get(),dxgi))
-            return from_buffer(dxgi.Get(),width,height,pts);
+            return from_buffer(dxgi.Get(),width,height,pts,allow_p010);
         ComPtr<IMFMediaBuffer> media_buffer;
         if(services->GetService(MR_BUFFER_SERVICE,IID_PPV_ARGS(&media_buffer))==S_OK && media_buffer && media_buffer.As(&dxgi)==S_OK && dxgi)
-            return from_buffer(dxgi.Get(),width,height,pts);
+            return from_buffer(dxgi.Get(),width,height,pts,allow_p010);
         ComPtr<ID3D11Texture2D> texture;
         if(services->GetService(MR_BUFFER_SERVICE,IID_PPV_ARGS(&texture))==S_OK && texture) {
             D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);
             if(desc.ArraySize!=1)throw std::runtime_error("GPU texture array has no public subresource index; refusing to guess the decoder slice");
-            return validated(std::move(texture),0,width,height,pts);
+            return validated(std::move(texture),0,width,height,pts,"MR_BUFFER_SERVICE.Texture",allow_p010);
         }
     }
     throw std::runtime_error("Decoder GPU sample exposes no supported public D3D11 texture/subresource interface");

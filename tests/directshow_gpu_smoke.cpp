@@ -32,6 +32,7 @@ constexpr int kWidth = 640, kHeight = 360;
 REFERENCE_TIME kDuration = 417083;
 REFERENCE_TIME declared_duration=-1;
 bool require_services=false;
+bool p010_fixture=false;
 int color_fixture=0; // 0 default, 1 legacy VideoInfo, 2 explicitly tagged VideoInfo2.
 constexpr DWORD kMetadataTail=0x4e564f46;
 DWORD explicit_color_flags() {
@@ -191,11 +192,15 @@ public:
         for(int y=90;y<230;++y)for(int x=left;x<left+100;++x)pixels[y*kWidth+x]=210;
         D3D11_TEXTURE2D_DESC description{};
         description.Width=kWidth;description.Height=coded_height;description.MipLevels=1;description.ArraySize=2;
-        description.Format=DXGI_FORMAT_NV12;description.SampleDesc.Count=1;
+        description.Format=p010_fixture?DXGI_FORMAT_P010:DXGI_FORMAT_NV12;description.SampleDesc.Count=1;
         description.Usage=D3D11_USAGE_DEFAULT;description.BindFlags=D3D11_BIND_SHADER_RESOURCE;
         ComPtr<ID3D11Texture2D> texture;
         check(device->CreateTexture2D(&description,nullptr,&texture),"synthetic decoder array texture");
-        context->UpdateSubresource(texture.Get(),1,nullptr,pixels.data(),kWidth,0);
+        if(p010_fixture) {
+            std::vector<uint16_t> words(pixels.size());
+            for(size_t i=0;i<pixels.size();++i)words[i]=uint16_t(pixels[i])<<8;
+            context->UpdateSubresource(texture.Get(),1,nullptr,words.data(),kWidth*2,0);
+        } else context->UpdateSubresource(texture.Get(),1,nullptr,pixels.data(),kWidth,0);
         REFERENCE_TIME start=index*kDuration,stop=start+kDuration;
         surface->assign({texture,1,kWidth,kHeight,start});
         sample->SetTime(&start,no_stop?nullptr:&stop);sample->SetMediaType(changed);sample->SetActualDataLength(kWidth*kHeight*3/2);
@@ -708,6 +713,7 @@ void check_color_rejection(IClassFactory* factory,ID3D11Device* device,ID3D11Dev
 }
 int wmain(int argc,wchar_t** argv) {
     if(argc<2){std::cerr<<"usage: directshow_gpu_smoke <NativeD3D11=1 filter.ax>\n";return 2;}
+    p010_fixture=argc>2 && wcscmp(argv[2],L"--p010-input")==0;
     require_services=argc>2 && wcscmp(argv[2],L"--probe-services")==0;
     check(CoInitializeEx(nullptr,COINIT_MULTITHREADED),"CoInitialize");
     HMODULE module=LoadLibraryExW(argv[1],nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);

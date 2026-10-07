@@ -208,3 +208,10 @@ target_link_libraries(appearance_midpoint_quality PRIVATE nvof_fractional_refine
 # Explicit GPU regression for independent enhancement switches; not automatic CTest.
 add_executable(enhancement_options_gpu tests/enhancement_options_gpu.cpp)
 target_link_libraries(enhancement_options_gpu PRIVATE nvof_fractional_refiner nvof_gpu_engine nvof_engine nvof_phase_pipeline)
+
+# GPU bit-depth normalization regression, requires an NVIDIA GPU/runtime.
+add_executable(gpu_p010_conversion tests/gpu_p010_conversion.cpp)
+target_link_libraries(gpu_p010_conversion PRIVATE nvof_gpu_engine nvof_mf_bridge)
+
+add_executable(p010_video_stress tests/p010_video_stress.cpp)
+target_link_libraries(p010_video_stress PRIVATE nvof_gpu_engine nvof_gpu_phase_pipeline)
