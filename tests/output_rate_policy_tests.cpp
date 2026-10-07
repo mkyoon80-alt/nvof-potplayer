@@ -11,6 +11,11 @@ void expect(int64_t duration,nvof::Rate expected) {
 int main() {
     try {
         expect(417083,{48000,1001}); expect(417084,{48000,1001});
+        const auto canonical=nvof::canonical_source_rate(417083);
+        require(canonical.num==24000 && canonical.den==1001,"rounded NTSC source cadence must be canonical");
+        const auto unusual=nvof::canonical_source_rate(416999);
+        require(unusual.num==10000000 && unusual.den==416999,"unusual source cadence must retain exact duration");
+        require(nvof::canonical_source_rate(0).num==0,"unknown cadence must stay unknown");
         expect(416667,{48,1}); expect(400000,{50,1});
         expect(333667,{60000,1001}); expect(333333,{60,1});
         expect(208333,{96,1}); expect(200000,{100,1});

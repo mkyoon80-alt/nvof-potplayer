@@ -31,7 +31,8 @@
 #include <string>
 #include "nvof/engine.hpp"
 #include "nvof/pipeline.hpp"
-#include "nvof/gpu_pipeline.hpp"
+#include "nvof/gpu_phase_pipeline.hpp"
+#include "nvof/phase_pipeline.hpp"
 #include "nvof/d3d11_transport.hpp"
 #include "nvof/mf_bridge.hpp"
 #include "nvof/input_rate_policy.hpp"
@@ -48,6 +49,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
+constexpr char kFilterBuild[]="0.2.0-preview.8";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -292,18 +294,6 @@ HRESULT tag_native_output_color(CMediaType& media,const Layout& layout) noexcept
     } catch(...) {return E_OUTOFMEMORY;}
 }
 
-nvof::Rate select_rate(int nominal, REFERENCE_TIME source_duration) {
-    bool ntsc = false;
-    if (source_duration > 0) {
-        const double fps = static_cast<double>(kUnits) / source_duration;
-        for (double reference : {24000.0 / 1001.0, 30000.0 / 1001.0,
-                                 60000.0 / 1001.0, 120000.0 / 1001.0}) {
-            if (std::abs(fps - reference) < 0.005) ntsc = true;
-        }
-    }
-    return ntsc ? nvof::Rate{nominal * 1000LL, 1001} : nvof::Rate{nominal, 1};
-}
-
 REFERENCE_TIME rate_duration(nvof::Rate rate) {
     return (kUnits * rate.den + rate.num / 2) / rate.num;
 }
@@ -444,11 +434,9 @@ public:
             probe_services_ = GetPrivateProfileIntW(L"Nvof", L"ProbeServices", 0, ini.c_str()) != 0;
             native_feature_enabled_ = GetPrivateProfileIntW(L"Nvof", L"NativeD3D11", 0, ini.c_str()) != 0;
             enabled_ = GetPrivateProfileIntW(L"Nvof", L"Enabled", 1, ini.c_str()) != 0;
-            double_rate_=GetPrivateProfileIntW(L"Nvof",L"DoubleRate",0,ini.c_str()) != 0;
             input_rate_mask_=GetPrivateProfileIntW(L"Nvof",L"InputRateMask",nvof::kAllInputRates,ini.c_str()) & nvof::kAllInputRates;
-            nominal_target_ = static_cast<int>(GetPrivateProfileIntW(L"Nvof", L"TargetFps", 60, ini.c_str()));
-            if (nominal_target_ != 60 && nominal_target_ != 120) nominal_target_ = 60;
-            target_ = {nominal_target_, 1};
+            // Fixed-rate modes were removed. Legacy INI keys cannot reactivate them.
+            target_ = {0, 1};
             write_log("filter created instance="+std::to_string(instance_id_)+" NativeD3D11="+
                 std::to_string(native_feature_enabled_)+" ProbeServices="+std::to_string(probe_services_));
         } catch (const std::exception& e) {
@@ -561,7 +549,7 @@ public:
         catch(...) {return E_OUTOFMEMORY;}
         CAutoLock receive(&m_csReceive);
         try {
-            auto engine=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",device,context,duplicate);
+            auto engine=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",device,context,duplicate,nvof::GpuCompletionMode::context_ordered);
             auto* output=static_cast<nvof::transport::OutputPin*>(m_pOutput);
             const HRESULT transport=output ? output->set_gpu_mode(true) : E_UNEXPECTED;
             if(FAILED(transport)) {
@@ -652,7 +640,7 @@ public:
         return nvof::input_rate_selected(source_rate(duration),input_rate_mask_);
     }
     nvof::Rate requested_target(REFERENCE_TIME duration) const {
-        return double_rate_?nvof::double_source_rate(duration):select_rate(nominal_target_,duration);
+        return nvof::double_source_rate(duration);
     }
     bool same_target(REFERENCE_TIME duration) const {
         const auto incoming=requested_target(duration);
@@ -818,7 +806,7 @@ public:
         last_duration_ = input_.duration > 0 ? input_.duration :
             nvof::supported_output_rate(target_)?rate_duration(target_):kUnits/24;
         failed_ = false;
-        output_frames_ = 0;
+        output_frames_ = source_frames_ = near_endpoint_frames_ = 0;motion_frames_=protected_frames_=scene_cuts_=repeated_pairs_=subpixel_pass_frames_=identical_frames_=midpoint_pass_frames_=midpoint_limited_frames_=0;subpixel_unavailable_=midpoint_unavailable_=false;quality_state_="waiting";
         gpu_delivery_verified_=false;
         sample_probed_ = false;
         sample_transport_ = "unknown";
@@ -926,6 +914,8 @@ public:
                 HRESULT hr = m_pInput->SetMediaType(media);
                 if (FAILED(hr)) return hr;
                 reset_history();
+                // A permitted rate metadata change starts a new source cadence.
+                pipeline_.reset();gpu_pipeline_.reset();
                 last_pts_.reset();
             }
             REFERENCE_TIME start = 0, stop = 0;
@@ -954,6 +944,7 @@ public:
             if (timing == S_OK && stop > start) last_duration_ = stop - start;
             if (discontinuity) reset_history();
             const int64_t end=timing==S_OK && stop>start?stop:start+last_duration_;
+            ++source_frames_;
             if(native_gpu_active_) {
                 last_pts_=start;
                 return receive_gpu(sample,start,end,discontinuity);
@@ -1019,19 +1010,17 @@ private:
     HRESULT receive_gpu(IMediaSample* sample,int64_t start,int64_t stop,bool discontinuity) {
         auto input=nvof::extract_gpu_frame(sample,input_.width,input_.height,start);
         if(!gpu_engine_)gpu_engine_=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",
-            native_device_.Get(),native_context_.Get(),native_mutex_);
-        // The upstream IMediaSample remains alive for this entire synchronous
-        // copy. The returned snapshot has completed GPU writes and owns its
-        // texture; subsequent decoder reuse of the original array slice is safe.
+            native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered);
+        // Submit capture while the upstream sample is held. Decoder reuse and
+        // renderer reads are ordered on this device's shared immediate context;
+        // keep an owned output lease without a per-frame CPU completion wait.
         auto owned=gpu_engine_->copy(input);
         sample_transport_="d3d11-texture";
         if(!interpolation_requested())return deliver_gpu({std::move(owned),stop>start?stop:start+last_duration_,discontinuity});
-        if(!gpu_pipeline_)gpu_pipeline_=std::make_unique<nvof::GpuHybridPipeline>(target_,
-            [this](const nvof::GpuFrame& a,const nvof::GpuFrame& b) {
-                auto middle=gpu_engine_->midpoint(a,b);engine_active_=true;return middle;
-            },[this](const nvof::GpuFrame& a,const nvof::GpuFrame& b,int64_t pts) {
-                return gpu_engine_->blend(a,b,pts);
-            });
+        if(!gpu_pipeline_)gpu_pipeline_=std::make_unique<nvof::GpuPhasePipeline>(target_,
+            [this](const nvof::GpuFrame& a,const nvof::GpuFrame& b,const std::vector<int64_t>& times) {
+                auto batch=gpu_engine_->interpolate_pair(a,b,times);record_quality(batch.quality,times.size());record_endpoints(a.pts,b.pts,times);return batch;
+            },nvof::canonical_source_rate(input_.duration));
         HRESULT delivery=S_OK;
         gpu_pipeline_->push(std::move(owned),discontinuity,[this,&delivery](const nvof::GpuOutputFrame& output) {
             delivery=deliver_gpu(output);return delivery==S_OK;
@@ -1064,7 +1053,7 @@ private:
             gpu_delivery_verified_=true;
             ++output_frames_;
             write_status(!interpolation_requested()?"bypass":engine_active_?"active":"waiting",
-                !interpolation_requested()?bypass_message():engine_active_?"NVIDIA Optical Flow / Hybrid (D3D11 GPU)":
+                !interpolation_requested()?bypass_message():engine_active_?"NVIDIA Optical Flow / Motion phases (D3D11 GPU)":
                     "Waiting for the next adjacent GPU frame");
         }
         return result;
@@ -1093,17 +1082,34 @@ private:
         if (!pipeline_) {
             // Engine initialization stays lazy: the first original frame after
             // a seek is delivered before GPU work for the next frame pair.
-            pipeline_ = std::make_unique<nvof::HybridPipeline>(target_, [this](const nvof::Frame& a, const nvof::Frame& b) {
+            pipeline_ = std::make_unique<nvof::PhasePipeline>(target_, [this](const nvof::Frame& a, const nvof::Frame& b,const std::vector<int64_t>& times) {
                 if (!engine_) engine_ = std::make_unique<nvof::FrucEngine>(directory_ / L"runtime");
-                auto middle = engine_->midpoint(a, b);
-                engine_active_ = true;
-                return middle;
-            });
+                auto batch=engine_->interpolate_pair(a,b,times);record_quality(batch.quality,times.size());record_endpoints(a.pts,b.pts,times);return batch;
+            },nvof::canonical_source_rate(input_.duration));
+        }
+    }
+
+    void record_endpoints(int64_t a,int64_t b,const std::vector<int64_t>& times) {
+        for(auto pts:times)if((pts-a)*100<(b-a)*3 || (b-pts)*100<(b-a)*3)++near_endpoint_frames_;
+    }
+
+    void record_quality(const nvof::PairQuality& quality,size_t count) {
+        if(count)engine_active_=true;
+        subpixel_unavailable_=subpixel_unavailable_||quality.subpixel_unavailable;
+        midpoint_unavailable_=midpoint_unavailable_||quality.midpoint_stabilization_unavailable;
+        if(quality.midpoint_budget_limited)midpoint_limited_frames_+=count;
+        if(quality.scene_cut){++scene_cuts_;protected_frames_+=count;quality_state_="scene-cut-hold";}
+        else if(quality.identical_warp_skipped){identical_frames_+=count;quality_state_="identical-input-hold";}
+        else if(quality.repeated_mask){++repeated_pairs_;protected_frames_+=count;quality_state_="fruc-repetition-hold";}
+        else{
+            motion_frames_+=count;quality_state_="motion-interpolation";
+            for(uint32_t bits=quality.midpoint_stabilized_mask;bits;bits>>=1)midpoint_pass_frames_+=bits&1U;
+            for(uint32_t bits=quality.subpixel_refined_mask;bits;bits>>=1)subpixel_pass_frames_+=bits&1U;
         }
     }
 
     void reset_history() noexcept {
-        engine_active_ = false;
+        engine_active_ = false;quality_state_="waiting";
         if (pipeline_) pipeline_->reset();
         if (engine_) engine_->reset();
         if(gpu_pipeline_)gpu_pipeline_->reset();
@@ -1189,7 +1195,7 @@ private:
             ++output_frames_;
             write_status(!interpolation_requested() ? "bypass" : engine_active_ ? "active" : "waiting",
                 !interpolation_requested() ? bypass_message() : engine_active_ ?
-                "NVIDIA Optical Flow / Hybrid" : "Waiting for the next adjacent frame");
+                "NVIDIA Optical Flow / Motion phases" : "Waiting for the next adjacent frame");
         }
         return hr;
     }
@@ -1227,6 +1233,23 @@ private:
                     << ",\"inputFps\":" << input_fps
                     << ",\"outputFps\":" << output_fps
                     << ",\"outputFrames\":" << output_frames_
+                    << ",\"sourceFrames\":" << source_frames_
+                    << ",\"nearEndpointFrames\":" << near_endpoint_frames_
+                    << ",\"sourceCadenceAligned\":" << ((gpu_pipeline_?gpu_pipeline_->source_cadence_active():pipeline_?pipeline_->source_cadence_active():false)?"true":"false")
+                    << ",\"identicalFrames\":" << identical_frames_
+                    << ",\"motionFrames\":" << motion_frames_
+                    << ",\"midpointLimitedFrames\":" << midpoint_limited_frames_
+                    << ",\"midpointPassFrames\":" << midpoint_pass_frames_
+                    << ",\"midpointUnavailable\":" << (midpoint_unavailable_?"true":"false")
+                    << ",\"subpixelPassFrames\":" << subpixel_pass_frames_
+                    << ",\"subpixelUnavailable\":" << (subpixel_unavailable_?"true":"false")
+                    << ",\"protectedFrames\":" << protected_frames_
+                    << ",\"sceneCuts\":" << scene_cuts_
+                    << ",\"repeatedPairs\":" << repeated_pairs_
+                    << ",\"qualityState\":" << json_string(quality_state_)
+                    << ",\"buildVersion\":" << json_string(kFilterBuild)
+                    << ",\"gpuCompletion\":" << json_string(gpu_engine_&&gpu_engine_->queued_completion()?"context-ordered":"blocking")
+                    << ",\"algorithm\":" << json_string(midpoint_pass_frames_?"x2-slow-motion-stabilized":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
                     << ",\"message\":" << json_string(message) << "}\n";
                 stream.flush();
                 if (!stream) return;
@@ -1241,7 +1264,6 @@ private:
     bool probe_services_=false;
     std::filesystem::path directory_;
     Layout input_, output_;
-    int nominal_target_ = 60;
     bool native_feature_enabled_=false;
     bool native_gpu_active_=false;
     bool gpu_delivery_verified_=false;
@@ -1255,18 +1277,21 @@ private:
     std::shared_ptr<nvof::MfD3d11Bridge> mf_bridge_;
     bool mf_surface_selected_=false;
     std::unique_ptr<nvof::GpuFrucEngine> gpu_engine_;
-    std::unique_ptr<nvof::GpuHybridPipeline> gpu_pipeline_;
+    std::unique_ptr<nvof::GpuPhasePipeline> gpu_pipeline_;
     std::atomic<unsigned> filter_probe_queries_{0};
     std::atomic<bool> native_input_requested_{false};
     std::atomic<bool> native_renderer_supported_{false};
     bool sample_probed_ = false;
     std::string sample_transport_ = "unknown";
     bool enabled_ = true;
-    bool double_rate_=false;
+    static constexpr bool double_rate_=true;
     unsigned input_rate_mask_=nvof::kAllInputRates;
     bool input_rate_selected_=true;
     bool engine_active_ = false;
-    uint64_t output_frames_ = 0;
+    uint64_t output_frames_ = 0,source_frames_=0,near_endpoint_frames_=0;
+    bool subpixel_unavailable_=false,midpoint_unavailable_=false;
+    uint64_t motion_frames_=0,protected_frames_=0,scene_cuts_=0,repeated_pairs_=0,subpixel_pass_frames_=0,identical_frames_=0,midpoint_pass_frames_=0,midpoint_limited_frames_=0;
+    std::string quality_state_="waiting";
     ULONGLONG last_status_time_ = 0;
     std::string last_status_state_;
     nvof::Rate target_;
@@ -1276,7 +1301,7 @@ private:
     std::optional<int64_t> last_pts_;
     int64_t last_duration_ = kUnits / 24;
     std::unique_ptr<nvof::FrucEngine> engine_;
-    std::unique_ptr<nvof::HybridPipeline> pipeline_;
+    std::unique_ptr<nvof::PhasePipeline> pipeline_;
 };
 
 ProbeInputPin::ProbeInputPin(NvofFilter* owner,HRESULT* result)
@@ -1383,12 +1408,3 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) module_handle = module;
     return DllEntryPoint(module, reason, reserved);
 }
-
-
-
-
-
-
-
-
-

@@ -30,7 +30,8 @@
       "acquisition": "nvenc_archive",
       "license": "MIT",
       "provenance": "NVEnc 9.37 release",
-      "dependency_notes": "No dynamic VC/CUDA runtime import; imports KERNEL32 and loads NvOFFRUC.dll."
+      "dependency_notes": "No dynamic VC/CUDA runtime import; imports KERNEL32 and loads NvOFFRUC.dll.",
+      "role": "Historical adapter retained for comparison and provenance; not bundled or loaded by the 0.2 engine."
     },
     {
       "name": "NvOFFRUC.dll",
@@ -101,5 +102,26 @@
   ],
   "omitted_unneeded": [
     "cudart64_12.dll"
-  ]
+  ],
+  "built_components": [
+    {
+      "name": "NvofFrucBridge.dll",
+      "source": "src/fruc_bridge.cpp",
+      "license": "MIT (project adapter); NVIDIA SDK headers retain their own terms",
+      "build": "CMake NvofFrucBridge, Windows x64 /MT",
+      "dependency_notes": "Versioned repetition-status ABI; replaces NVEncNVOFFRUC.dll in 0.2 playback packages. Hash recorded by local package manifest."
+    }
+  ],
+  "sdk_verification": {
+    "version": "5.0.7",
+    "checked_on": "2026-10-07",
+    "archive_sha256": "89b0923adc6f34fbe86e63cc17d5db452e34b945c03ba90d8e09bd1a0158e917",
+    "license_sha256": "b8981c69975513d5671661be2f8dc1852d6f5e0715cf5b682e75409065635b5e",
+    "binary_directory": "Optical_Flow_SDK_5.0.7/NvOFFRUC/NvOFFRUCSample/bin/win64",
+    "exact_matches": [
+      "NvOFFRUC.dll",
+      "cudart64_110.dll"
+    ],
+    "distribution_note": "SDK provenance verified; accompanying May 10, 2022 license does not establish an express precompiled FRUC redistribution grant in this audit."
+  }
 }

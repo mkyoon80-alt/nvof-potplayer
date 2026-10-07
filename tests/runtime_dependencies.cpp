@@ -58,9 +58,9 @@ int wmain(int argc, wchar_t** argv) {
         const fs::path package(argv[1]);
         if (!package.is_absolute()) throw std::runtime_error("The package directory must be absolute");
         const fs::path runtime = package / L"runtime";
-        // Kept identical to the six-file native set in config/runtime-manifest.json.
+        // Five pinned vendor runtimes plus the project-built /MT bridge.
         constexpr std::array<const wchar_t*, 6> required = {
-            L"NvOFFRUC.dll", L"NVEncNVOFFRUC.dll", L"cudart64_110.dll",
+            L"NvOFFRUC.dll", L"NvofFrucBridge.dll", L"cudart64_110.dll",
             L"msvcp140.dll", L"vcruntime140.dll", L"vcruntime140_1.dll"
         };
         for (const auto name : required) {
@@ -73,7 +73,9 @@ int wmain(int argc, wchar_t** argv) {
         }
         Modules modules;
         modules.load(runtime / L"NvOFFRUC.dll");
-        modules.load(runtime / L"NVEncNVOFFRUC.dll");
+        const auto bridge = modules.load(runtime / L"NvofFrucBridge.dll");
+        if (!GetProcAddress(bridge, "NVEncNVOFFRUCProcEx"))
+            throw std::runtime_error("The bridge lacks versioned repetition metadata");
         const auto filter = modules.load(package / L"NvofPotPlayer.ax");
         bool valid = true;
         for (const auto name : required) {

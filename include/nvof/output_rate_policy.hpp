@@ -31,4 +31,13 @@ inline Rate double_source_rate(int64_t duration) noexcept {
     const Rate doubled{20000000LL / divisor, duration / divisor};
     return supported_output_rate(doubled) ? doubled : Rate{0,1};
 }
+// Recover the advertised rational cadence instead of accumulating the rounded
+// 100 ns AvgTimePerFrame (417083 ticks would drift about 2.9 ms per hour).
+inline Rate canonical_source_rate(int64_t duration) noexcept {
+    const Rate doubled = double_source_rate(duration);
+    if (doubled.num == 0) return {0,1};
+    const int64_t denominator = doubled.den * 2;
+    const int64_t divisor = std::gcd(doubled.num, denominator);
+    return {doubled.num / divisor, denominator / divisor};
+}
 } // namespace nvof

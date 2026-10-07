@@ -29,9 +29,12 @@ namespace NvofControl
         private static extern bool WritePrivateProfileString(string section, string key, string value, string file);
         public SettingsStore(string path) { this.path = path; }
         public bool Enabled { get { return GetPrivateProfileInt("Nvof", "Enabled", 1, path) != 0; } }
-        public int TargetFps { get { return GetPrivateProfileInt("Nvof", "TargetFps", 60, path) == 120 ? 120 : 60; } }
-        public bool DoubleRate { get { return GetPrivateProfileInt("Nvof", "DoubleRate", 0, path) != 0; } }
-        public void SetDoubleRate() { Write("DoubleRate", "1"); }
+        public void MigrateToDoubleRate()
+        {
+            // Keep DoubleRate=1 for rollback compatibility; fixed targets are obsolete.
+            Write("DoubleRate", "1");
+            Write("TargetFps", null);
+        }
         public int InputRateMask { get { return (int)(GetPrivateProfileInt("Nvof", "InputRateMask", 63, path) & 63); } }
         public void SetInputRateMask(int value)
         {
@@ -39,12 +42,6 @@ namespace NvofControl
             Write("InputRateMask", value.ToString(CultureInfo.InvariantCulture));
         }
         public void SetEnabled(bool value) { Write("Enabled", value ? "1" : "0"); }
-        public void SetTargetFps(int value)
-        {
-            if (value != 60 && value != 120) throw new ArgumentOutOfRangeException("value");
-            Write("TargetFps", value.ToString(CultureInfo.InvariantCulture));
-            Write("DoubleRate", "0");
-        }
         private void Write(string key, string value)
         {
             if (!WritePrivateProfileString("Nvof", key, value, path))
@@ -260,7 +257,6 @@ namespace NvofControl
         private string diagnostics = "";
         private string lastActionError = "";
         private ToggleButton enabled;
-        private RadioButton fps60, fps120, fpsDouble;
         private readonly CheckBox[] inputRates = new CheckBox[6];
         private TextBlock rateSelectionHint, outputRateHint;
         private TextBlock notice, statusTitle, statusDetail, registerNotice;
@@ -280,9 +276,6 @@ namespace NvofControl
             statusDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NvofPotPlayer");
             settings = new SettingsStore(Path.Combine(baseDirectory, "NvofPotPlayer.ini"));
             enabled = Find<ToggleButton>("EnabledToggle");
-            fps60 = Find<RadioButton>("Fps60");
-            fps120 = Find<RadioButton>("Fps120");
-            fpsDouble = Find<RadioButton>("FpsDouble");
             outputRateHint = Find<TextBlock>("OutputRateHint");
             for (int index = 0; index < inputRates.Length; index++)
                 inputRates[index] = Find<CheckBox>("InputRate" + index);
@@ -295,10 +288,12 @@ namespace NvofControl
             registerNotice = Find<TextBlock>("RegisterNotice");
             registerButton = Find<Button>("RegisterButton");
             LoadSettings();
+            if (!preview)
+            {
+                try { settings.MigrateToDoubleRate(); }
+                catch (Exception ex) { Notify("설정 정리에 실패했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
+            }
             enabled.Click += delegate { SaveEnabled(); };
-            fps60.Checked += delegate { SaveFps(60); };
-            fps120.Checked += delegate { SaveFps(120); };
-            fpsDouble.Checked += delegate { SaveDoubleRate(); };
             foreach (CheckBox rate in inputRates) rate.Click += delegate { SaveInputRates(); };
             Find<Button>("CloseButton").Click += delegate { window.Close(); };
             Find<Button>("LaunchButton").Click += delegate { LaunchPlayer(); };
@@ -321,9 +316,6 @@ namespace NvofControl
         {
             loading = true;
             enabled.IsChecked = settings.Enabled;
-            fps60.IsChecked = !settings.DoubleRate && settings.TargetFps == 60;
-            fps120.IsChecked = !settings.DoubleRate && settings.TargetFps == 120;
-            fpsDouble.IsChecked = settings.DoubleRate;
             UpdateOutputHint();
             int mask = settings.InputRateMask;
             for (int index = 0; index < inputRates.Length; index++)
@@ -359,23 +351,7 @@ namespace NvofControl
         }
         private void UpdateOutputHint()
         {
-            outputRateHint.Text = fpsDouble.IsChecked == true
-                ? "원본 FPS의 두 배로 보간합니다. (23.976 → 47.952 fps)"
-                : "23.976fps 영상은 59.94 또는 119.88fps로 맞춥니다.\n출력 FPS 이상의 영상은 원본으로 재생합니다.";
-        }
-        private void SaveDoubleRate()
-        {
-            UpdateOutputHint();
-            if (loading || preview) return;
-            try { settings.SetDoubleRate(); Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false); }
-            catch (Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
-        }
-        private void SaveFps(int value)
-        {
-            UpdateOutputHint();
-            if (loading || preview) return;
-            try { settings.SetTargetFps(value); Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false); }
-            catch (Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
+            outputRateHint.Text = "23.976 → 47.952 fps · 30 → 60 fps";
         }
         private void Notify(string text, bool error, string detail = null)
         {
@@ -482,7 +458,7 @@ namespace NvofControl
                 if (registration.ElevatedPlayer && !registration.MachineRegistered) text.AppendLine("관리자 팟플레이어에서는 사용자별 COM 등록을 사용하지 않습니다. 관리자용 등록이 필요합니다.");
                 if (!String.IsNullOrEmpty(registration.RegistrationReadError)) text.AppendLine("등록 조회 오류: " + registration.RegistrationReadError);
             }
-            text.AppendLine("설정: " + (enabled.IsChecked == true ? "사용" : "사용 안 함") + " / " + (fpsDouble.IsChecked == true ? "원본의 두 배 (×2)" : (fps120.IsChecked == true ? "120" : "60") + " fps"));
+            text.AppendLine("설정: " + (enabled.IsChecked == true ? "사용" : "사용 안 함") + " / " + "원본의 두 배 (×2)");
             string[] rateLabels = { "24", "25", "30", "50", "60", "기타" };
             List<string> selectedLabels = new List<string>();
             for (int index = 0; index < inputRates.Length; index++)
@@ -625,11 +601,10 @@ namespace NvofControl
         public void PreviewState(string state)
         {
             if (state == "live") return;
-            RuntimeStatus fixture = new RuntimeStatus { Exists=state != "waiting", ProcessId=1234, State=state, InputFps=23.976, OutputFps=59.94, OutputFrames=120, UpdatedUtc=DateTime.UtcNow, ProcessAlive=true, Message="Preview fixture — not runtime telemetry." };
+            RuntimeStatus fixture = new RuntimeStatus { Exists=state != "waiting", ProcessId=1234, State=state, InputFps=23.976, OutputFps=47.952, DoubleRate=true, OutputFrames=120, UpdatedUtc=DateTime.UtcNow, ProcessAlive=true, Message="Preview fixture — not runtime telemetry." };
             if (state == "error") fixture.Message = "Preview: GPU initialization failed.";
             if (state == "double" || state == "double-expanded")
             {
-                fpsDouble.IsChecked = true;
                 fixture.State = "active"; fixture.OutputFps = 47.952; fixture.Transport = "d3d11-gpu"; fixture.DoubleRate = true;
             }
             if (state == "excluded" || state == "disabled" || state == "above-target")
@@ -644,7 +619,6 @@ namespace NvofControl
             }
             if (state == "unknown-rate" || state == "unsupported-rate")
             {
-                fpsDouble.IsChecked = true;
                 fixture.State = "bypass"; fixture.DoubleRate = true;
                 fixture.BypassReason = state == "unknown-rate" ? "unknown-source-rate" : "output-rate-unsupported";
                 fixture.InputFps = state == "unknown-rate" ? 0 : 600;
@@ -768,26 +742,20 @@ namespace NvofControl
                 File.WriteAllText(settingsPath, "[Nvof]\r\nNativeD3D11=1\r\nProbeServices=0\r\n");
                 SettingsStore store = new SettingsStore(settingsPath);
                 if (store.InputRateMask != 63) throw new Exception("Missing source-rate selection must preserve all-rates behavior.");
-                store.SetInputRateMask(1 | 4);
-                store.SetEnabled(false); store.SetTargetFps(120);
-                if (store.InputRateMask != 5) throw new Exception("Master/target changes must preserve input-rate selection.");
-                if (!File.ReadAllText(settingsPath).Contains("NativeD3D11=1") || !File.ReadAllText(settingsPath).Contains("ProbeServices=0")) throw new Exception("Source-rate settings must preserve native transport keys.");
+                foreach (int oldTarget in new int[] { 60, 120 })
+                {
+                    File.WriteAllText(settingsPath, "[Nvof]\r\nNativeD3D11=1\r\nProbeServices=0\r\nEnabled=0\r\nInputRateMask=5\r\nTargetFps=" + oldTarget + "\r\nDoubleRate=0\r\n");
+                    store.MigrateToDoubleRate();
+                    string migrated = File.ReadAllText(settingsPath);
+                    if (store.Enabled || store.InputRateMask != 5 || migrated.Contains("TargetFps=") || !migrated.Contains("DoubleRate=1")) throw new Exception("Legacy fixed output migration failed.");
+                    if (!migrated.Contains("NativeD3D11=1") || !migrated.Contains("ProbeServices=0")) throw new Exception("Migration changed native transport preferences.");
+                    store.MigrateToDoubleRate();
+                    if (File.ReadAllText(settingsPath) != migrated) throw new Exception("Migration must be idempotent.");
+                }
                 store.SetInputRateMask(0);
                 if (store.InputRateMask != 0) throw new Exception("Selecting no source rates must persist.");
-                store.SetInputRateMask(63); store.SetEnabled(true); store.SetTargetFps(120);
-                if (store.DoubleRate) throw new Exception("Fixed rate must disable double-rate mode.");
-                store.SetDoubleRate();
-                if (!store.DoubleRate || store.TargetFps != 120 || store.InputRateMask != 63) throw new Exception("Double rate must preserve the last fixed target and selected input rates.");
-                store.SetEnabled(false); store.SetInputRateMask(5);
-                if (!store.DoubleRate || store.TargetFps != 120) throw new Exception("Master and source-rate changes must preserve double-rate mode.");
-                store.SetTargetFps(60);
-                if (store.DoubleRate || store.TargetFps != 60 || store.InputRateMask != 5) throw new Exception("Fixed mode switch must preserve source-rate selection.");
                 store.SetInputRateMask(63); store.SetEnabled(true);
-                if (!store.Enabled || store.TargetFps != 60) throw new Exception("Default settings failed.");
-                store.SetEnabled(false); store.SetTargetFps(120);
-                if (store.Enabled || store.TargetFps != 120) throw new Exception("Settings round-trip failed.");
-                store.SetEnabled(true); store.SetTargetFps(60);
-                if (!store.Enabled || store.TargetFps != 60) throw new Exception("Settings reset failed.");
+                if (!store.Enabled || store.InputRateMask != 63) throw new Exception("Settings round-trip failed.");
                 string statusPath = Path.Combine(folder, "status.json");
                 if (RuntimeStatus.Read(statusPath).Exists) throw new Exception("Missing status must be inactive.");
                 File.WriteAllText(statusPath, "{\"processId\":" + Process.GetCurrentProcess().Id + ",\"state\":\"active\",\"inputFps\":23.976,\"outputFps\":59.94,\"outputFrames\":12,\"message\":\"OK\"}");
@@ -828,9 +796,7 @@ namespace NvofControl
                 ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked = true;
                 if (!rate24.IsEnabled || !rate60.IsEnabled) throw new Exception("Master-on must restore source-rate controls.");
                 testController.PreviewState("double");
-                if (((RadioButton)testWindow.FindName("FpsDouble")).IsChecked != true || ((RadioButton)testWindow.FindName("Fps60")).IsChecked == true || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("47.952")) throw new Exception("Double-rate selection and hint must agree.");
-                ((RadioButton)testWindow.FindName("Fps120")).IsChecked = true;
-                if (((RadioButton)testWindow.FindName("FpsDouble")).IsChecked == true || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("출력 FPS 이상")) throw new Exception("Fixed-rate selection must replace double-rate guidance.");
+                if (testWindow.FindName("Fps60") != null || testWindow.FindName("Fps120") != null || !((TextBlock)testWindow.FindName("OutputRateSummary")).Text.Contains("×2") || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("47.952")) throw new Exception("Controller must expose only double-rate output.");
                 testController.PreviewState("error");
                 if (!((TextBox)testWindow.FindName("DiagnosticsText")).Text.Contains("AnotherLongExampleFolder")) throw new Exception("Full action error details must remain available without expanding the footer.");
                 foreach (int width in new int[] { 504, 464 })
@@ -840,7 +806,7 @@ namespace NvofControl
                     client.Measure(new Size(width, 461)); client.Arrange(new Rect(0, 0, width, 461)); client.UpdateLayout();
                     TextBlock saveText = (TextBlock)testWindow.FindName("SaveNotice");
                     double footerTop = saveText.TransformToAncestor(client).Transform(new Point(0, 0)).Y - 8;
-                    foreach (string controlName in new string[] { "EnabledToggle", "InputRate0", "InputRate5", "Fps60", "Fps120", "FpsDouble", "OutputRateHint" })
+                    foreach (string controlName in new string[] { "EnabledToggle", "InputRate0", "InputRate5", "OutputRateSummary", "OutputRateHint" })
                     {
                         FrameworkElement item = (FrameworkElement)testWindow.FindName(controlName);
                         Rect bounds = item.TransformToAncestor(client).TransformBounds(new Rect(0, 0, item.ActualWidth, item.ActualHeight));

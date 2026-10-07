@@ -27,13 +27,12 @@ The controller reads and writes `NvofPotPlayer.ini` beside the executable and fi
 | Key | Values | Default |
 | --- | --- | --- |
 | `Enabled` | `1` or `0` | `1` |
-| `TargetFps` | `60` or `120` | `60` |
-| `DoubleRate` | `1` for ×2, otherwise `0` | `0` |
+| `DoubleRate` | Legacy rollback compatibility; always `1` | `1` |
 | `InputRateMask` | Integer from `0` through `63` | `63` |
 
 Source-rate bits are 24 fps=`1`, 25=`2`, 30=`4`, 50=`8`, 60=`16`, and other=`32`. Rates 23.976, 29.97, and 59.94 belong to the 24, 30, and 60 groups. An empty selection preserves original frames for every source. Turning the master switch off disables the checkboxes without discarding their selection.
 
-Selecting ×2 preserves the last fixed `TargetFps`; selecting 60p or 120p updates it and clears `DoubleRate`. Windows profile APIs preserve unrelated INI entries. Changes take effect when the player opens a video again. Source rates at or above the effective output rate retain original frames; unknown or unsupported doubled rates also bypass interpolation.
+Output is always ×2. The filter ignores legacy `TargetFps` and `DoubleRate` choices. On a normal controller launch, migration removes `TargetFps` and writes `DoubleRate=1` for rollback compatibility, preserving source selections, enablement and unrelated settings. Previews and tests never change the installed settings. Changes take effect when the player opens a video again. Unknown or unsupported doubled rates bypass interpolation.
 
 Runtime status comes from `%LOCALAPPDATA%/NvofPotPlayer/status.json` and stays independent of the saved settings. The controller uses `processId`, `state`, `transport`, `inputFps`, `outputFps`, `outputFrames`, `message`, `bypassReason`, `inputRateSelected`, `inputRateMask`, and `doubleRate`. Supported states are `waiting`, `active`, `bypass`, `error`, and `stopped`.
 
@@ -47,7 +46,7 @@ All status and FPS labels remain in the controller. It never draws on the video.
 
 ## Interface and verification
 
-The window is 520×500 DIP, with a 480×500 DIP minimum. Three tabs separate interpolation, connection, and diagnostic controls. The interpolation tab requires no scrolling. Tab follows native control order; Space toggles a focused checkbox, arrow keys select output rate, Enter activates a focused button, and Escape closes the controller without stopping playback.
+The window is 520×500 DIP, with a 480×500 DIP minimum. Three tabs separate interpolation, connection, and diagnostic controls. The interpolation tab requires no scrolling. Tab follows native control order; Space toggles a focused checkbox, Enter activates a focused button, and Escape closes the controller without stopping playback.
 
 Run the isolated checks from the published folder:
 
@@ -56,7 +55,7 @@ Run the isolated checks from the published folder:
 ./NvofControl.exe --self-test --runtime-info ./runtime-info.json
 ```
 
-The self-test checks temporary INI persistence, unrelated-key preservation, source-rate and output selection, disabled-state retention, status validation and bypass explanations, registration routing without registration, and WPF control layout at normal and minimum sizes. The optional runtime report records the actual framework version and module paths loaded by that process.
+The self-test checks temporary INI persistence, unrelated-key preservation, source-rate selection and legacy fixed-rate migration, disabled-state retention, status validation and bypass explanations, registration routing without registration, and WPF control layout at normal and minimum sizes. The optional runtime report records the actual framework version and module paths loaded by that process.
 
 Offline preview renders the actual WPF client content without showing a desktop window:
 

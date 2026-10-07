@@ -1,5 +1,5 @@
-param(
-    [string]$Version='0.1.0-preview.1',
+﻿param(
+    [string]$Version='0.2.0-preview.8',
     [string]$UiDirectory,
     [string]$NativeDirectory,
     [string]$RuntimeDirectory
@@ -10,7 +10,7 @@ if($Version -notmatch '^\d+\.\d+\.\d+[-.a-zA-Z0-9]*$'){throw 'Invalid version.'}
 if(-not $UiDirectory){$UiDirectory=Join-Path $project 'ui/staging-selfcontained'}
 if(-not $NativeDirectory){$NativeDirectory=Join-Path $project 'build/Release'}
 if(-not $RuntimeDirectory){$RuntimeDirectory=Join-Path $project 'runtime'}
-$runtimeFiles=@('NvOFFRUC.dll','NVEncNVOFFRUC.dll','cudart64_110.dll','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll')
+$runtimeFiles=@('NvOFFRUC.dll','cudart64_110.dll','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll')
 foreach($name in @('NvofControl.exe','NvofControl.runtimeconfig.json','coreclr.dll','hostfxr.dll','PresentationFramework.dll')){
     if(-not (Test-Path -LiteralPath (Join-Path $UiDirectory $name))){throw "Self-contained UI file missing: $name"}
 }
@@ -23,14 +23,14 @@ foreach($file in Get-ChildItem -LiteralPath $UiDirectory -File -Recurse -Force){
 }
 $runtimeConfig=Get-Content -LiteralPath (Join-Path $UiDirectory 'NvofControl.runtimeconfig.json') -Raw | ConvertFrom-Json
 if($runtimeConfig.runtimeOptions.framework -or $runtimeConfig.runtimeOptions.frameworks){throw 'UI is framework-dependent; publish self-contained first.'}
-foreach($name in @('NvofPotPlayer.ax','NvofRegister.exe')){
+foreach($name in @('NvofPotPlayer.ax','NvofRegister.exe','NvofFrucBridge.dll')){
     if(-not (Test-Path -LiteralPath (Join-Path $NativeDirectory $name))){throw "Native build missing: $name"}
 }
 foreach($name in $runtimeFiles){
     if(-not (Test-Path -LiteralPath (Join-Path $RuntimeDirectory $name))){throw "Runtime file missing: $name. See third-party notices."}
 }
 $pinnedRuntime=Get-Content -LiteralPath (Join-Path $project 'config/runtime-manifest.json') -Raw | ConvertFrom-Json
-foreach($entry in $pinnedRuntime.files){
+foreach($entry in $pinnedRuntime.files | Where-Object {$_.name -in $runtimeFiles}){
     $file=Join-Path $RuntimeDirectory $entry.name
     if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.sha256){throw "Runtime SHA256 mismatch: $($entry.name)"}
 }
@@ -49,6 +49,7 @@ Copy-Item -LiteralPath (Join-Path $project 'config/NvofPotPlayer.ini') -Destinat
 $runtimeOutput=Join-Path $destination 'runtime'
 New-Item -ItemType Directory -Path $runtimeOutput -Force | Out-Null
 foreach($file in $runtimeFiles){Copy-Item -LiteralPath (Join-Path $RuntimeDirectory $file) -Destination $runtimeOutput}
+Copy-Item -LiteralPath (Join-Path $NativeDirectory 'NvofFrucBridge.dll') -Destination $runtimeOutput
 foreach($file in @('LICENSE','THIRD_PARTY_NOTICES.md')){Copy-Item -LiteralPath (Join-Path $project $file) -Destination $destination}
 Copy-Item -LiteralPath (Join-Path $project 'licenses') -Destination $destination -Recurse
 $configOutput=Join-Path $destination 'config'

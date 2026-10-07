@@ -5,8 +5,8 @@ The [MIT license](LICENSE) applies to original project source. It does not apply
 | Component | Use | Terms / provenance |
 | --- | --- | --- |
 | Microsoft DirectShow baseclasses | Statically linked native filter | [MIT notice](licenses/Microsoft-Windows-Samples-MIT.txt); pinned Windows-classic-samples revision in the build script |
-| rigaya NVEncNVOFFRUC | Runtime adapter to NvOFFRUC | [MIT notice](licenses/NVEnc-MIT.txt); NVEnc 9.37 |
-| NVIDIA NvOFFRUC | Optical Flow frame interpolation | NVIDIA proprietary; applicable public redistribution grant has not been established for the exact acquired binary |
+| rigaya NVEncNVOFFRUC | Original integration adapter and reference; replaced by project NvofFrucBridge in the phase upgrade | [MIT notice](licenses/NVEnc-MIT.txt); NVEnc 9.37 |
+| NVIDIA NvOFFRUC | Optical Flow frame interpolation | NVIDIA proprietary; binary matches official SDK 5.0.7, but an applicable public redistribution grant remains unconfirmed |
 | CUDA runtime 11.2 | Required by NvOFFRUC | NVIDIA CUDA EULA; versioned runtime library in its redistribution list |
 | Microsoft Visual C++ runtime | App-local dependencies of NvOFFRUC | Visual Studio 2022 distribution terms; unmodified signed release files |
 | .NET and WPF 10.0.12 | Self-contained control application | Upstream .NET/WPF license and third-party notices in `licenses/` |

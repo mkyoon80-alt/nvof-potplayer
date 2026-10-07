@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "nvof/phase_quality.hpp"
 namespace nvof {
 struct Frame {
     int width = 0;
@@ -17,9 +18,14 @@ public:
     ~FrucEngine();
     FrucEngine(const FrucEngine&) = delete;
     FrucEngine& operator=(const FrucEngine&) = delete;
-    // Returns a packed NV12 frame halfway between two strictly ordered frames.
-    // Keeps one sequential FRUC session, re-primes when previous is not cached.
-    // Throws on GPU/runtime failure. Never silently substitutes a blend.
+    // Generate up to 32 strictly increasing timestamps inside an original pair.
+    // Independent FRUC histories share one upload of each original. Empty requests
+    // advance existing histories. Hard cuts return no frames and close history.
+    // Output frames own their pixels; no input memory is retained by reference.
+    PhaseBatch<Frame> interpolate_pair(const Frame& previous, const Frame& current,
+                                      const std::vector<int64_t>& timestamps);
+    // Compatibility helper: holds the previous original when quality rejects
+    // motion; otherwise returns the genuine halfway phase, never a blend.
     Frame midpoint(const Frame& previous, const Frame& current);
     void reset() noexcept;
     std::string device_name() const;

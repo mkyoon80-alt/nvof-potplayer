@@ -1,6 +1,7 @@
-param([ValidateSet('Debug','Release')][string]$Configuration='Release')
+﻿param([ValidateSet('Debug','Release')][string]$Configuration='Release', [string]$BuildDirectory, [string]$FrucSdkIncludeDirectory, [string]$OpticalFlowSdkIncludeDirectory)
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot -Parent
+if(-not $BuildDirectory){$BuildDirectory=Join-Path $project 'build'}
 $baseclasses=Join-Path $project 'third_party/windows_samples/Samples/Win7Samples/multimedia/directshow/baseclasses/streams.h'
 if (-not (Test-Path -LiteralPath $baseclasses)) {
     throw 'Run tools/fetch-build-deps.ps1 first to acquire the pinned DirectShow baseclasses.'
@@ -15,9 +16,12 @@ if(-not $cmake){
     }
 }
 if(-not $cmake -or -not (Test-Path -LiteralPath $cmake)){throw 'Install CMake or Visual Studio C++ CMake tools.'}
-& $cmake -S $project -B (Join-Path $project 'build') -G 'Visual Studio 17 2022' -A x64
+$configure=@('-S',$project,'-B',$BuildDirectory,'-G','Visual Studio 17 2022','-A','x64','-DNVOF_BUILD_FRUC_BRIDGE=ON')
+if($FrucSdkIncludeDirectory){$configure+="-DNVOF_FRUC_INCLUDE_DIR=$FrucSdkIncludeDirectory"}
+if($OpticalFlowSdkIncludeDirectory){$configure+="-DNVOF_API_INCLUDE_DIR=$OpticalFlowSdkIncludeDirectory"}
+& $cmake @configure
 if($LASTEXITCODE -ne 0){throw 'CMake configuration failed'}
-& $cmake --build (Join-Path $project 'build') --config $Configuration --parallel 4
+& $cmake --build $BuildDirectory --config $Configuration --parallel 4
 if($LASTEXITCODE -ne 0){throw 'Native build failed'}
-& (Join-Path (Split-Path $cmake) 'ctest.exe') --test-dir (Join-Path $project 'build') -C $Configuration --output-on-failure
+& (Join-Path (Split-Path $cmake) 'ctest.exe') --test-dir $BuildDirectory -C $Configuration --output-on-failure
 if($LASTEXITCODE -ne 0){throw 'Core tests failed'}
