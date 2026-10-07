@@ -1,0 +1,10 @@
+* text=auto
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.cs text eol=lf
+*.xaml text eol=lf
+*.ps1 text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.png binary
+*.pdf binary

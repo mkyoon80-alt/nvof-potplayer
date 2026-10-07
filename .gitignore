@@ -1,0 +1,39 @@
+# Local builds, downloads, installed copies, and user settings
+/build/
+/bin/
+/backup/
+/runtime/
+/third_party/
+/dist/
+/NvofPotPlayer.ini
+*.obj
+*.res
+*.pdb
+*.user
+*.suo
+.vs/
+/ui/bin/
+/ui/obj/
+/ui/staging*/
+/ui/qa/
+# Private development notes and capture analysis
+/.impeccable/
+/DESIGN.md
+/PRODUCT.md
+/ui/surface-brief.md
+/docs/*.txt
+/docs/*.json
+/docs/VALIDATION.md
+/tools/compare-color-captures.py
+/tools/switch-mf-trial.ps1
+/tools/install-rate-color-update.ps1
+/tools/install-ui-refresh.ps1
+
+# Public repository intentionally contains source, not executable payloads
+*.dll
+*.exe
+*.ax
+*.zip
+*.7z
+*.lib
+*.exp

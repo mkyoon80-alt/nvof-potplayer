@@ -1,0 +1,17 @@
+#pragma code_page(65001)
+#include <windows.h>
+
+100 DIALOGEX 0, 0, 274, 106
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_CAPTION
+CAPTION "NVIDIA Optical Flow"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "NVIDIA Optical Flow for PotPlayer", -1, 12, 12, 250, 14
+    LTEXT "재생 상태와 목표 FPS는 설정 창에서 확인할 수 있습니다.", -1, 12, 33, 250, 24
+    PUSHBUTTON "설정 창 열기", 1001, 12, 64, 94, 23
+END
+
+STRINGTABLE
+BEGIN
+    101 "NVIDIA Optical Flow"
+END
