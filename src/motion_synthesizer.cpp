@@ -161,7 +161,7 @@ struct MotionSynthesizer::Impl {
             }
             for(unsigned i=0;i<2;++i) {
                 D3D11_TEXTURE2D_DESC d{};d.Width=w;d.Height=h;d.MipLevels=d.ArraySize=1;
-                d.Format=DXGI_FORMAT_R8_UNORM;d.SampleDesc.Count=1;d.Usage=D3D11_USAGE_DEFAULT;
+                d.Format=DXGI_FORMAT_R8G8_UNORM;d.SampleDesc.Count=1;d.Usage=D3D11_USAGE_DEFAULT;
                 d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;
                 check(device->CreateTexture2D(&d,nullptr,&layerTextures[i]),"Stationary mask texture");
                 check(device->CreateRenderTargetView(layerTextures[i].Get(),nullptr,&layerTargets[i]),"Stationary mask RTV");

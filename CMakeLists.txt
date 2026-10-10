@@ -99,3 +99,14 @@ target_link_libraries(native_motion_sampling PRIVATE nvof_engine nvof_gpu_engine
 add_dependencies(native_motion_sampling nvof_shader_headers)
 target_include_directories(native_motion_sampling PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 add_test(NAME motion_sampling COMMAND native_motion_sampling)
+
+add_executable(native_overlay_probe tests/native_overlay_probe.cpp)
+target_link_libraries(native_overlay_probe PRIVATE nvof_engine nvof_gpu_engine nvof_gpu_pipeline nvof_gpu_phase_pipeline nvof_mf_bridge)
+add_dependencies(native_overlay_probe nvof_shader_headers)
+target_include_directories(native_overlay_probe PRIVATE "${NVOF_API_INCLUDE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+add_executable(native_stationary_plate tests/native_stationary_plate.cpp)
+target_link_libraries(native_stationary_plate PRIVATE nvof_engine nvof_gpu_engine nvof_gpu_pipeline nvof_gpu_phase_pipeline nvof_mf_bridge)
+add_dependencies(native_stationary_plate nvof_shader_headers)
+target_include_directories(native_stationary_plate PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_test(NAME stationary_plate COMMAND native_stationary_plate)

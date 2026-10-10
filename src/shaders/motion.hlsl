@@ -7,7 +7,7 @@ Texture2D<int2> fw:register(t4);
 Texture2D<int2> bw:register(t5);
 Texture2D<float4> inverseOffsets:register(t6);
 Texture2D<float4> inverseWeights:register(t7);
-Texture2D<float> layerMask:register(t8);
+Texture2D<float2> layerMask:register(t8);
 Texture2D<uint> forwardCost:register(t9);
 Texture2D<uint> backwardCost:register(t10);
 Texture2D<int2> rawForward:register(t11);
@@ -273,7 +273,7 @@ float alignedPatchError(float2 a,float2 b) {
 // Stationary overlays and candidates without a clear patch improvement stay on
 // the established Newton path. This never changes a pair into a frame hold.
 bool coherentTrajectory(float2 p,inout float2 a,inout float2 b,inout float qa,inout float qb) {
-    if(max(qa,qb)>=0.35||abs(yAt(a,false)-yAt(b,true))*255.0<8.0||layerMask.SampleLevel(linearClamp,p/size.xy,0)>0.1)return false;
+    if(max(qa,qb)>=0.35||abs(yAt(a,false)-yAt(b,true))*255.0<8.0||layerMask.SampleLevel(linearClamp,p/size.xy,0).x>0.1)return false;
     float error=alignedPatchError(a,b);
     if(error<6.0)return false;
     float scale=max(size.x/size.z,size.y/size.w),bestError=error;
@@ -288,7 +288,7 @@ bool coherentTrajectory(float2 p,inout float2 a,inout float2 b,inout float qa,in
         float2 v=next?-local:local;
         float2 ca=p-mode.w*v,cb=p+(1.0-mode.w)*v;
         if(!inside(ca)||!inside(cb))continue;
-        if(max(layerMask.SampleLevel(linearClamp,ca/size.xy,0),layerMask.SampleLevel(linearClamp,cb/size.xy,0))>0.1)continue;
+        if(max(layerMask.SampleLevel(linearClamp,ca/size.xy,0).x,layerMask.SampleLevel(linearClamp,cb/size.xy,0).x)>0.1)continue;
         float candidate=alignedPatchError(ca,cb);
         if(candidate<6.0&&candidate<bestError*0.75&&candidate<error*0.5) {
             // At least one endpoint must directly support this trajectory;
@@ -325,7 +325,28 @@ InverseOutput inverseMapOff(float4 screen:SV_Position) {return inverseMapPolicy(
 // Seed a stationary layer from matching high-contrast source detail. Expand
 // its mask at full resolution before sampling displaced source positions, so
 // antialiased edges do not leak outside a stationary glyph or curved outline.
-float stationaryLayer(float2 p) {
+// Require the same closed opaque span in both originals along both axes.
+// A moving bright rectangle can have a fixed-looking top edge; its side bounds
+// still move. An unbounded/ambiguous span is not accepted as a stationary plate.
+bool fixedOpaqueSpan(float2 p,float2 direction) {
+    [loop]for(int k=1;k<=64;++k) {
+        float2 q=p+direction*float(k*4);
+        if(!inside(q))return false;
+        float a=yAt(q,false)*255.0,b=yAt(q,true)*255.0;
+        if(min(a,b)<208.0) {
+            float worst=0;
+            [unroll]for(int j=-4;j<=1;++j) {
+                float2 at=q+direction*float(j);
+                float aa=yAt(at,false)*255.0,bb=yAt(at,true)*255.0;
+                // Compare the opaque coverage rather than the moving background.
+                worst=max(worst,abs(saturate((aa-208.0)/12.0)-saturate((bb-208.0)/12.0)));
+            }
+            return worst<0.08;
+        }
+    }
+    return false;
+}
+float2 stationaryLayer(float2 p) {
     float centerA=yAt(p,false),centerB=yAt(p,true);
     float error=0,weight=0;
     [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-1;x<=1;++x) {
@@ -337,7 +358,7 @@ float stationaryLayer(float2 p) {
         error+=local*delta*delta;weight+=local;
     }
     if(error/weight>=4.0)return 0.0;
-    float detail=0;
+    float detail=0,plateDetail=0;
     [unroll]for(int k=0;k<4;++k) {
         float2 d=k==0?float2(8,0):(k==1?float2(-8,0):(k==2?float2(0,8):float2(0,-8)));
         float da=(yAt(p+d,false)-centerA)*255.0,db=(yAt(p+d,true)-centerB)*255.0;
@@ -358,6 +379,7 @@ float stationaryLayer(float2 p) {
             // A changing background can change contrast without moving the edge.
             // The normalized profile above checks its position independently.
             detail=max(detail,consistent*sameEdge);
+            plateDetail=max(plateDetail,(1.0-smoothstep(0.015,0.04,positionError))*sameEdge);
         }
     }
     // Flat, similarly colored areas are not evidence of a stationary object.
@@ -375,18 +397,44 @@ float stationaryLayer(float2 p) {
         }
         still*=smoothstep(0.5,2.0,(motionError-fixedError)/25.0);
     }
-    return still;
+    // A neutral opaque graphic has invariant source color and edge position.
+    // Hardware flow matching the background is not evidence against that layer.
+    float2 ca=abs(uvAt(p,false)*255.0-128.0),cb=abs(uvAt(p,true)*255.0-128.0);
+    float neutral=max(max(ca.x,ca.y),max(cb.x,cb.y));
+    float plate=smoothstep(208.0,220.0,min(centerA,centerB)*255.0)*
+        (1.0-smoothstep(1.0,3.0,neutral))*(1.0-smoothstep(0.5,1.5,abs(centerA-centerB)*255.0))*
+        smoothstep(48.0,96.0,plateDetail);
+    [branch]if(plate>still) {
+        // A fixed overlay has near-zero local flow; inspect its neighboring
+        // background before skipping work, otherwise leaking source pixels
+        // inside the zero-motion plate would never receive protection.
+        float movement=max(length(flow(p,false)),length(flow(p,true)));
+        [unroll]for(int d=0;d<4;++d) {
+            float2 delta=d==0?float2(16,0):d==1?float2(-16,0):d==2?float2(0,16):float2(0,-16);
+            movement=max(movement,max(length(flow(p+delta,false)),length(flow(p+delta,true))));
+        }
+        if(movement<2.0)return float2(still,0);
+        if(!fixedOpaqueSpan(p,float2(1,0))||!fixedOpaqueSpan(p,float2(-1,0))||
+           !fixedOpaqueSpan(p,float2(0,1))||!fixedOpaqueSpan(p,float2(0,-1)))plate=0;
+    }
+    return float2(still,plate);
 }
 float4 stationaryMask(float4 screen:SV_Position):SV_Target {
-    return float4(stationaryLayer(screen.xy),0,0,1);
+    return float4(stationaryLayer(screen.xy),0,1);
 }
 float4 expandStationaryMask(float4 screen:SV_Position):SV_Target {
-    float mask=0;
+    float2 mask=0;float2 p=screen.xy;
+    float centerA=yAt(p,false),centerB=yAt(p,true);
+    bool opaque=min(centerA,centerB)*255.0>208.0&&abs(centerA-centerB)*255.0<1.5;
     [unroll]for(int offset=-4;offset<=4;++offset) {
         int2 d=mode.z==0?int2(offset,0):int2(0,offset);
-        mask=max(mask,layerMask.Load(int3(clamp(int2(screen.xy)+d,0,int2(size.xy)-1),0)));
+        float2 candidate=layerMask.Load(int3(clamp(int2(p)+d,0,int2(size.xy)-1),0));
+        mask.x=max(mask.x,candidate.x);
+        // The extra plate layer never expands into the moving background.
+        if(opaque&&abs(yAt(p+d,false)-centerA)*255.0<2.0&&abs(yAt(p+d,true)-centerB)*255.0<2.0)
+            mask.y=max(mask.y,candidate.y);
     }
-    return float4(mask,0,0,1);
+    return float4(mask,0,1);
 }
 float2 mappedColor(float2 p,float4 offsets,float4 weights) {
     float2 a=p+offsets.xy,b=p+offsets.zw;
@@ -395,10 +443,16 @@ float2 mappedColor(float2 p,float4 offsets,float4 weights) {
     float ta=weights.x*weights.z,tb=weights.y*weights.w;
     float2 ca=color(a,false),cb=color(b,true);
     float2 warped=ta+tb>0.0?(ca*ta+cb*tb)/(ta+tb):lerp(ca,cb,mode.w);
-    float still=layerMask.SampleLevel(linearClamp,p/size.xy,0);
-    float sa=layerMask.SampleLevel(linearClamp,a/size.xy,0)*smoothstep(1.0,3.0,length(a-p));
-    float sb=layerMask.SampleLevel(linearClamp,b/size.xy,0)*smoothstep(1.0,3.0,length(b-p));
+    float still=layerMask.SampleLevel(linearClamp,p/size.xy,0).x;
+    float sa=layerMask.SampleLevel(linearClamp,a/size.xy,0).x*smoothstep(1.0,3.0,length(a-p));
+    float sb=layerMask.SampleLevel(linearClamp,b/size.xy,0).x*smoothstep(1.0,3.0,length(b-p));
     float2 fixed=lerp(color(p,false),color(p,true),mode.w);
+    // Separate provenance for opaque fixed graphics; do not feed this stronger
+    // evidence into Newton recovery or widen the existing background margin.
+    float plate=layerMask.SampleLevel(linearClamp,p/size.xy,0).y;
+    sa=max(sa,layerMask.SampleLevel(linearClamp,a/size.xy,0).y*smoothstep(1.0,3.0,length(a-p)));
+    sb=max(sb,layerMask.SampleLevel(linearClamp,b/size.xy,0).y*smoothstep(1.0,3.0,length(b-p)));
+    still=max(still,plate);
     float sourceStatic=max(sa,sb);
     // The dilated mask also covers a narrow moving-background margin. Only
     // replace the conservative fallback with the other warped direction when
