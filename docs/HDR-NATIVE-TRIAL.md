@@ -46,12 +46,12 @@ Validation:
 - Existing explicit HDR10/HLG and untagged P010 SDR transport passed. CTest 11/11 passed. Installed runtime check passed without bundled FRUC/CUDA/driver libraries.
 - Actual PotPlayer replay: BT.2020 primaries 9, matrix 4, PQ transfer 15; P010 input/output; 80-byte mastering and 8-byte light metadata delivered. **The owner confirmed normal color after installation.**
 
-This verifies the supplied HDR10-compatible file with the owner's current decoder/renderer setup. Actual HLG media/display playback remains unverified. Physical monitor HDR activation is not inferred from the filter's signal label. GitHub publication remains on hold; only the local filter was updated, with settings and the previous 0.4.0 backed up.
+This verifies the supplied HDR10-compatible file with the owner's current decoder/renderer setup. Actual HLG media/display playback remains unverified. Physical monitor HDR activation is not inferred from the filter's signal label. The tested correction is included in the public v0.4.0 release. The earlier local installation retained settings and backed up the previous build.
 
 ## UI / standalone
 
 The obsolete 화질 보정 tab is removed; automatic protection remains. Three tabs are 보간 설정 / 연결 설정 / 진단. Connection settings provide current-folder registration/open/unregister, with a player-running check and per-folder ownership checks. A machine registration requests Windows elevation when removal is needed. No file deletion occurs from unregister. 프로그램 제거 appears only with a valid same-folder installed uninstaller. Moving a portable folder requires unregistering first and registering again at the destination.
 
-Diagnostics expose actual input/output formats and SDR/HDR10/HLG signal type. Build `0.4.0` is a local self-contained portable trial, not a GitHub release. The original filter and settings are backed up separately when installed for user testing.
+Diagnostics expose actual input/output formats and SDR/HDR10/HLG signal type. Release `v0.4.0` packages the self-contained portable build with the confirmed `0.4.0-hdr.1` correction. The earlier local trial and its backups remain separate from release artifacts.
 
 Manual screenshot provenance: `docs/manual/images/controller.png` is the offline WPF `limit120` illustrative fixture at 464×461 logical content pixels / scale 1, copied from `build/hdr1/ui-qa/limit120-1.png`. It uses the current three-tab layout and is not a live playback capture. No original movie frames or user screenshots are shipped.

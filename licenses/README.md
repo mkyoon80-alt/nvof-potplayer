@@ -1,6 +1,6 @@
 # Component notices: native standalone build
 
-This development branch builds the native D3D11 synthesizer only. Both GPU texture input and system-memory NV12 input use it. The package includes the filter, registration helper, controller and its self-contained .NET/WPF runtime.
+Release v0.4.0 builds the native D3D11 synthesizer only. Both GPU texture input and system-memory NV12 input use it. The package includes the filter, registration helper, controller and its self-contained .NET/WPF runtime.
 
 ## NVIDIA
 

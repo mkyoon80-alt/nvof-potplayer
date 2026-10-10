@@ -51,14 +51,16 @@ $manualOutput=Join-Path $destination 'docs/manual'
 New-Item -ItemType Directory -Path $manualOutput -Force | Out-Null
 Copy-Item -Path (Join-Path $project 'docs/manual/*') -Destination $manualOutput -Recurse
 Copy-Item -LiteralPath (Join-Path $project 'RELEASE.md') -Destination $destination
-foreach($note in @('STANDALONE.md','COST-MAP-FUSION.md','FLOW-PROFILE-TRIAL.md','SESSION-REUSE.md','QUALITY-TRIAL.md','STATIC-OVERLAY-TRIAL.md','CREDIT-SCROLL-TRIAL.md','INTEGER-RATE-TRIAL.md','MOTION-BOUNDARY-TRIAL.md','HDR-NATIVE-TRIAL.md')){
+foreach($note in @('POTPLAYER_SETUP.ko.md','BUILD.md','STANDALONE.md','COST-MAP-TRIAL.md','COST-MAP-FUSION.md','FLOW-PROFILE-TRIAL.md','SESSION-REUSE.md','QUALITY-TRIAL.md','STATIC-OVERLAY-TRIAL.md','CREDIT-SCROLL-TRIAL.md','INTEGER-RATE-TRIAL.md','MOTION-BOUNDARY-TRIAL.md','HDR-NATIVE-TRIAL.md')){
     Copy-Item -LiteralPath (Join-Path $project ('docs/'+$note)) -Destination (Join-Path $destination 'docs')
 }
 $configOutput=Join-Path $destination 'config'
 New-Item -ItemType Directory -Path $configOutput -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $project 'config/runtime-manifest.json') -Destination $configOutput
 Copy-Item -LiteralPath (Join-Path $project 'ui/dotnet-sdk.json') -Destination $configOutput
-Copy-Item -LiteralPath (Join-Path $project 'docs/POTPLAYER_SETUP.ko.md') -Destination (Join-Path $destination 'START-HERE.ko.md')
+$startHere=Get-Content -LiteralPath (Join-Path $project 'docs/POTPLAYER_SETUP.ko.md') -Raw -Encoding UTF8
+$startHere=$startHere.Replace('(HDR-NATIVE-TRIAL.md)','(docs/HDR-NATIVE-TRIAL.md)')
+[IO.File]::WriteAllText((Join-Path $destination 'START-HERE.ko.md'),$startHere,[Text.UTF8Encoding]::new($false))
 foreach($file in Get-ChildItem -LiteralPath $destination -Recurse -File){
     if($file.Name -in @('NvOFFRUC.dll','NvofFrucBridge.dll','NVEncNVOFFRUC.dll','nvcuda.dll','nvofapi64.dll') -or $file.Name -like 'cudart*.dll'){
         throw "Forbidden runtime in native payload: $($file.Name)"

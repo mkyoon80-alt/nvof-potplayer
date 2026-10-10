@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docs/manual/**'
+      - 'docs/HDR-NATIVE-TRIAL.md'
       - 'licenses/**'
       - 'THIRD_PARTY_NOTICES.md'
       - 'tools/build-manual-site.py'
