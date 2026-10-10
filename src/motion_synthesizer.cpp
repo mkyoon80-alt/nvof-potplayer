@@ -53,7 +53,7 @@ struct MotionSynthesizer::Impl {
     int w=0,h=0,aw=0,ah=0;
     bool prepared=false,history=false;
 
-    Impl(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit):device(d),context(c),maxDimension(limit) {
+    Impl(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit,MotionCostMode costMode):device(d),context(c),maxDimension(limit) {
         if(!d||!c||limit<160||limit>8192)throw std::invalid_argument("Invalid motion synthesis configuration");
         ComPtr<ID3D11Device> owner;c->GetDevice(&owner);
         if(owner.Get()!=d||c->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)
@@ -71,7 +71,12 @@ struct MotionSynthesizer::Impl {
             check(d->CreateVertexShader(shaders::motion::vs,sizeof(shaders::motion::vs),nullptr,&vertex),"Motion vs");
             check(d->CreatePixelShader(shaders::motion::midpoint,sizeof(shaders::motion::midpoint),nullptr,&synth),"Motion midpoint");
             check(d->CreatePixelShader(shaders::motion::downsample,sizeof(shaders::motion::downsample),nullptr,&reduce),"Motion downsample");
-            check(d->CreatePixelShader(shaders::motion::inverseMap,sizeof(shaders::motion::inverseMap),nullptr,&invert),"Motion inverseMap");
+            const unsigned char* inverseCode=shaders::motion::inverseMap;
+            size_t inverseSize=sizeof(shaders::motion::inverseMap);
+            if(costMode==MotionCostMode::disabled){inverseCode=shaders::motion::inverseMapOff;inverseSize=sizeof(shaders::motion::inverseMapOff);}
+            else if(costMode==MotionCostMode::blend_only){inverseCode=shaders::motion::inverseMapBlend;inverseSize=sizeof(shaders::motion::inverseMapBlend);}
+            else if(costMode!=MotionCostMode::confidence_fusion)throw std::invalid_argument("Invalid cost mode");
+            check(d->CreatePixelShader(inverseCode,inverseSize,nullptr,&invert),"Motion inverseMap");
             check(d->CreatePixelShader(shaders::motion::stationaryMask,sizeof(shaders::motion::stationaryMask),nullptr,&stationary),"Motion stationaryMask");
             check(d->CreatePixelShader(shaders::motion::expandStationaryMask,sizeof(shaders::motion::expandStationaryMask),nullptr,&expandStationary),"Motion expandStationaryMask");
             check(d->CreatePixelShader(shaders::motion::repairMotion,sizeof(shaders::motion::repairMotion),nullptr,&repair),"Motion repairMotion");
@@ -250,7 +255,7 @@ struct MotionSynthesizer::Impl {
     }
 };
 
-MotionSynthesizer::MotionSynthesizer(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit):impl_(std::make_unique<Impl>(d,c,limit)){}
+MotionSynthesizer::MotionSynthesizer(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit,MotionCostMode costMode):impl_(std::make_unique<Impl>(d,c,limit,costMode)){}
 MotionSynthesizer::~MotionSynthesizer()=default;
 bool MotionSynthesizer::cost_map_active() const noexcept {return impl_->prepared&&impl_->costFormat==DXGI_FORMAT_R8_UINT;}
 bool MotionSynthesizer::reliable() const noexcept {return impl_->prepared&&impl_->trustworthy;}

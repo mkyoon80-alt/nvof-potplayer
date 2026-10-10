@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include "phase_quality.hpp"
+#include "motion_synthesizer.hpp"
 #include <vector>
 #include <filesystem>
 #include <memory>
@@ -38,7 +39,8 @@ public:
                   bool stabilize_midpoint = true,
                   bool protect_appearance = true,
                   GpuInterpolationBackend backend = GpuInterpolationBackend::native_experimental,
-                  unsigned max_flow_dimension = 1920);
+                  unsigned max_flow_dimension = 1920,
+                  MotionCostMode cost_mode = MotionCostMode::confidence_fusion);
     ~GpuFrucEngine();
     GpuFrucEngine(const GpuFrucEngine&) = delete;
     GpuFrucEngine& operator=(const GpuFrucEngine&) = delete;

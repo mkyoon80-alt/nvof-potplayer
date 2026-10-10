@@ -5,9 +5,10 @@ namespace nvof {
 // Standalone NVOFA synthesis: no FRUC fallback and no CUDA transfer.
 // Caller holds the shared immediate-context lock and restores pipeline state.
 // prepare retains sources until the next call; outputs must not alias inputs.
+enum class MotionCostMode { disabled, blend_only, confidence_fusion };
 class MotionSynthesizer {
 public:
-    MotionSynthesizer(ID3D11Device*, ID3D11DeviceContext*, unsigned max_flow_dimension = 1920);
+    MotionSynthesizer(ID3D11Device*, ID3D11DeviceContext*, unsigned max_flow_dimension = 1920, MotionCostMode cost_mode = MotionCostMode::confidence_fusion);
     ~MotionSynthesizer();
     MotionSynthesizer(const MotionSynthesizer&) = delete;
     MotionSynthesizer& operator=(const MotionSynthesizer&) = delete;

@@ -25,7 +25,7 @@ int wmain(){try {
 
     ComPtr<ID3D11VertexShader> vs;ComPtr<ID3D11PixelShader> ps;
     check(device->CreateVertexShader(shaders::motion::vs,sizeof(shaders::motion::vs),nullptr,&vs),"VS");
-    check(device->CreatePixelShader(shaders::motion::inverseMap,sizeof(shaders::motion::inverseMap),nullptr,&ps),"PS");
+    check(device->CreatePixelShader(shaders::motion::inverseMapBlend,sizeof(shaders::motion::inverseMapBlend),nullptr,&ps),"PS");
     D3D11_BUFFER_DESC cd{};cd.ByteWidth=32;cd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
     float constants[]={8,8,8,8,4,0,0,.5f};D3D11_SUBRESOURCE_DATA cdata{constants,0,0};ComPtr<ID3D11Buffer> cb;
     check(device->CreateBuffer(&cd,&cdata,&cb),"Constants");
@@ -70,5 +70,33 @@ int wmain(){try {
     // At p=(3.5,3.5), the top-left grid weight is (1-.375)^2.
     require(std::abs(filtered[(3*8+3)*4+2]-(.25f+.75f*.625f*.625f))<1e-6f,"Cost sampling is not aligned and bilinear");
     std::cout<<"PASS zero/absent cost, forward/backward separation, bounded cost, unchanged geometry, repaired-vector provenance, bilinear grid alignment"<<std::endl;
+
+    // Perfect correspondence is not weakened by unrelated hardware cost.
+    ps.Reset();
+    check(device->CreatePixelShader(shaders::motion::inverseMap,sizeof(shaders::motion::inverseMap),nullptr,&ps),"Fusion PS");
+    context->UpdateSubresource(input[9].Get(),0,nullptr,high,2,0);
+    auto exact=render(true);
+    for(int i=0;i<64;++i)require(std::abs(exact[4*i+2]-1)<1e-6f&&exact[4*i+3]==1,"Cost degraded exact local correspondence");
+
+    // Ambiguous image agreement gets a directional, bounded penalty, without
+    // changing the independent geometry score or boosting the other direction.
+    float uncertain[64];std::fill(std::begin(uncertain),std::end(uncertain),.54f);
+    context->UpdateSubresource(input[1].Get(),0,nullptr,uncertain,32,0);
+    auto weak=render(true),without=render(false);
+    for(int i=0;i<64;++i) {
+        require(weak[4*i+2]>=.10f&&weak[4*i+2]<.95f&&weak[4*i+3]==1,"Ambiguous evidence did not use directional cost");
+        require(weak[4*i]==without[4*i]&&weak[4*i+1]==without[4*i+1],"Cost overwrote independent evidence");
+        require(without[4*i+2]==1&&without[4*i+3]==1,"Missing cost was not neutral in fusion");
+    }
+    // A large mismatch remains invalid; low hardware cost cannot rescue it.
+    std::fill(std::begin(uncertain),std::end(uncertain),.9f);
+    context->UpdateSubresource(input[1].Get(),0,nullptr,uncertain,32,0);
+    auto invalid=render(true);
+    for(int i=0;i<64;++i)require(invalid[4*i]<.001f&&invalid[4*i+1]<.001f&&invalid[4*i+2]>.99f,"Cost overruled invalid image evidence");
+
+    context->UpdateSubresource(input[4].Get(),0,nullptr,corrected,8,0);
+    auto fixed=render(true);
+    for(int i=0;i<64;++i)require(fixed[4*i+2]==1,"Fusion used cost from a different repaired vector");
+    std::cout<<"PASS fusion: strong agreement protected, ambiguous evidence weighted, invalid match not rescued, absent cost and repaired-vector provenance"<<std::endl;
     return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

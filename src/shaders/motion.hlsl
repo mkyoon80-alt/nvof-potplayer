@@ -189,30 +189,6 @@ float warpReliability(float2 q,float2 p,bool next,float fraction) {
         (1.0+dot(residual,residual)/(0.25*scale*scale));
 }
 
-// A single Newton seed can converge to the background branch at an occlusion.
-// Retry only folded or unsolved mappings, retaining the original solution
-// unless an in-bounds alternative has clearly better bidirectional evidence.
-// The bounded five-seed search runs at analysis resolution, shared by Y/UV.
-float2 inversePosition(float2 p,bool next,float fraction) {
-    float2 best=solveInverse(p,next,fraction,p-fraction*flow(p,next));
-    float quality=(0.05+evidence(best,p,next))*warpReliability(best,p,next,fraction);
-    float scale=max(size.x/size.z,size.y/size.w);
-    float2 dx,dy,v=flowGradient(best,next,dx,dy);
-    float2 residual=best+fraction*v-p;
-    float2 jx=float2(1,0)+fraction*dx,jy=float2(0,1)+fraction*dy;
-    float determinant=jx.x*jy.y-jy.x*jx.y;
-    if(quality<0.4&&(determinant<0.25||dot(residual,residual)>0.25*scale*scale)) {
-        [loop]for(int k=0;k<5;++k) {
-            float2 direction=k==1?float2(1,0):k==2?float2(-1,0):k==3?float2(0,1):float2(0,-1);
-            float2 seed=k==0?p+fraction*flow(p,!next):p-fraction*flow(p+direction*32.0*scale,next);
-            float2 q=solveInverse(p,next,fraction,seed);
-            if(!inside(q))continue;
-            float score=(0.05+evidence(q,p,next))*warpReliability(q,p,next,fraction);
-            if(score>quality*1.2+0.001){best=q;quality=score;}
-        }
-    }
-    return best;
-}
 // Cost belongs to the hardware vector at the same source-grid coordinate.
 // A repaired vector has no hardware cost; leave its existing evidence intact.
 // An unbound cost SRV reads zero, preserving baseline weights on unsupported GPUs.
@@ -232,22 +208,68 @@ float hardwareWeight(float2 p,bool next) {
     return lerp(lerp(hardwareWeightAt(clamp(i,0,hi),next),hardwareWeightAt(clamp(i+int2(1,0),0,hi),next),t.x),
                 lerp(hardwareWeightAt(clamp(i+int2(0,1),0,hi),next),hardwareWeightAt(clamp(i+1,0,hi),next),t.x),t.y);
 }
+
+// Apply hardware uncertainty only where image/geometry evidence is ambiguous.
+// Strong local agreement should not be damaged by an uncalibrated hardware cost;
+// almost-invalid candidates must not be promoted merely for having low cost.
+// Neutral/absent costs and repaired vectors leave the local score unchanged.
+float fusedHardwareWeight(float2 q,bool next,float localQuality) {
+    float confidence=saturate(localQuality/1.05);
+    float ambiguous=4.0*confidence*(1.0-confidence);
+    float hw=hardwareWeight(q,next);
+    // Re-express the legacy cost/64 weight at four times the sensitivity.
+    // This is a bounded heuristic, not a calibrated error probability; apply
+    // it after spatial interpolation so repaired/unknown cells stay neutral.
+    return lerp(1.0,max(0.10,hw/(4.0-3.0*hw)),ambiguous);
+}
+float candidateQuality(float2 q,float2 p,bool next,float fraction,int policy) {
+    float quality=(0.05+evidence(q,p,next))*warpReliability(q,p,next,fraction);
+    return quality*(policy>=2?fusedHardwareWeight(q,next,quality):1.0);
+}
+// A single Newton seed can converge to the background branch at an occlusion.
+// Retry only folded or unsolved mappings, retaining the original solution
+// unless an in-bounds alternative has clearly better bidirectional evidence.
+// The bounded five-seed search runs at analysis resolution, shared by Y/UV.
+float2 inversePosition(float2 p,bool next,float fraction,int policy) {
+    float2 best=solveInverse(p,next,fraction,p-fraction*flow(p,next));
+    float quality=candidateQuality(best,p,next,fraction,policy);
+    float scale=max(size.x/size.z,size.y/size.w);
+    float2 dx,dy,v=flowGradient(best,next,dx,dy);
+    float2 residual=best+fraction*v-p;
+    float2 jx=float2(1,0)+fraction*dx,jy=float2(0,1)+fraction*dy;
+    float determinant=jx.x*jy.y-jy.x*jx.y;
+    if(quality<0.4&&(determinant<0.25||dot(residual,residual)>0.25*scale*scale)) {
+        [loop]for(int k=0;k<5;++k) {
+            float2 direction=k==1?float2(1,0):k==2?float2(-1,0):k==3?float2(0,1):float2(0,-1);
+            float2 seed=k==0?p+fraction*flow(p,!next):p-fraction*flow(p+direction*32.0*scale,next);
+            float2 q=solveInverse(p,next,fraction,seed);
+            if(!inside(q))continue;
+            float score=candidateQuality(q,p,next,fraction,policy);
+            if(score>quality*1.2+0.001){best=q;quality=score;}
+        }
+    }
+    return best;
+}
 // Compute one continuous inverse field and its visibility weights per output
 // time. Both full-resolution planes sample it, avoiding independent per-pixel
 // branch choices and Y/UV disagreement. Only the map is at analysis resolution.
 struct InverseOutput { float4 offsets:SV_Target0;float4 weights:SV_Target1; };
-InverseOutput inverseMap(float4 screen:SV_Position) {
+InverseOutput inverseMapPolicy(float4 screen,int policy) {
     float2 p=screen.xy*size.xy/size.zw;
-    float2 a=inversePosition(p,false,mode.w),b=inversePosition(p,true,1.0-mode.w);
-    float wa=evidence(a,p,false),wb=evidence(b,p,true);
+    bool fusion=policy>=2;
+    float2 a=inversePosition(p,false,mode.w,policy),b=inversePosition(p,true,1.0-mode.w,policy);
+    float qa=(0.05+evidence(a,p,false))*warpReliability(a,p,false,mode.w);
+    float qb=(0.05+evidence(b,p,true))*warpReliability(b,p,true,1.0-mode.w);
+    float ca=policy==0?1.0:(fusion?fusedHardwareWeight(a,false,qa):hardwareWeight(a,false));
+    float cb=policy==0?1.0:(fusion?fusedHardwareWeight(b,true,qb):hardwareWeight(b,true));
     InverseOutput result;
     result.offsets=float4(a-p,b-p);
-    result.weights=float4(
-        inside(a)?(1.0-mode.w)*(0.05+wa)*warpReliability(a,p,false,mode.w):0.0,
-        inside(b)?mode.w*(0.05+wb)*warpReliability(b,p,true,1.0-mode.w):0.0,
-        hardwareWeight(a,false),hardwareWeight(b,true));
+    result.weights=float4(inside(a)?(1.0-mode.w)*qa:0.0,inside(b)?mode.w*qb:0.0,ca,cb);
     return result;
 }
+InverseOutput inverseMap(float4 screen:SV_Position) {return inverseMapPolicy(screen,2);}
+InverseOutput inverseMapBlend(float4 screen:SV_Position) {return inverseMapPolicy(screen,1);}
+InverseOutput inverseMapOff(float4 screen:SV_Position) {return inverseMapPolicy(screen,0);}
 // Seed a stationary layer from matching high-contrast source detail. Expand
 // its mask at full resolution before sampling displaced source positions, so
 // antialiased edges do not leak outside a stationary glyph or curved outline.

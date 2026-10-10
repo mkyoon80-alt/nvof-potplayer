@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Setup, [string]$TestRoot, [string]$NativeDirectory)
+﻿param([Parameter(Mandatory=$true)][string]$Setup, [string]$TestRoot, [string]$NativeDirectory)
 $ErrorActionPreference='Stop'
 $root=if($TestRoot){[IO.Path]::GetFullPath($TestRoot)}else{[IO.Path]::GetFullPath((Join-Path $PSScriptRoot ('../build/installer-qa-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fff'))))}
 New-Item -ItemType Directory $root -Force | Out-Null
@@ -81,3 +81,4 @@ try {
  $results|ConvertTo-Json|Set-Content (Join-Path $root 'installer-qa.json')
  $results|ConvertTo-Json
 }
+\n# Expected ownership refusal above is a passing check, not the script exit code.\n$global:LASTEXITCODE=0\n

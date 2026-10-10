@@ -1,5 +1,5 @@
 param(
-    [string]$Version='0.3.1-standalone.1',
+    [string]$Version='0.3.1-cost.2',
     [string]$UiDirectory,
     [string]$NativeDirectory,
     [string]$RuntimeDirectory,
@@ -37,7 +37,7 @@ New-Item -ItemType Directory -Path $destination -Force | Out-Null
 Get-ChildItem -LiteralPath $UiDirectory -Force | Where-Object {$_.Extension -ne '.pdb'} | Copy-Item -Destination $destination -Recurse
 foreach($file in @('NvofPotPlayer.ax','NvofRegister.exe')){Copy-Item -LiteralPath (Join-Path $NativeDirectory $file) -Destination $destination}
 Copy-Item -LiteralPath (Join-Path $project 'config/NvofPotPlayer.ini') -Destination $destination
-foreach($file in @('LICENSE','THIRD_PARTY_NOTICES.md')){Copy-Item -LiteralPath (Join-Path $project $file) -Destination $destination}
+foreach($file in @('LICENSE','README.md','THIRD_PARTY_NOTICES.md')){Copy-Item -LiteralPath (Join-Path $project $file) -Destination $destination}
 $licenseOutput=Join-Path $destination 'licenses'
 New-Item -ItemType Directory -Path $licenseOutput -Force | Out-Null
 # Keep SDK terms and current runtime notices; old FRUC/CUDA bundle notices are historical.
@@ -51,7 +51,9 @@ $manualOutput=Join-Path $destination 'docs/manual'
 New-Item -ItemType Directory -Path $manualOutput -Force | Out-Null
 Copy-Item -Path (Join-Path $project 'docs/manual/*') -Destination $manualOutput -Recurse
 Copy-Item -LiteralPath (Join-Path $project 'RELEASE.md') -Destination $destination
-Copy-Item -LiteralPath (Join-Path $project 'docs/STANDALONE.md') -Destination (Join-Path $destination 'docs')
+foreach($note in @('STANDALONE.md','COST-MAP-FUSION.md')){
+    Copy-Item -LiteralPath (Join-Path $project ('docs/'+$note)) -Destination (Join-Path $destination 'docs')
+}
 $configOutput=Join-Path $destination 'config'
 New-Item -ItemType Directory -Path $configOutput -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $project 'config/runtime-manifest.json') -Destination $configOutput

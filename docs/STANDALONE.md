@@ -18,6 +18,10 @@ The controller carries .NET/WPF. The installer omits the old FRUC/CUDA-specific 
 - Kokoore 1:20, Jishou 4 episode 5:20 sequence and F1 title sequence: complete output pixel SHA-256 and output timestamps exactly match Cost.1. Generated duplicate raw outputs were removed after comparison.
 - Tests ran on the local RTX 5090. These are not a RTX 5070 4K60-to-120 guarantee.
 
+- Current-user installer QA passed: no FRUC consent parameter, migration, same-folder upgrade, exact obsolete-file removal, unrelated-file preservation, self-contained UI, COM verification, uninstall/reinstall and foreign-registration ownership protection.
+- Prior user/machine registration and the installed filter/settings were restored after QA. Machine-wide registration logic is unchanged.
+- AX/register import-table audits found no FRUC or CUDA dependency.
+
 Build evidence: build/standalone1 (ignored). Package/installer verification results are recorded there separately after packaging.
 
 No quality improvement is claimed for this dependency-only checkpoint. CPU input performance changes because its former FRUC path is replaced.
