@@ -22,7 +22,7 @@ int wmain(int argc,wchar_t** argv){try{
     check(D3D11CreateDevice(adapter.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_VIDEO_SUPPORT|D3D11_CREATE_DEVICE_BGRA_SUPPORT,
         levels,2,D3D11_SDK_VERSION,&device,nullptr,&context),"D3D11");
     ComPtr<ID3D10Multithread> protection;check(context.As(&protection),"Context protection");protection->SetMultithreadProtected(TRUE);
-    GpuFrucEngine engine(argv[1],device.Get(),context.Get(),nullptr,GpuCompletionMode::context_ordered,true,false,false,GpuInterpolationBackend::native_experimental,1920,argc>2?static_cast<MotionCostMode>(std::stoi(argv[2])):MotionCostMode::confidence_fusion);
+    GpuFrucEngine engine(argv[1],device.Get(),context.Get(),nullptr,GpuCompletionMode::context_ordered,true,false,false,GpuInterpolationBackend::native_experimental,1920,argc>2?static_cast<MotionCostMode>(std::stoi(argv[2])):MotionCostMode::disabled,MotionFlowOptions{argc>3?unsigned(std::stoul(argv[3])):0u,argc>4&&std::wstring(argv[4])==L"slow"?MotionFlowQuality::slow:MotionFlowQuality::medium});
     const int w=960,h=540;
     auto fixture=[&](double t,int scene) {
         auto image=moving_color(w,h,t*12,false);
@@ -82,6 +82,7 @@ int wmain(int argc,wchar_t** argv){try{
         }
         std::fill(image.begin()+size_t(w)*h,image.end(),128);return image;
     };
+    bool qualityPassed=true;
     for(int scene=0;scene<6;++scene) {
         double sum=0,held=0;uint64_t ghosts=0,band=0;
         for(int i=0;i<8;++i) {
@@ -100,8 +101,9 @@ int wmain(int argc,wchar_t** argv){try{
             require(readback(device.Get(),context.Get(),first)==a,"Layer source modified");
         }
         std::cout<<"LAYERS scene="<<scene<<" mse="<<sum/24<<" held="<<held/24<<" exterior_ghosts="<<ghosts<<" band="<<band<<std::endl;
-        require(sum<held*.6,"Moving layer degraded to a hold or crossfade");
-        if(scene==0)require(ghosts<double(band)*.0001,"Stationary outline leaked into moving background");
+        if(!(sum<held*.6)){qualityPassed=false;std::cout<<"REGRESSION scene="<<scene<<" moving layer degraded to a hold or crossfade"<<std::endl;}
+        if(scene==0&&!(ghosts<double(band)*.0001)){qualityPassed=false;std::cout<<"REGRESSION stationary outline leaked into moving background"<<std::endl;}
     }
+    require(qualityPassed,"One or more layer quality regressions");
     std::cout<<"PASS curved stationary outline exterior, repeated bars, moving bright object, moving thin curves, repeated moving glyph strokes, curved moving occluder, three phases and intact sources"<<std::endl;return 0;
 }catch(const std::exception&e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

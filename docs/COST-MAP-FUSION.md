@@ -1,5 +1,7 @@
 # Cost confidence fusion — 0.3.1-cost.2
 
+Historical experiment: the later 0.3.1-flow.1 default disables both generation and use. See FLOW-PROFILE-TRIAL.md.
+
 Local experiment on top of native standalone checkpoint c12947b. No public release.
 
 ## Method

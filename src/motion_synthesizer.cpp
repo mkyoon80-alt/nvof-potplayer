@@ -49,11 +49,15 @@ struct MotionSynthesizer::Impl {
     ComPtr<ID3D11RasterizerState> raster;
     ComPtr<ID3D11Buffer> constants;
     unsigned maxDimension,grid=0;
+    MotionCostMode costMode;
+    MotionFlowOptions flowOptions;
     DXGI_FORMAT costFormat=DXGI_FORMAT_UNKNOWN;
     int w=0,h=0,aw=0,ah=0;
     bool prepared=false,history=false;
 
-    Impl(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit,MotionCostMode costMode):device(d),context(c),maxDimension(limit) {
+    Impl(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit,MotionCostMode costMode,MotionFlowOptions options):device(d),context(c),maxDimension(limit),costMode(costMode),flowOptions(options) {
+        if((options.output_grid!=0&&options.output_grid!=1&&options.output_grid!=2&&options.output_grid!=4)||
+           (options.quality!=MotionFlowQuality::medium&&options.quality!=MotionFlowQuality::slow))throw std::invalid_argument("Invalid flow grid or quality");
         if(!d||!c||limit<160||limit>8192)throw std::invalid_argument("Invalid motion synthesis configuration");
         ComPtr<ID3D11Device> owner;c->GetDevice(&owner);
         if(owner.Get()!=d||c->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)
@@ -152,22 +156,29 @@ struct MotionSynthesizer::Impl {
             if(!count||count>32)throw std::runtime_error("Invalid NVOFA grid count");
             std::vector<uint32_t> grids(count);
             of(api.nvOFGetCaps(handle,NV_OF_CAPS_SUPPORTED_OUTPUT_GRID_SIZES,grids.data(),&count),"Flow grids");
-            for(unsigned g:{4u,2u,1u})if(std::find(grids.begin(),grids.end(),g)!=grids.end()){grid=g;break;}
+            if(flowOptions.output_grid) {
+                if(std::find(grids.begin(),grids.end(),flowOptions.output_grid)==grids.end())
+                    throw std::runtime_error("Requested flow grid is unsupported: "+std::to_string(flowOptions.output_grid));
+                grid=flowOptions.output_grid;
+            } else for(unsigned g:{4u,2u,1u})if(std::find(grids.begin(),grids.end(),g)!=grids.end()){grid=g;break;}
             if(!grid)throw std::runtime_error("No supported flow grid");
-            // Query rather than assuming that every driver supports 8-bit cost.
-            uint32_t costCount=0;
-            of(api.nvOFGetSurfaceFormatCountD3D11(handle,NV_OF_BUFFER_USAGE_COST,NV_OF_MODE_OPTICALFLOW,&costCount),"Cost format count");
-            if(costCount>32)throw std::runtime_error("Invalid NVOFA cost format count");
-            if(costCount) {
-                std::vector<DXGI_FORMAT> formats(costCount);
-                of(api.nvOFGetSurfaceFormatD3D11(handle,NV_OF_BUFFER_USAGE_COST,NV_OF_MODE_OPTICALFLOW,formats.data()),"Cost formats");
-                // Unknown cost formats are ignored: keep baseline synthesis available.
-                if(std::find(formats.begin(),formats.end(),DXGI_FORMAT_R8_UINT)!=formats.end())costFormat=DXGI_FORMAT_R8_UINT;
+            // Disabled mode neither queries, allocates, registers nor executes cost output.
+            if(costMode!=MotionCostMode::disabled) {
+                // Query rather than assuming that every driver supports 8-bit cost.
+                uint32_t costCount=0;
+                of(api.nvOFGetSurfaceFormatCountD3D11(handle,NV_OF_BUFFER_USAGE_COST,NV_OF_MODE_OPTICALFLOW,&costCount),"Cost format count");
+                if(costCount>32)throw std::runtime_error("Invalid NVOFA cost format count");
+                if(costCount) {
+                    std::vector<DXGI_FORMAT> formats(costCount);
+                    of(api.nvOFGetSurfaceFormatD3D11(handle,NV_OF_BUFFER_USAGE_COST,NV_OF_MODE_OPTICALFLOW,formats.data()),"Cost formats");
+                    // Unknown cost formats are ignored: keep baseline synthesis available.
+                    if(std::find(formats.begin(),formats.end(),DXGI_FORMAT_R8_UINT)!=formats.end())costFormat=DXGI_FORMAT_R8_UINT;
+                }
             }
             NV_OF_INIT_PARAMS init{};init.width=aw;init.height=ah;
             init.enableOutputCost=costFormat==DXGI_FORMAT_R8_UINT?NV_OF_TRUE:NV_OF_FALSE;
             init.outGridSize=static_cast<NV_OF_OUTPUT_VECTOR_GRID_SIZE>(grid);
-            init.mode=NV_OF_MODE_OPTICALFLOW;init.perfLevel=NV_OF_PERF_LEVEL_MEDIUM;
+            init.mode=NV_OF_MODE_OPTICALFLOW;init.perfLevel=flowOptions.quality==MotionFlowQuality::slow?NV_OF_PERF_LEVEL_SLOW:NV_OF_PERF_LEVEL_MEDIUM;
             init.predDirection=NV_OF_PRED_DIRECTION_BOTH;init.inputBufferFormat=NV_OF_BUFFER_FORMAT_NV12;
             of(api.nvOFInit(handle,&init),"Initialize NVOFA");
             for(unsigned i=0;i<2;++i){
@@ -219,7 +230,7 @@ struct MotionSynthesizer::Impl {
     void draw(ID3D11RenderTargetView* target,unsigned plane,bool down,unsigned source=0,float fraction=0.5f,bool mapping=false,unsigned stationaryStage=0,bool repairing=false) {
         float data[8]={float(w),float(h),float(aw),float(ah),float(grid),float(plane),float(source),fraction};
         context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
-        ID3D11ShaderResourceView* views[]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),down?nullptr:(repairing?(fraction>0?fvs[0].Get():repairScratchViews[0].Get()):repairedViews[0].Get()),down?nullptr:(repairing?(fraction>0?fvs[1].Get():repairScratchViews[1].Get()):repairedViews[1].Get()),down||mapping||stationaryStage||repairing?nullptr:warpViews[0].Get(),down||mapping||stationaryStage||repairing?nullptr:warpViews[1].Get(),stationaryStage>1?layerViews[stationaryStage-2].Get():(down||mapping||stationaryStage||repairing?nullptr:layerViews[0].Get()),mapping?costViews[0].Get():nullptr,mapping?costViews[1].Get():nullptr,mapping?fvs[0].Get():nullptr,mapping?fvs[1].Get():nullptr};
+        ID3D11ShaderResourceView* views[]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),down?nullptr:(repairing?(fraction>0?fvs[0].Get():repairScratchViews[0].Get()):repairedViews[0].Get()),down?nullptr:(repairing?(fraction>0?fvs[1].Get():repairScratchViews[1].Get()):repairedViews[1].Get()),down||mapping||stationaryStage||repairing?nullptr:warpViews[0].Get(),down||mapping||stationaryStage||repairing?nullptr:warpViews[1].Get(),stationaryStage>1?layerViews[stationaryStage-2].Get():(down||mapping||stationaryStage||repairing?nullptr:layerViews[0].Get()),mapping?costViews[0].Get():nullptr,mapping?costViews[1].Get():nullptr,mapping&&costMode!=MotionCostMode::disabled?fvs[0].Get():nullptr,mapping&&costMode!=MotionCostMode::disabled?fvs[1].Get():nullptr};
         auto cb=constants.Get();auto sp=sampler.Get();
         context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->VSSetShader(vertex.Get(),nullptr,0);context->HSSetShader(nullptr,nullptr,0);
@@ -255,9 +266,12 @@ struct MotionSynthesizer::Impl {
     }
 };
 
-MotionSynthesizer::MotionSynthesizer(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit,MotionCostMode costMode):impl_(std::make_unique<Impl>(d,c,limit,costMode)){}
+MotionSynthesizer::MotionSynthesizer(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit,MotionCostMode costMode,MotionFlowOptions options):impl_(std::make_unique<Impl>(d,c,limit,costMode,options)){}
 MotionSynthesizer::~MotionSynthesizer()=default;
 bool MotionSynthesizer::cost_map_active() const noexcept {return impl_->prepared&&impl_->costFormat==DXGI_FORMAT_R8_UINT;}
+MotionAnalysisInfo MotionSynthesizer::analysis_info() const noexcept {
+    return {unsigned(impl_->aw),unsigned(impl_->ah),impl_->grid,unsigned(impl_->ch[0]!=nullptr)+unsigned(impl_->ch[1]!=nullptr)};
+}
 bool MotionSynthesizer::reliable() const noexcept {return impl_->prepared&&impl_->trustworthy;}
 void MotionSynthesizer::reset() noexcept {impl_->reset();}
 // Merely toggling disableTemporalHints retained wrong-direction motion in

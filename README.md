@@ -2,13 +2,13 @@
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. 원본 시점의 프레임 사이에 중간 프레임을 추가해 **×2**로 출력합니다.
 
-현재 개발 브랜치는 **0.3.1-cost.2**입니다. 공개된 [v0.3.0](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.3.0)과 구분되는 로컬 시험판이며 아직 업로드하지 않았습니다.
+현재 개발 브랜치는 **0.3.1-flow.1**입니다. 공개된 [v0.3.0](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.3.0)과 구분되는 로컬 시험판이며 아직 업로드하지 않았습니다.
 
 ## 자체 포함 버전
 
 - 필터, 등록 도구, 설정 프로그램과 .NET/WPF 런타임을 함께 제공합니다.
 - NvOFFRUC.dll, FRUC 연결 DLL과 CUDA 런타임은 포함하거나 호출하지 않습니다.
-- GPU 텍스처와 CPU 메모리 입력 모두 Newton 기반 자체 보간을 사용합니다. Cost Map을 자체 신뢰도와 결합해 원본 위치 후보와 합성 비율에 반영합니다.
+- GPU 텍스처와 CPU 메모리 입력 모두 Newton 기반 자체 보간을 사용합니다. Cost Map 생성·적용을 끄고 자체 신뢰도 검사를 사용합니다.
 - 셰이더는 빌드할 때 미리 컴파일합니다.
 - 별도 CUDA Toolkit, Visual Studio, .NET 설치가 필요하지 않습니다.
 - Windows 10/11 x64, 지원 NVIDIA GPU·드라이버, 팟플레이어 등 호스트 플레이어는 별도입니다.
@@ -27,7 +27,7 @@ FRUC/CUDA 바이너리를 배포하지 않으므로 이전의 해당 구성요�
 
 프로그레시브 SDR, NV12 입력과 GPU P010 입력을 대상으로 합니다. P010은 GPU에서 8비트 NV12로 변환하므로 10비트 출력이나 HDR 톤매핑을 제공하지 않습니다. 고정 목표 60/120fps 모드는 아직 없습니다.
 
-머리카락, 겹친 물체, 글자 경계, 연기에는 잔여 아티팩트가 있습니다. 이번 변경은 의존성 정리와 Cost Map 결합 실험이며, 확실한 체감 화질 개선을 주장하지 않습니다. RTX 5070의 4K60 → 120 실시간 성능이나 플루이드 모션 이상의 품질을 보장하지 않습니다. 실행 파일은 코드 서명되지 않았습니다.
+머리카락, 겹친 물체, 글자 경계, 연기에는 잔여 아티팩트가 있습니다. 이번 변경은 Cost Map 비활성화와 Grid·Preset·분석 해상도 비교이며, 기본 Grid 4·Medium·최대 1920 분석을 유지합니다. RTX 5070의 4K60 → 120 실시간 성능이나 플루이드 모션 이상의 품질을 보장하지 않습니다. 실행 파일은 코드 서명되지 않았습니다.
 
 ## 문서
 
@@ -39,4 +39,4 @@ FRUC/CUDA 바이너리를 배포하지 않으므로 이전의 해당 구성요�
 
 Original project source is under [MIT](LICENSE). Microsoft DirectShow baseclasses, self-contained .NET/WPF and other components retain their own terms. The developer uses official NVIDIA Optical Flow SDK interfaces; SDK terms remain applicable. This project is independent of NVIDIA, Microsoft, PotPlayer, AMD and Smootter.
 
-Cost Map 결합 비교와 제한은 [실험 기록](docs/COST-MAP-FUSION.md)에 있습니다. 체감 화질 향상은 아직 확인하지 못했습니다.
+Grid·Preset·분석 해상도 결과는 [실험 기록](docs/FLOW-PROFILE-TRIAL.md)에 있습니다. 이전 [Cost Map 결합 시험](docs/COST-MAP-FUSION.md)은 개발 이력으로 보존합니다.

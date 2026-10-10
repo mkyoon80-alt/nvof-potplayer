@@ -8,8 +8,8 @@ Visual Studio 2022 C++, Windows SDK, CMake 3.20+, Git and official NVIDIA Optica
 
 ~~~powershell
 .\tools\fetch-build-deps.ps1
-.\tools\build.ps1 -BuildDirectory build\cost2\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
-.\ui\build-ui.ps1 -OutputDirectory ui\staging-cost2
+.\tools\build.ps1 -BuildDirectory build\flow1\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
+.\ui\build-ui.ps1 -OutputDirectory ui\staging-flow1
 ~~~
 
 The filter and register helper use static MSVC /MT. Shader bytecode is generated at build time. CMake never finds CUDA or builds the old FRUC bridge in this profile. Historical FRUC-specific research tests remain as source references but are not active build targets.
@@ -19,8 +19,8 @@ The system-memory adapter uploads NV12 into a private NVIDIA D3D11 device and re
 ## Package and installer
 
 ~~~powershell
-.\tools\build-local-package.ps1 -Version 0.3.1-cost.2 -NativeDirectory build\cost2\native\Release -UiDirectory ui\staging-cost2
-.\tools\build-installer.ps1 -Version 0.3.1-cost.2
+.\tools\build-local-package.ps1 -Version 0.3.1-flow.1 -NativeDirectory build\flow1\native\Release -UiDirectory ui\staging-flow1
+.\tools\build-installer.ps1 -Version 0.3.1-flow.1
 ~~~
 
 The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. Inno Setup 7.1.0 builds the installer; its compiler is not shipped.

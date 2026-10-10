@@ -88,7 +88,7 @@ struct GpuFrucEngine::Impl {
         ~DeviceScope(){owner.context1->SwapDeviceContextState(old_state.Get(),nullptr);if(owns_multithread)owner.multithread->Leave();if(owns_mutex)ReleaseMutex(owner.decoder_mutex);}
     };
 
-    Impl(const std::filesystem::path& directory,ID3D11Device* d,ID3D11DeviceContext* c,HANDLE shared_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect,GpuInterpolationBackend backend,unsigned flow_dimension,MotionCostMode costMode):completion_mode(mode),skip_identical_warp(skip),stabilize_midpoint(stabilize),protect_appearance(protect),decoder_mutex(shared_mutex),device(d),context(c){
+    Impl(const std::filesystem::path& directory,ID3D11Device* d,ID3D11DeviceContext* c,HANDLE shared_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect,GpuInterpolationBackend backend,unsigned flow_dimension,MotionCostMode costMode,MotionFlowOptions flowOptions):completion_mode(mode),skip_identical_warp(skip),stabilize_midpoint(stabilize),protect_appearance(protect),decoder_mutex(shared_mutex),device(d),context(c){
         try{
             if(backend!=GpuInterpolationBackend::native_experimental)throw std::invalid_argument("FRUC backend was removed; use native synthesis");
             if(!d||!c)throw std::invalid_argument("A decoder D3D11 device and immediate context are required");
@@ -119,7 +119,7 @@ struct GpuFrucEngine::Impl {
             hr_check(device->CreateRasterizerState(&raster,&rasterizer),"CreateRasterizerState");
             if(backend==GpuInterpolationBackend::native_experimental) {
                 DeviceScope scope(*this);
-                native_synthesizer=std::make_unique<MotionSynthesizer>(device.Get(),context.Get(),flow_dimension,costMode);
+                native_synthesizer=std::make_unique<MotionSynthesizer>(device.Get(),context.Get(),flow_dimension,costMode,flowOptions);
                 ComPtr<IDXGIDevice> dxgi;hr_check(device.As(&dxgi),"Native DXGI device");
                 ComPtr<IDXGIAdapter> adapter;hr_check(dxgi->GetAdapter(&adapter),"Native adapter");
                 DXGI_ADAPTER_DESC desc{};hr_check(adapter->GetDesc(&desc),"Native adapter name");
@@ -238,7 +238,11 @@ struct GpuFrucEngine::Impl {
 
 };
 
-GpuFrucEngine::GpuFrucEngine(const std::filesystem::path& runtime,ID3D11Device* device,ID3D11DeviceContext* context,HANDLE decoder_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect,GpuInterpolationBackend backend,unsigned flow_dimension,MotionCostMode costMode):impl_(std::make_unique<Impl>(runtime,device,context,decoder_mutex,mode,skip,stabilize,protect,backend,flow_dimension,costMode)){}
+GpuFrucEngine::GpuFrucEngine(const std::filesystem::path& runtime,ID3D11Device* device,ID3D11DeviceContext* context,HANDLE decoder_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect,GpuInterpolationBackend backend,unsigned flow_dimension,MotionCostMode costMode,MotionFlowOptions flowOptions):impl_(std::make_unique<Impl>(runtime,device,context,decoder_mutex,mode,skip,stabilize,protect,backend,flow_dimension,costMode,flowOptions)){}
+MotionAnalysisInfo GpuFrucEngine::analysis_info() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->native_synthesizer?impl_->native_synthesizer->analysis_info():MotionAnalysisInfo{};
+}
 GpuFrucEngine::~GpuFrucEngine()=default;
 std::string GpuFrucEngine::device_name()const{return impl_->name;}
 bool GpuFrucEngine::queued_completion()const{return impl_->completion_mode==GpuCompletionMode::context_ordered&&!impl_->p010_completion.load();}

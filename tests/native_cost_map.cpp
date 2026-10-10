@@ -17,7 +17,14 @@ int wmain(){try {
     auto aBytes=moving_color(640,360,0,false),bBytes=moving_color(640,360,12,false);
     auto a=texture(DXGI_FORMAT_NV12,640,360,640,aBytes.data(),D3D11_BIND_SHADER_RESOURCE);
     auto b=texture(DXGI_FORMAT_NV12,640,360,640,bBytes.data(),D3D11_BIND_SHADER_RESOURCE);
-    MotionSynthesizer actual(device.Get(),context.Get());actual.prepare(a.Get(),b.Get(),640,360);
+    MotionSynthesizer disabled(device.Get(),context.Get());
+    for(int pass=0;pass<2;++pass) {
+        disabled.prepare(a.Get(),b.Get(),640,360);
+        require(disabled.reliable()&&!disabled.cost_map_active()&&disabled.analysis_info().cost_buffers==0,"Disabled cost allocated or enabled hardware output");
+        disabled.reset();
+    }
+    std::cout<<"PASS default no-cost execution/reset with zero registered cost buffers"<<std::endl;
+    MotionSynthesizer actual(device.Get(),context.Get(),1920,MotionCostMode::confidence_fusion);actual.prepare(a.Get(),b.Get(),640,360);
     require(actual.cost_map_active()&&actual.reliable(),"Hardware 8-bit bidirectional cost path inactive");
     actual.reset();require(!actual.cost_map_active(),"Reset retained cost state");
     actual.prepare(a.Get(),b.Get(),640,360);require(actual.cost_map_active(),"Cost path lost after reset");actual.reset();

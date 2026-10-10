@@ -40,7 +40,7 @@ public:
                   bool protect_appearance = true,
                   GpuInterpolationBackend backend = GpuInterpolationBackend::native_experimental,
                   unsigned max_flow_dimension = 1920,
-                  MotionCostMode cost_mode = MotionCostMode::confidence_fusion);
+                  MotionCostMode cost_mode = MotionCostMode::disabled, MotionFlowOptions flow_options = {});
     ~GpuFrucEngine();
     GpuFrucEngine(const GpuFrucEngine&) = delete;
     GpuFrucEngine& operator=(const GpuFrucEngine&) = delete;
@@ -56,6 +56,7 @@ public:
     void reset() noexcept;
     std::string device_name() const;
     bool queued_completion() const;
+    MotionAnalysisInfo analysis_info() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
