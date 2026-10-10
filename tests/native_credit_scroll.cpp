@@ -136,8 +136,20 @@ int wmain(){try {
         upload(8,true,true,true);layered(0,0,black,false);layered(8,1,black+2,false);model=fit();
         require(model[3]==2&&std::abs(model[1]+8)<.26f,"Non-reference black/fading background lost glyph motion");
     }
+    upload(8,true,true,true);layered(0,0,45,false);
+    auto soft8=layered(8,1,45,false),soft9=layered(9,1,45,false);
+    for(size_t i=0;i<soft8.size();++i)soft8[i]=soft8[i]*.75f+soft9[i]*.25f;
+    context->UpdateSubresource(input[1].Get(),0,nullptr,soft8.data(),w*4,0);model=fit();
+    require(model[3]==2&&std::abs(model[0])<.26f&&std::abs(model[1]+8.25f)<.26f,"Area fitting lost a fractional foreground glyph trajectory");
     upload(8,true,true,true);auto aLayer=layered(0,0,100,true),bLayer=layered(8,1,100,true);model=fit();
     require(model[3]==2&&std::abs(model[0])<.26f&&std::abs(model[1]+8)<.26f,"Colored moving background hid neutral glyphs");
+    // Deliberately erase every text-motion hint: OF tracks a moving background.
+    for(int direction=0;direction<2;++direction) {
+        for(int i=0;i<24*24;++i){flowData[i*2]=int16_t(direction?-192:192);flowData[i*2+1]=int16_t(direction?-16:16);}
+        context->UpdateSubresource(input[4+direction].Get(),0,nullptr,flowData.data(),24*4,0);
+    }
+    model=fit();require(model[3]==2&&std::abs(model[0])<.26f&&std::abs(model[1]+8)<.26f,"Background-only hints prevented independent glyph search");
+    layered(58,1,100,true);require(fit()[3]==0,"Image search shortened legitimate fast scrolling");
     layered(0,1,100,true);require(fit()[3]==0,"Background movement activated fixed white text");
     bLayer=layered(8,1,100,true);
     // Exercise final compositing: coherent neighboring models repair the glyph
@@ -177,6 +189,10 @@ int wmain(){try {
         if(clear){require(corrected[i]==ordinary[i],"Unrelated background was moved at glyph speed");++backgroundPixels;}
     }
     require(repaired>100&&backgroundPixels>100,"Layer compositing test did not exercise glyph/background separation");
+    modelValues[1]=-12; // One weak edge fit disagrees with eight correct groups.
+    auto oneOutlier=composeModels(modelValues);
+    for(int y=80;y<112;++y)for(int x=80;x<112;++x)
+        require(std::abs(oneOutlier[y*w+x]-corrected[y*w+x])<.0001f,"One outlying group disabled coherent glyph correction");
     std::fill(modelValues.begin(),modelValues.end(),0);modelValues[4*4+1]=-8;modelValues[4*4+3]=2;
     require(composeModels(modelValues)==ordinary,"An isolated foreground match bypassed spatial support");
     for(int i=0;i<9;++i){modelValues[i*4+1]=i%3==1?8.f:-8.f;modelValues[i*4+3]=2;}

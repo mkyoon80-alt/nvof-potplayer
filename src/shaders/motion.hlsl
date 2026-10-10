@@ -524,6 +524,12 @@ float whiteFeature(float y,float2 uv) {
     return saturate((y*255.0-160.0)/55.0)*(1.0-smoothstep(3.0,10.0,max(c.x,c.y)));
 }
 float glyphFeature(float2 p,bool next){return whiteFeature(yAt(p,next),uvAt(p,next));}
+// Compare a small area rather than one raster phase of a thin antialiased stroke.
+// Only motion fitting uses this filter; compositing samples the sharp originals.
+float glyphMatchFeature(float2 p,bool next) {
+    return (glyphFeature(p+float2(-0.75,-0.75),next)+glyphFeature(p+float2(0.75,-0.75),next)
+        +glyphFeature(p+float2(-0.75,0.75),next)+glyphFeature(p+float2(0.75,0.75),next))*0.25;
+}
 groupshared float glyphSource[289];
 groupshared float glyphForeground[289];
 groupshared float4 glyphShape[32];
@@ -541,7 +547,7 @@ float cachedGroupCost(float2 p,float2 v) {
     [loop]for(int i=0;i<289;++i) {
         float2 q=p+float2(i%17-8,i/17-8)*3.0*scale;
         float a=glyphKind==1?glyphSource[i]:glyphForeground[i]*255.0;
-        float b=glyphKind==1?yAt(q+v,true)*255.0:glyphFeature(q+v,true)*255.0;
+        float b=glyphKind==1?yAt(q+v,true)*255.0:glyphMatchFeature(q+v,true)*255.0;
         float active=max(a,b)>40.0?1.0:0.0;
         error+=abs(a-b)*active;ink+=active;
     }
@@ -584,10 +590,32 @@ float cachedGroupCost(float2 p,float2 v) {
         float4 sh=glyphShape[0];bool foreground=sh.x>=180.0&&sh.y>=3.0&&sh.y<90.0&&sh.z>=2.0&&sh.z>=sh.y*0.4;
         glyphKind=legacy?1:2;
         if(!legacy)zero=glyphFeatureErrors[0].x/max(glyphFeatureErrors[0].y,1.0);
-        glyphAccepted=(legacy||foreground)&&zero>=12.0;
+        glyphAccepted=(legacy&&zero>=12.0)||(!legacy&&foreground);
         glyphBest=float4(0,0,zero,zero);
     }
     GroupMemoryBarrierWithGroupSync();
+    if(!glyphAccepted)return;
+    if(glyphKind==2) {
+        // The extra area samples are needed only for classified foreground groups.
+        float2 matchError=0;
+        [loop]for(int i=int(lane);i<289;i+=32) {
+            float2 q=p+float2(i%17-8,i/17-8)*3.0*scale;
+            float a=glyphMatchFeature(q,false),b=glyphMatchFeature(q,true);
+            glyphForeground[i]=a;
+            matchError+=float2(abs(a-b)*255.0,1)*(max(a,b)>0.10?1.0:0.0);
+        }
+        glyphFeatureErrors[lane]=matchError;
+        GroupMemoryBarrierWithGroupSync();
+        [unroll]for(uint step=16;step>0;step/=2) {
+            if(lane<step)glyphFeatureErrors[lane]+=glyphFeatureErrors[lane+step];
+            GroupMemoryBarrierWithGroupSync();
+        }
+        if(lane==0) {
+            float zero=glyphFeatureErrors[0].x/max(glyphFeatureErrors[0].y,1.0);
+            glyphBest=float4(0,0,zero,zero);glyphAccepted=zero>=12.0;
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
     if(!glyphAccepted)return;
     float2 v=0;float cost=255.0;
     if(lane<17) {
@@ -608,6 +636,20 @@ float cachedGroupCost(float2 p,float2 v) {
         glyphAccepted=glyphBest.z<glyphBest.w*0.65;
     }
     GroupMemoryBarrierWithGroupSync();
+    if(!glyphAccepted&&glyphKind==2) {
+        // Thin scrolling glyphs may have no usable OF hint when their background
+        // moves independently. Search vertical image evidence only on that failure;
+        // retain the same fit/shape gates and neighboring-group consensus.
+        v=float2(0,(int(lane)-16)*scale);
+        cost=lane==16?255.0:cachedGroupCost(p,v);
+        glyphFits[lane]=float4(v,cost,0);
+        GroupMemoryBarrierWithGroupSync();
+        if(lane==0) {
+            [unroll]for(int i=0;i<32;++i)if(glyphFits[i].z<glyphBest.z)glyphBest.xyz=glyphFits[i].xyz;
+            glyphAccepted=glyphBest.z<glyphBest.w*0.65;
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
     if(!glyphAccepted)return;
     [loop]for(int level=0;level<4;++level) {
         float step=scale*exp2(-float(level));v=glyphBest.xy;cost=255.0;
@@ -636,7 +678,7 @@ bool glyphGroupColor(float2 p,out float2 value) {
     float2 cell=p/(32.0*scale)-0.5;
     int2 base=int2(floor(cell)),hi=int2(ceil(size.xy/(32.0*scale)))-1;
     float2 velocity=0;float total=0,kind=0;float2 lo=1e5,high=-1e5;
-    float2 foregroundVelocity=0;float foregroundTotal=0;int support=0;
+    float2 foregroundVelocity=0,foregroundSum=0;float foregroundTotal=0;int support=0;
     float2 foregroundLo=1e5,foregroundHi=-1e5;
     [unroll]for(int y=-1;y<3;++y)[unroll]for(int x=-1;x<3;++x) {
         int2 index=base+int2(x,y);
@@ -644,14 +686,33 @@ bool glyphGroupColor(float2 p,out float2 value) {
         float4 model=glyphMotion.Load(int3(index,0));
         float2 center=(float2(index)+0.5)*32.0*scale+mode.w*model.xy;
         if(model.w>1.5) {
-            float2 weight=saturate(1.0-abs(p-center)/(48.0*scale));
+            float2 weight=saturate(1.0-abs(p-center)/(64.0*scale));
             float a=weight.x*weight.y;
-            if(a>0.02){foregroundVelocity+=model.xy*a;foregroundTotal+=a;++support;
+            if(a>0.02){foregroundVelocity+=model.xy*a;foregroundTotal+=a;foregroundSum+=model.xy;++support;
                 foregroundLo=min(foregroundLo,model.xy);foregroundHi=max(foregroundHi,model.xy);}
         }else if(x>=0&&x<2&&y>=0&&y<2) {
             float2 weight=saturate(1.0-abs(p-center)/(24.0*scale));
             float a=weight.x*weight.y*model.w;
             if(a>0){kind=1;velocity+=model.xy*a;total+=a;lo=min(lo,model.xy);high=max(high,model.xy);}
+        }
+    }
+    // A rare edge-only fit must not veto an otherwise coherent text layer.
+    // Recover only a strong local majority; two competing layers still fail.
+    if(support>=4&&length(foregroundHi-foregroundLo)>1.5*scale) {
+        float2 mean=foregroundSum/float(support),sum=0,mn=1e5,mx=-1e5;
+        float weightSum=0;int count=0;
+        [unroll]for(int y=-1;y<3;++y)[unroll]for(int x=-1;x<3;++x) {
+            int2 index=base+int2(x,y);
+            if(any(index<0)||any(index>hi))continue;
+            float4 model=glyphMotion.Load(int3(index,0));
+            if(model.w<1.5||length(model.xy-mean)>0.75*scale)continue;
+            float2 center=(float2(index)+0.5)*32.0*scale+mode.w*model.xy;
+            float2 weight=saturate(1.0-abs(p-center)/(64.0*scale));
+            float a=weight.x*weight.y;
+            if(a>0.02){sum+=model.xy*a;weightSum+=a;++count;mn=min(mn,model.xy);mx=max(mx,model.xy);}
+        }
+        if(count>=3&&count*4>=support*3&&weightSum>=foregroundTotal*0.75) {
+            foregroundVelocity=sum;foregroundTotal=weightSum;foregroundLo=mn;foregroundHi=mx;
         }
     }
     value=0;
