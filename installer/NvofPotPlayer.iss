@@ -1,5 +1,5 @@
 #ifndef AppVersion
-#define AppVersion "0.3.1-credits.5"
+#define AppVersion "0.3.2-rate.1"
 #endif
 #ifndef PayloadDir
 #error PayloadDir is required
@@ -38,7 +38,7 @@ CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
 UsePreviousLanguage=yes
-VersionInfoVersion=0.3.1.11
+VersionInfoVersion=0.3.2.1
 VersionInfoDescription=NVOF for PotPlayer offline setup
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"

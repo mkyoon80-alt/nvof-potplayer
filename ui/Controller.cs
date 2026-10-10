@@ -29,11 +29,11 @@ namespace NvofControl
         private static extern bool WritePrivateProfileString(string section, string key, string value, string file);
         public SettingsStore(string path) { this.path = path; }
         public bool Enabled { get { return GetPrivateProfileInt("Nvof", "Enabled", 1, path) != 0; } }
-        public void MigrateToDoubleRate()
+        public int OutputFpsLimit { get { return GetPrivateProfileInt("Nvof", "OutputFpsLimit", 60, path) == 120 ? 120 : 60; } }
+        public void SetOutputFpsLimit(int value)
         {
-            // Keep DoubleRate=1 for rollback compatibility; fixed targets are obsolete.
-            Write("DoubleRate", "1");
-            Write("TargetFps", null);
+            if (value != 60 && value != 120) throw new ArgumentOutOfRangeException("value");
+            Write("OutputFpsLimit", value.ToString(CultureInfo.InvariantCulture));
         }
         public int InputRateMask { get { return (int)(GetPrivateProfileInt("Nvof", "InputRateMask", 63, path) & 63); } }
         public void SetInputRateMask(int value)
@@ -67,6 +67,7 @@ namespace NvofControl
         public bool InputRateSelected = true;
         public int InputRateMask = 63;
         public bool DoubleRate;
+        public int OutputFpsLimit, OutputMultiple;
         public bool? GpuCorrection, AppearanceProtection;
         public long MidpointPassFrames, AppearancePassFrames;
         public string TransportLabel
@@ -127,6 +128,8 @@ namespace NvofControl
                 status.InputRateSelected = Value<bool>(data, "inputRateSelected", true);
                 status.InputRateMask = Value<int>(data, "inputRateMask", 63);
                 status.DoubleRate = Value<bool>(data, "doubleRate", false);
+                status.OutputFpsLimit = Value<int>(data, "outputFpsLimit", 0);
+                status.OutputMultiple = Value<int>(data, "outputMultiple", 0);
                 status.GpuCorrection = Value<bool?>(data, "gpuMidpointCorrection", null);
                 status.AppearanceProtection = Value<bool?>(data, "appearanceProtection", null);
                 status.MidpointPassFrames = Value<long>(data, "midpointPassFrames", 0);
@@ -270,6 +273,7 @@ namespace NvofControl
         private ToggleButton enabled, gpuCorrection, appearanceProtection;
         private readonly CheckBox[] inputRates = new CheckBox[6];
         private TextBlock rateSelectionHint, outputRateHint;
+        private RadioButton fps60, fps120;
         private TextBlock notice, statusTitle, statusDetail, registerNotice;
         private System.Windows.Shapes.Ellipse statusDot;
         private TextBox diagnosticsText;
@@ -290,6 +294,7 @@ namespace NvofControl
             gpuCorrection = Find<ToggleButton>("GpuCorrectionToggle");
             appearanceProtection = Find<ToggleButton>("AppearanceProtectionToggle");
             outputRateHint = Find<TextBlock>("OutputRateHint");
+            fps60 = Find<RadioButton>("Fps60"); fps120 = Find<RadioButton>("Fps120");
             for (int index = 0; index < inputRates.Length; index++)
                 inputRates[index] = Find<CheckBox>("InputRate" + index);
             rateSelectionHint = Find<TextBlock>("RateSelectionHint");
@@ -314,11 +319,8 @@ namespace NvofControl
                 try { Process.Start(new ProcessStartInfo(uninstaller) { UseShellExecute=true, WorkingDirectory=baseDirectory }); window.Close(); }
                 catch (Exception ex) { Notify("제거 프로그램을 열지 못했습니다.", true, ex.Message); }
             };
-            if (!preview)
-            {
-                try { settings.MigrateToDoubleRate(); }
-                catch (Exception ex) { Notify("설정 정리에 실패했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
-            }
+            fps60.Checked += delegate { SaveOutputLimit(); };
+            fps120.Checked += delegate { SaveOutputLimit(); };
             enabled.Click += delegate { SaveEnabled(); };
             gpuCorrection.Click += delegate { SaveEnhancement(true); };
             appearanceProtection.Click += delegate { SaveEnhancement(false); };
@@ -390,6 +392,8 @@ namespace NvofControl
             enabled.IsChecked = settings.Enabled;
             gpuCorrection.IsChecked = settings.GpuCorrection;
             appearanceProtection.IsChecked = settings.AppearanceProtection;
+            fps120.IsChecked = settings.OutputFpsLimit == 120;
+            fps60.IsChecked = !fps120.IsChecked;
             UpdateOutputHint();
             int mask = settings.InputRateMask;
             for (int index = 0; index < inputRates.Length; index++)
@@ -437,7 +441,16 @@ namespace NvofControl
         }
         private void UpdateOutputHint()
         {
-            outputRateHint.Text = "23.976 → 47.952 fps · 30 → 60 fps";
+            outputRateHint.Text = fps120.IsChecked == true
+                ? "23.976 → 119.880 fps · 25 → 100 fps\n상한 안에서 원본의 정수배로 보간합니다."
+                : "23.976 → 47.952 fps · 30 → 60 fps\n50·60 fps 영상은 원본으로 재생합니다.";
+        }
+        private void SaveOutputLimit()
+        {
+            UpdateOutputHint();
+            if (loading || preview) return;
+            try { settings.SetOutputFpsLimit(fps120.IsChecked == true ? 120 : 60); Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false); }
+            catch (Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
         }
         private void Notify(string text, bool error, string detail = null)
         {
@@ -493,18 +506,18 @@ namespace NvofControl
                 }
                 else if (status.BypassReason == "at-or-above-target")
                 {
-                    statusTitle.Text = recent ? "출력 FPS 이상 · 원본 재생" : "마지막 재생 상태 · 출력 FPS 이상";
-                    statusDetail.Text = Fps(status.InputFps) + " fps 영상은 출력 FPS 이상이므로 원본 프레임을 유지합니다." + (recent ? "" : " 현재 재생 상태는 업데이트 대기 중입니다.");
+                    statusTitle.Text = recent ? "상한 내 정수배 없음 · 원본 재생" : "마지막 재생 상태 · 원본 재생";
+                    statusDetail.Text = Fps(status.InputFps) + " fps 영상은 선택한 상한 안에서 두 배로 늘릴 수 없어 원본으로 재생합니다." + (recent ? "" : " 현재 재생 상태는 업데이트 대기 중입니다.");
                 }
                 else if (status.BypassReason == "unknown-source-rate")
                 {
                     statusTitle.Text = recent ? "원본 FPS 확인 불가 · 원본 재생" : "마지막 재생 상태 · 원본 FPS 확인 불가";
-                    statusDetail.Text = "원본 영상의 FPS를 확인할 수 없어 ×2 보간을 적용하지 않습니다." + (recent ? "" : " 현재 재생 상태는 업데이트 대기 중입니다.");
+                    statusDetail.Text = "원본 영상의 FPS를 확인할 수 없어 정수배 보간을 적용하지 않습니다." + (recent ? "" : " 현재 재생 상태는 업데이트 대기 중입니다.");
                 }
                 else if (status.BypassReason == "output-rate-unsupported")
                 {
                     statusTitle.Text = recent ? "지원 범위 밖 · 원본 재생" : "마지막 재생 상태 · 지원 범위 밖";
-                    statusDetail.Text = "두 배로 늘린 FPS가 지원 범위를 벗어나 원본 프레임을 유지합니다." + (recent ? "" : " 현재 재생 상태는 업데이트 대기 중입니다.");
+                    statusDetail.Text = "출력 FPS가 지원 범위를 벗어나 원본 프레임을 유지합니다." + (recent ? "" : " 현재 재생 상태는 업데이트 대기 중입니다.");
                 }
                 else if (status.BypassReason == "disabled")
                 {
@@ -534,7 +547,7 @@ namespace NvofControl
                 statusDetail.Text = "팟플레이어가 관리자 권한으로 실행 중입니다. 연결 설정에서 관리자용 필터를 등록하세요.";
             }
             StringBuilder text = new StringBuilder();
-            text.AppendLine("NVOF for PotPlayer 0.3.1-credits.5");
+            text.AppendLine("NVOF for PotPlayer 0.3.2-rate.1");
             if (registration != null)
             {
                 text.AppendLine("팟플레이어 권한: " + registration.PlayerDescription);
@@ -544,7 +557,7 @@ namespace NvofControl
                 if (registration.ElevatedPlayer && !registration.MachineRegistered) text.AppendLine("관리자 팟플레이어에서는 사용자별 COM 등록을 사용하지 않습니다. 관리자용 등록이 필요합니다.");
                 if (!String.IsNullOrEmpty(registration.RegistrationReadError)) text.AppendLine("등록 조회 오류: " + registration.RegistrationReadError);
             }
-            text.AppendLine("설정: " + (enabled.IsChecked == true ? "사용" : "사용 안 함") + " / " + "원본의 두 배 (×2)");
+            text.AppendLine("설정: " + (enabled.IsChecked == true ? "사용" : "사용 안 함") + " / 최대 " + (fps120.IsChecked == true ? "120" : "60") + " fps · 정수배");
             string[] rateLabels = { "24", "25", "30", "50", "60", "기타" };
             List<string> selectedLabels = new List<string>();
             for (int index = 0; index < inputRates.Length; index++)
@@ -565,8 +578,8 @@ namespace NvofControl
                 if (status.Transport == "d3d11-gpu") text.AppendLine("GPU 보정 / 형태 변화 보호 단계 실행 프레임: " + status.MidpointPassFrames + " / " + status.AppearancePassFrames + " (픽셀별 적용 여부와는 다름)");
                 else text.AppendLine("추가 보정은 GPU 직접 전달 경로에서만 동작합니다.");
                 text.AppendLine("재생에 적용된 원본 프레임 선택: " + status.InputRateMask);
-                text.AppendLine("재생에 적용된 출력 모드: " + (status.DoubleRate ? "원본의 두 배 (×2)" : "고정 출력 FPS"));
-                if (!String.IsNullOrEmpty(status.BypassReason)) text.AppendLine("원본 재생 이유: " + (status.BypassReason == "source-rate" ? "원본 프레임 선택에서 제외" : status.BypassReason == "disabled" ? "보간 사용 꺼짐" : status.BypassReason == "at-or-above-target" ? "출력 FPS 이상" : status.BypassReason == "unknown-source-rate" ? "원본 FPS 확인 불가" : status.BypassReason == "output-rate-unsupported" ? "두 배 출력 FPS가 지원 범위 밖" : status.BypassReason));
+                text.AppendLine("재생에 적용된 출력 모드: " + (status.OutputFpsLimit > 0 ? "최대 " + status.OutputFpsLimit + " fps · ×" + status.OutputMultiple : status.DoubleRate ? "원본의 두 배 (×2)" : "이전 필터 · 보고 없음"));
+                if (!String.IsNullOrEmpty(status.BypassReason)) text.AppendLine("원본 재생 이유: " + (status.BypassReason == "source-rate" ? "원본 프레임 선택에서 제외" : status.BypassReason == "disabled" ? "보간 사용 꺼짐" : status.BypassReason == "at-or-above-target" ? "상한 내 정수배 없음" : status.BypassReason == "unknown-source-rate" ? "원본 FPS 확인 불가" : status.BypassReason == "output-rate-unsupported" ? "출력 FPS가 지원 범위 밖" : status.BypassReason));
                 text.AppendLine("마지막 기록: " + status.UpdatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"));
                 if (!String.IsNullOrEmpty(status.Message)) text.AppendLine("필터 메시지: " + status.Message);
             }
@@ -694,6 +707,7 @@ namespace NvofControl
         {
             if (state == "live") return;
             RuntimeStatus fixture = new RuntimeStatus { Exists=state != "waiting", ProcessId=1234, State=state, InputFps=23.976, OutputFps=47.952, DoubleRate=true, OutputFrames=120, UpdatedUtc=DateTime.UtcNow, ProcessAlive=true, Message="Preview fixture — not runtime telemetry." };
+            if(state=="limit120") { fixture.State="active";fixture.OutputFps=120000.0/1001;fixture.OutputFpsLimit=120;fixture.OutputMultiple=5;fixture.Transport="d3d11-gpu";fps120.IsChecked=true; }
             if (state == "error") fixture.Message = "Preview: GPU initialization failed.";
             if (state == "double" || state == "double-expanded")
             {
@@ -838,23 +852,19 @@ namespace NvofControl
                 if (!store.GpuCorrection || !store.AppearanceProtection) throw new Exception("Existing INIs must retain both enhancements by default.");
                 foreach (bool gpu in new bool[] {false,true}) foreach (bool mouth in new bool[] {false,true})
                 {
-                    store.SetGpuCorrection(gpu); store.SetAppearanceProtection(mouth); store.SetEnabled(false); store.MigrateToDoubleRate();
+                    store.SetGpuCorrection(gpu); store.SetAppearanceProtection(mouth); store.SetEnabled(false); store.SetOutputFpsLimit(120);
                     if (store.GpuCorrection != gpu || store.AppearanceProtection != mouth) throw new Exception("Independent enhancement settings were coupled or migration reset them.");
                 }
-                foreach (int oldTarget in new int[] { 60, 120 })
+                foreach (int limit in new int[] { 60, 120 })
                 {
-                    File.WriteAllText(settingsPath, "[Nvof]\r\nNativeD3D11=1\r\nProbeServices=0\r\nEnabled=0\r\nInputRateMask=5\r\nTargetFps=" + oldTarget + "\r\nDoubleRate=0\r\n");
-                    store.MigrateToDoubleRate();
-                    string migrated = File.ReadAllText(settingsPath);
-                    if (store.Enabled || store.InputRateMask != 5 || migrated.Contains("TargetFps=") || !migrated.Contains("DoubleRate=1")) throw new Exception("Legacy fixed output migration failed.");
-                    if (!migrated.Contains("NativeD3D11=1") || !migrated.Contains("ProbeServices=0")) throw new Exception("Migration changed native transport preferences.");
-                    store.MigrateToDoubleRate();
-                    if (File.ReadAllText(settingsPath) != migrated) throw new Exception("Migration must be idempotent.");
+                    store.SetOutputFpsLimit(limit);
+                    if (new SettingsStore(settingsPath).OutputFpsLimit != limit || store.Enabled) throw new Exception("Output limit persistence reset another setting.");
                 }
-                store.SetInputRateMask(0);
-                if (store.InputRateMask != 0) throw new Exception("Selecting no source rates must persist.");
-                store.SetInputRateMask(63); store.SetEnabled(true);
-                if (!store.Enabled || store.InputRateMask != 63) throw new Exception("Settings round-trip failed.");
+                File.WriteAllText(settingsPath,"[Nvof]\r\nTargetFps=120\r\nDoubleRate=0\r\nOutputFpsLimit=119\r\n");
+                if(store.OutputFpsLimit!=60)throw new Exception("Invalid/legacy output settings must default to capped 60.");
+                bool invalidLimitRejected=false;
+                try { store.SetOutputFpsLimit(119); } catch(ArgumentOutOfRangeException) { invalidLimitRejected=true; }
+                if(!invalidLimitRejected)throw new Exception("Invalid output limit accepted.");
                 string uninstallFixture=Path.Combine(folder,"uninstaller");
                 Directory.CreateDirectory(uninstallFixture);
                 File.WriteAllText(Path.Combine(uninstallFixture,"unins000.exe"),"old");
@@ -893,9 +903,9 @@ namespace NvofControl
                 testController.PreviewState("excluded");
                 if (((TextBlock)testWindow.FindName("StatusTitle")).Text != "보간 대상에서 제외된 영상") throw new Exception("Excluded-rate UI must be distinct from master-off.");
                 testController.PreviewState("above-target");
-                if (((TextBlock)testWindow.FindName("StatusTitle")).Text != "출력 FPS 이상 · 원본 재생") throw new Exception("At-target bypass needs a neutral, distinct explanation.");
+                if (((TextBlock)testWindow.FindName("StatusTitle")).Text != "상한 내 정수배 없음 · 원본 재생") throw new Exception("At-target bypass needs a neutral, distinct explanation.");
                 testController.PreviewState("unknown-rate");
-                if (((TextBlock)testWindow.FindName("StatusTitle")).Text != "원본 FPS 확인 불가 · 원본 재생" || !((TextBlock)testWindow.FindName("StatusDetail")).Text.Contains("×2")) throw new Exception("Unknown source FPS must explain the double-rate bypass without claiming master-off.");
+                if (((TextBlock)testWindow.FindName("StatusTitle")).Text != "원본 FPS 확인 불가 · 원본 재생" || !((TextBlock)testWindow.FindName("StatusDetail")).Text.Contains("정수배")) throw new Exception("Unknown source FPS must explain the double-rate bypass without claiming master-off.");
                 testController.PreviewState("unsupported-rate");
                 if (((TextBlock)testWindow.FindName("StatusTitle")).Text != "지원 범위 밖 · 원본 재생" || !((TextBlock)testWindow.FindName("StatusDetail")).Text.Contains("지원 범위")) throw new Exception("Unsupported double output must explain the original-rate fallback.");
                 CheckBox rate24 = (CheckBox)testWindow.FindName("InputRate0");
@@ -912,7 +922,14 @@ namespace NvofControl
                 ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=true;
                 if(!gpuToggle.IsEnabled||!mouthToggle.IsEnabled||gpuToggle.IsChecked!=false||mouthToggle.IsChecked!=true) throw new Exception("Independent enhancement selection lost.");
                 testController.PreviewState("double");
-                if (testWindow.FindName("Fps60") != null || testWindow.FindName("Fps120") != null || !((TextBlock)testWindow.FindName("OutputRateSummary")).Text.Contains("×2") || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("47.952")) throw new Exception("Controller must expose only double-rate output.");
+                RadioButton cap60=(RadioButton)testWindow.FindName("Fps60"), cap120=(RadioButton)testWindow.FindName("Fps120");
+                cap120.IsChecked=true;
+                if(cap60.IsChecked==true || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("119.880"))throw new Exception("120 limit selection or hint failed.");
+                ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=false;
+                if(cap60.IsEnabled || cap120.IsEnabled || cap120.IsChecked!=true)throw new Exception("Master-off lost output selection.");
+                ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=true;
+                cap60.IsChecked=true;
+                if(cap120.IsChecked==true || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("47.952"))throw new Exception("60 limit selection or hint failed.");
                 testController.PreviewState("error");
                 if (!((TextBox)testWindow.FindName("DiagnosticsText")).Text.Contains("AnotherLongExampleFolder")) throw new Exception("Full action error details must remain available without expanding the footer.");
                 foreach (int width in new int[] { 504, 464 })
@@ -922,7 +939,7 @@ namespace NvofControl
                     client.Measure(new Size(width, 461)); client.Arrange(new Rect(0, 0, width, 461)); client.UpdateLayout();
                     TextBlock saveText = (TextBlock)testWindow.FindName("SaveNotice");
                     double footerTop = saveText.TransformToAncestor(client).Transform(new Point(0, 0)).Y - 8;
-                    foreach (string controlName in new string[] { "EnabledToggle", "InputRate0", "InputRate5", "OutputRateSummary", "OutputRateHint" })
+                    foreach (string controlName in new string[] { "EnabledToggle", "InputRate0", "InputRate5", "OutputRateSummary", "Fps60", "Fps120", "OutputRateHint" })
                     {
                         FrameworkElement item = (FrameworkElement)testWindow.FindName(controlName);
                         Rect bounds = item.TransformToAncestor(client).TransformBounds(new Rect(0, 0, item.ActualWidth, item.ActualHeight));

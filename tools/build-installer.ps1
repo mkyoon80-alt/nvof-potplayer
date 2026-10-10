@@ -1,5 +1,5 @@
 param(
-    [string]$Version='0.3.1-credits.5',
+    [string]$Version='0.3.2-rate.1',
     [string]$PayloadDirectory,
     [string]$CompilerPath,
     [string]$OutputDirectory

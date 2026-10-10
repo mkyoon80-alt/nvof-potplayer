@@ -49,7 +49,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.3.1-credits.5";
+constexpr char kFilterBuild[]="0.3.2-rate.1";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -438,7 +438,8 @@ public:
             gpu_correction_=false;appearance_protection_=false;native_synthesis_=true;
 
             input_rate_mask_=GetPrivateProfileIntW(L"Nvof",L"InputRateMask",nvof::kAllInputRates,ini.c_str()) & nvof::kAllInputRates;
-            // Fixed-rate modes were removed. Legacy INI keys cannot reactivate them.
+            // Integer multiples only; an absent/invalid limit means 60 fps.
+            output_limit_=nvof::normalize_output_limit(int(GetPrivateProfileIntW(L"Nvof",L"OutputFpsLimit",60,ini.c_str())));
             target_ = {0, 1};
             write_log("filter created instance="+std::to_string(instance_id_)+" NativeD3D11="+
                 std::to_string(native_feature_enabled_)+" ProbeServices="+std::to_string(probe_services_));
@@ -643,7 +644,7 @@ public:
         return nvof::input_rate_selected(source_rate(duration),input_rate_mask_);
     }
     nvof::Rate requested_target(REFERENCE_TIME duration) const {
-        return nvof::double_source_rate(duration);
+        return nvof::capped_source_rate(duration,output_limit_);
     }
     bool same_target(REFERENCE_TIME duration) const {
         const auto incoming=requested_target(duration);
@@ -677,8 +678,8 @@ public:
         if(!input_rate_selected_)return "Source frame rate excluded; original frames preserved";
         if(!target_available(input_.duration))return input_.duration<=0?
             "Source frame rate is unknown; original frames preserved":
-            "Doubled frame rate exceeds supported timing bounds; original frames preserved";
-        return "Source frame rate already meets target; original frames preserved";
+            "Output frame rate exceeds supported timing bounds; original frames preserved";
+        return "No integer multiple fits the selected limit; original frames preserved";
     }
     const char* input_rate_group() const noexcept {
         switch(nvof::source_rate_bucket(source_rate(input_.duration))) {
@@ -821,7 +822,7 @@ public:
         write_log("stream start: NV12 " + std::to_string(input_.width) + "x" +
             std::to_string(input_.height) + " target=" + std::to_string(target_.num) +
             "/" + std::to_string(target_.den) + " inputRateGroup="+input_rate_group()+
-            " InputRateMask="+std::to_string(input_rate_mask_)+" DoubleRate="+std::to_string(double_rate_)+" bypassReason="+bypass_reason());
+            " InputRateMask="+std::to_string(input_rate_mask_)+" DoubleRate="+std::to_string(nvof::output_multiple(input_.duration,output_limit_)==2)+" bypassReason="+bypass_reason());
         return S_OK;
     }
 
@@ -1249,7 +1250,9 @@ private:
                     << ",\"inputSurfaceFormat\":" << json_string(input_surface_format_)
                     << ",\"inputConversion\":" << json_string(input_conversion_)
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
-                    << ",\"doubleRate\":" << (double_rate_?"true":"false")
+                    << ",\"doubleRate\":" << (nvof::output_multiple(input_.duration,output_limit_)==2?"true":"false")
+                    << ",\"outputFpsLimit\":" << output_limit_
+                    << ",\"outputMultiple\":" << (interpolation_requested()?nvof::output_multiple(input_.duration,output_limit_):1)
                     << ",\"requestedInterpolationBackend\":\"" << (native_synthesis_?"native-newton-cost":"fruc") << "\""
                     << ",\"nativeSynthesisRevision\":" << (native_synthesis_?11:0)
                     << ",\"gpuMidpointCorrection\":" << (gpu_correction_?"true":"false")
@@ -1277,7 +1280,7 @@ private:
                     << ",\"qualityState\":" << json_string(quality_state_)
                     << ",\"buildVersion\":" << json_string(kFilterBuild)
                     << ",\"gpuCompletion\":" << json_string(gpu_engine_&&gpu_engine_->queued_completion()?"context-ordered":"blocking")
-                    << ",\"algorithm\":" << json_string(native_synthesis_?"x2-native-newton-0.3.1-credits.5":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
+                    << ",\"algorithm\":" << json_string(native_synthesis_?"integer-native-newton-0.3.2-rate.1":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
                     << ",\"message\":" << json_string(message) << "}\n";
                 stream.flush();
                 if (!stream) return;
@@ -1313,7 +1316,7 @@ private:
     std::string sample_transport_ = "unknown";
     std::string input_surface_format_="unknown",input_conversion_="none";
     bool enabled_ = true;
-    static constexpr bool double_rate_=true;
+    int output_limit_=60;
     unsigned input_rate_mask_=nvof::kAllInputRates;
     bool gpu_correction_=true,appearance_protection_=true,native_synthesis_=false;
     uint64_t appearance_pass_frames_=0;

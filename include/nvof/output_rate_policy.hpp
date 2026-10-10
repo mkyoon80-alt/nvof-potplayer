@@ -40,4 +40,21 @@ inline Rate canonical_source_rate(int64_t duration) noexcept {
     const int64_t divisor = std::gcd(doubled.num, denominator);
     return {doubled.num / divisor, denominator / divisor};
 }
+// A limit is not an exact resampling target: preserve originals and fill the
+// slots between them. Low rates stay within the engine's 32 generated phases.
+inline int normalize_output_limit(int limit) noexcept { return limit == 120 ? 120 : 60; }
+inline int output_multiple(int64_t duration, int limit) noexcept {
+    const Rate source = canonical_source_rate(duration);
+    if (!supported_output_rate(source)) return 1;
+    const int64_t multiple = int64_t(normalize_output_limit(limit)) * source.den / source.num;
+    return int(multiple < 1 ? 1 : multiple > 33 ? 33 : multiple);
+}
+inline Rate capped_source_rate(int64_t duration, int limit) noexcept {
+    const Rate source = canonical_source_rate(duration);
+    if (!supported_output_rate(source)) return {0,1};
+    const int64_t numerator = source.num * output_multiple(duration,limit);
+    const int64_t divisor = std::gcd(numerator,source.den);
+    const Rate target{numerator/divisor,source.den/divisor};
+    return supported_output_rate(target) ? target : Rate{0,1};
+}
 } // namespace nvof

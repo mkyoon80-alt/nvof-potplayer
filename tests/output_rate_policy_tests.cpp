@@ -31,6 +31,26 @@ int main() {
         require(!nvof::supported_output_rate({1000000001,10000000}),"unsafe numerator accepted");
         require(!nvof::supported_output_rate({1,10000001}),"unsafe denominator accepted");
         require(!nvof::supported_output_rate({1001,1}),"over-limit FPS accepted");
+        struct Case { int64_t duration; nvof::Rate low,high; int lowMultiple,highMultiple; };
+        for(const auto c : {Case{417083,{48000,1001},{120000,1001},2,5},
+            Case{416667,{48,1},{120,1},2,5},Case{400000,{50,1},{100,1},2,4},
+            Case{333667,{60000,1001},{120000,1001},2,4},Case{333333,{60,1},{120,1},2,4},
+            Case{200000,{50,1},{100,1},1,2},Case{166833,{60000,1001},{120000,1001},1,2},
+            Case{166667,{60,1},{120,1},1,2},Case{83333,{120,1},{120,1},1,1},
+            Case{69444,{144,1},{144,1},1,1}}) {
+            for(int limit : {60,120}) {
+                const auto actual=nvof::capped_source_rate(c.duration,limit),expected=limit==60?c.low:c.high;
+                require(actual.num*expected.den==expected.num*actual.den,"integer limit cadence differs from table");
+                require(nvof::output_multiple(c.duration,limit)==(limit==60?c.lowMultiple:c.highMultiple),"wrong multiplier");
+            }
+        }
+        require(nvof::output_multiple(10000000,120)==33,"low-rate phase bound missing");
+        require(nvof::capped_source_rate(0,120).num==0,"unknown input invented a cadence");
+        require(nvof::capped_source_rate(-1,60).num==0,"negative input invented a cadence");
+        require(nvof::output_multiple(417083,119)==2,"invalid limit must default to 60");
+        const auto odd=nvof::capped_source_rate(416999,120);
+        require(odd.num==50000000 && odd.den==416999,"nonstandard rate was rounded up across the cap");
+        require(nvof::output_multiple(416600,120)==4,"nonstandard rate above 24 crossed the 120 cap");
         // Constructor must use the same bounds as the target policy.
         nvof::HybridPipeline precise({20000000,416999},[](const nvof::Frame& a,const nvof::Frame& b) {
             auto middle=a;middle.pts=(a.pts+b.pts)/2;return middle;

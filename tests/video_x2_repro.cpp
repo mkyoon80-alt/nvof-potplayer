@@ -6,7 +6,7 @@
 #include <d3d10_1.h>
 #include <fstream>
 int wmain(int argc,wchar_t** argv){try{
- require(argc>=5,"video_x2_repro <runtime> <raw nv12> <timestamps> <output folder> [baseline|native] [nominal-duration-100ns] [nv12|p010] [width height] [flow-dimension] [cost-mode: 0=off 1=blend 2=fusion] [grid: 0=auto 4 2 1] [medium|slow] [fresh|reuse]");
+ require(argc>=5,"video_x2_repro <runtime> <raw nv12> <timestamps> <output folder> [baseline|native] [nominal-duration-100ns] [nv12|p010] [width height] [flow-dimension] [cost-mode: 0=off 1=blend 2=fusion] [grid: 0=auto 4 2 1] [medium|slow] [fresh|reuse] [limit: 0=legacy-x2 60 120]");
  const int w=argc>8?std::stoi(argv[8]):1920,h=argc>9?std::stoi(argv[9]):1080;
  require(w>=4&&h>=4&&w<=8192&&h<=8192&&!(w&1)&&!(h&1),"Invalid raw dimensions");
  const unsigned flowDimension=argc>10?std::stoul(argv[10]):1920;
@@ -18,6 +18,8 @@ int wmain(int argc,wchar_t** argv){try{
  const std::wstring session=argc>14?argv[14]:L"reuse";
  require(session==L"reuse"||session==L"fresh","Invalid session mode");
  const MotionFlowOptions options{grid,quality==L"slow"?MotionFlowQuality::slow:MotionFlowQuality::medium,session==L"fresh"?MotionSessionMode::fresh:MotionSessionMode::persistent};
+ const int limit=argc>15?std::stoi(argv[15]):0;
+ require(limit==0||limit==60||limit==120,"Invalid FPS limit");
  const int64_t duration=argc>6?std::stoll(argv[6]):417083;
  const bool p010=argc>7&&std::wstring(argv[7])==L"p010";
  const size_t bytes=size_t(w)*h*3/2*(p010?2:1);
@@ -36,7 +38,7 @@ int wmain(int argc,wchar_t** argv){try{
  D3D11_QUERY_DESC queryDesc{D3D11_QUERY_EVENT,0};ComPtr<ID3D11Query> complete;
  check(device->CreateQuery(&queryDesc,&complete),"Benchmark completion query");
  int source_index=0,output_index=0,cut=0,repeated=0,skipped=0,originals=0;std::vector<uint8_t> current(bytes);
- GpuPhasePipeline pipeline(double_source_rate(duration),[&](const GpuFrame&a,const GpuFrame&b,const std::vector<int64_t>& times){
+ GpuPhasePipeline pipeline(limit?capped_source_rate(duration,limit):double_source_rate(duration),[&](const GpuFrame&a,const GpuFrame&b,const std::vector<int64_t>& times){
   const auto start=std::chrono::steady_clock::now();auto batch=engine.interpolate_pair(a,b,times);
   const auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
   context->End(complete.Get());context->Flush();

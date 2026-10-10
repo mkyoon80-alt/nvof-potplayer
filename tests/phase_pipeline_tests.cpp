@@ -329,6 +329,30 @@ void quantized_pipeline_cadence() {
     require(!vfr.source_cadence_active(), "VFR cadence correction resumed without a seek");
 }
 
+void integer_limit_cadence() {
+    constexpr int count=60;
+    for(int64_t duration : {417083LL,416667LL,400000LL,333667LL,333333LL,200000LL,166833LL,166667LL,83333LL})
+    for(int limit : {60,120}) for(int mode=0;mode<3;++mode) {
+        const Rate source=canonical_source_rate(duration),target=capped_source_rate(duration,limit);
+        const int multiple=output_multiple(duration,limit);int calls=0,outputs=0;
+        const int64_t origin=quantized_source_pts(source,0,1234567,mode);
+        PhasePipeline pipeline(target,[&](const Frame& a,const Frame& b,const std::vector<int64_t>& times) {
+            ++calls;require(times.size()==size_t(multiple-1),"Capped pair generated extra/missing phases");
+            for(int j=1;j<multiple;++j)
+                require(std::llabs((times[j-1]-a.pts)*multiple-(b.pts-a.pts)*j)<=multiple,"Incorrect integer interpolation phase");
+            return phases(a,b,times);
+        },source);
+        auto emit=[&](const OutputFrame& out) {
+            require(out.frame.pts==origin+clock_at(target,outputs) && out.stop==origin+clock_at(target,outputs+1),"Capped clock drift/gap/overlap");
+            if(outputs%multiple==0)require(level(out.frame)==outputs/multiple,"Capped output changed an original");
+            ++outputs;return true;
+        };
+        for(int i=0;i<count;++i)pipeline.push(make(quantized_source_pts(source,i,1234567,mode),uint8_t(i)),false,emit);
+        pipeline.finish(quantized_source_pts(source,count,1234567,mode)-quantized_source_pts(source,count-1,1234567,mode),emit);
+        require(outputs==count*multiple && calls==count-1,"Capped clip output count/EOS mismatch");
+    }
+}
+
 int main() {
     try {
         initialize();
@@ -337,6 +361,7 @@ int main() {
                 cadence(source, target);
         source_cadence_normalization();
         quantized_pipeline_cadence();
+        integer_limit_cadence();
         empty_requests();
         long_clock();
         phase_and_original();

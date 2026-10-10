@@ -167,9 +167,10 @@ int wmain(){try {
     ComPtr<ID3D11RenderTargetView> composedRt;check(device->CreateRenderTargetView(composed.Get(),nullptr,&composedRt),"Compose RTV");
     composed->GetDesc(&td);td.BindFlags=0;td.Usage=D3D11_USAGE_STAGING;td.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
     ComPtr<ID3D11Texture2D> composedStage;check(device->CreateTexture2D(&td,nullptr,&composedStage),"Compose staging");
+    float compositionPhase=.5f;
     auto composeModels=[&](const std::vector<float>& values) {
         context->UpdateSubresource(models.Get(),0,nullptr,values.data(),3*16,0);
-        float constants[]={float(w),float(h),float(aw),float(ah),4,0,0,.5f};context->UpdateSubresource(cb.Get(),0,nullptr,constants,0,0);
+        float constants[]={float(w),float(h),float(aw),float(ah),4,0,0,compositionPhase};context->UpdateSubresource(cb.Get(),0,nullptr,constants,0,0);
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(compose.Get(),nullptr,0);
         auto c=cb.Get();auto sampler=sp.Get();context->PSSetConstantBuffers(0,1,&c);context->PSSetSamplers(0,1,&sampler);
         ID3D11ShaderResourceView* raw[14]{};for(int i=0;i<6;++i)raw[i]=views[i].Get();raw[6]=ov.Get();raw[7]=wv.Get();raw[8]=mv.Get();raw[13]=gv.Get();context->PSSetShaderResources(0,14,raw);
@@ -230,5 +231,15 @@ int wmain(){try {
     auto unsupportedEdge=composeModels(modelValues);
     for(int y=0;y<12;++y)for(int x=64;x<128;++x)
         require(unsupportedEdge[y*w+x]==boundaryOrdinary[y*w+x],"A single interior group extrapolated into the boundary");
+    // Five-times output: use a 10px translation so the four expected positions
+    // are known integer pixels. Check both entering and exiting boundaries.
+    upload(10,true,false,true);
+    std::fill(modelValues.begin(),modelValues.end(),0);
+    for(int i=0;i<9;++i){modelValues[i*4+1]=-10;modelValues[i*4+3]=1;}
+    for(int phase=1;phase<5;++phase) {
+        compositionPhase=phase/5.f;auto actual=composeModels(modelValues),truth=source(phase*2,true);
+        for(int y=0;y<h;++y)for(int x=64;x<128;++x)
+            require(std::abs(actual[y*w+x]-truth[y*w+x])<.0001f,"Five-times glyph phase or edge is misplaced");
+    }
     std::cout<<"PASS glyph row-alias correction in both directions, small/fast scroll, flat area, unsupported trajectory; rigid/subpixel group, fixed/colored/mixed rejection; non-reference black, colored moving background, glyph-only composition, isolated/conflicting support rejection"<<std::endl;return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

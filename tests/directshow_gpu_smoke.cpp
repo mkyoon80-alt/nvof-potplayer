@@ -609,6 +609,10 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
         }
     }
     const size_t before_eos=sink->pin().count();check(source->pin().DeliverEndOfStream(),"policy EOS");
+    if(interpolate && header_duration<0 && expected_num*source_den%(expected_den*source_num)==0) {
+        const int multiple=int(expected_num*source_den/(expected_den*source_num));
+        if(sink->pin().count()!=size_t((frame_count+1)*multiple))throw std::runtime_error("Integer output count including EOS is incorrect");
+    }
     if(!interpolate && sink->pin().count()!=before_eos)throw std::runtime_error("bypass emitted an interpolated EOS tail");
     check(source->pin().DeliverBeginFlush(),"policy seek flush");check(source->pin().DeliverEndFlush(),"policy seek end");
     check(source->pin().DeliverNewSegment(100*kDuration,INT64_MAX,1),"policy seek segment");
@@ -714,7 +718,7 @@ void check_color_rejection(IClassFactory* factory,ID3D11Device* device,ID3D11Dev
 }
 int wmain(int argc,wchar_t** argv) {
     if(argc<2){std::cerr<<"usage: directshow_gpu_smoke <NativeD3D11=1 filter.ax>\n";return 2;}
-    p010_fixture=argc>2 && (wcscmp(argv[2],L"--p010-input")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0);
+    p010_fixture=(argc>9 && wcscmp(argv[9],L"p010")==0) || (argc>2 && (wcscmp(argv[2],L"--p010-input")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0));
     require_services=argc>2 && wcscmp(argv[2],L"--probe-services")==0;
     check(CoInitializeEx(nullptr,COINIT_MULTITHREADED),"CoInitialize");
     HMODULE module=LoadLibraryExW(argv[1],nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);

@@ -166,7 +166,8 @@ int wmain(int argc, wchar_t** argv) {
         require(lock_mode == L"protected" || lock_mode == L"mutex", "Lock mode must be protected or mutex");
         const bool x2=argc>7;
         const bool native=argc>7&&std::wstring(argv[7])==L"native";
-        const int phase_count=x2?1:4;
+        const int phase_count=argc>8?_wtoi(argv[8]):x2?1:4;
+        require(phase_count>=1&&phase_count<=4,"Stress phase count must be 1..4");
         const auto options=x2?nvof::GpuCompletionMode::context_ordered:nvof::GpuCompletionMode::blocking;
         MutexHandle shared_mutex;
         const HANDLE mutex = lock_mode == L"mutex" ? shared_mutex.value : nullptr;
@@ -230,7 +231,7 @@ int wmain(int argc, wchar_t** argv) {
                     }
                 }
                 const int64_t current_pts = int64_t(pairs + 1) * 1000000;
-                auto current = upload(x2?int((pairs+1)/3)*6:int(pairs+1)*5, current_pts);
+                auto current = upload(x2&&phase_count==1?int((pairs+1)/3)*6:int(pairs+1)*5, current_pts);
                 std::vector<int64_t> times;
                 for (int phase = 1; phase <= phase_count; ++phase) times.push_back(previous.pts + int64_t(phase) * 1000000/(phase_count+1));
                 renderer.stage("interpolate pair");
@@ -265,7 +266,7 @@ int wmain(int argc, wchar_t** argv) {
             // Join before engine/resource unwinding so a failing test cannot leave a live worker.
             renderer.stop(); engine.reset(); throw;
         }
-        if(x2)require(skipped>0,"Stress did not exercise identical-picture advance");
+        if(x2&&phase_count==1)require(skipped>0,"Stress did not exercise identical-picture advance");
         std::cout<<"IDENTICAL_SKIPPED "<<skipped<<std::endl;
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         std::cout << "GPU_INTEROP_STRESS_PASS pairs=" << pairs << " phases=" << pairs * phase_count

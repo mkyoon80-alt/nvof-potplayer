@@ -169,6 +169,8 @@ private:
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2) { std::cerr << "usage: directshow_smoke <filter.ax> [--no-gpu]\n"; return 2; }
     const bool no_gpu=argc>2 && std::wstring(argv[2])==L"--no-gpu";
+    const int expected_multiple=argc>3 && std::wstring(argv[2])==L"--multiple" ? _wtoi(argv[3]) : 2;
+    if (expected_multiple<2 || expected_multiple>5) return 2;
     HRESULT initialized=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
     if (FAILED(initialized)) return 3;
     HMODULE module=LoadLibraryExW(argv[1],nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
@@ -228,9 +230,9 @@ int wmain(int argc, wchar_t** argv) {
             if (sink->pin().count()!=1) throw std::runtime_error("First-frame preview was not immediate");
             if (!no_gpu) {
                 for (int i=1;i<10;++i) check(source->pin().push(i),"GPU frame");
-                if (sink->pin().count()!=19) throw std::runtime_error("Expected 19 x2 outputs before EOS; got "+std::to_string(sink->pin().count()));
+                if (sink->pin().count()!=9*expected_multiple+1) throw std::runtime_error("Unexpected integer-rate output count before EOS: "+std::to_string(sink->pin().count()));
                 check(source->pin().DeliverEndOfStream(),"x2 EOS tail");
-                if (sink->pin().count()!=20) throw std::runtime_error("Expected exactly 20 x2 outputs after EOS");
+                if (sink->pin().count()!=10*expected_multiple) throw std::runtime_error("Unexpected integer-rate output count after EOS");
             }
             // Backward and forward timeline changes clear every retained frame.
             for (int frame : {100,2,300,1}) {

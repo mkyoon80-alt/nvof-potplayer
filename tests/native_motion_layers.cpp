@@ -83,15 +83,16 @@ int wmain(int argc,wchar_t** argv){try{
         std::fill(image.begin()+size_t(w)*h,image.end(),128);return image;
     };
     bool qualityPassed=true;
-    for(int scene=0;scene<6;++scene) {
+    for(int multiple : {2,4,5}) for(int scene=0;scene<6;++scene) {
         double sum=0,held=0;uint64_t ghosts=0,band=0;
         for(int i=0;i<8;++i) {
             double t=i*.125;auto a=fixture(t,scene),b=fixture(t+1,scene);
             auto first=engine.copy(uploadGuard(device.Get(),a,w,h,0));auto next=engine.copy(uploadGuard(device.Get(),b,w,h,400000));
-            auto batch=engine.interpolate_pair(first,next,{100000,200000,300000});
-            require(batch.frames.size()==3&&!batch.quality.scene_cut&&batch.quality.repeated_mask==0,"Layer fixture lost interpolation");
-            for(int phase=0;phase<3;++phase) {
-                auto expected=fixture(t+.25*(phase+1),scene),actual=readback(device.Get(),context.Get(),batch.frames[phase]);
+            std::vector<int64_t> times;for(int j=1;j<multiple;++j)times.push_back(400000LL*j/multiple);
+            auto batch=engine.interpolate_pair(first,next,times);
+            require(batch.frames.size()==size_t(multiple-1)&&!batch.quality.scene_cut&&batch.quality.repeated_mask==0,"Layer fixture lost interpolation");
+            for(int phase=0;phase<multiple-1;++phase) {
+                auto expected=fixture(t+double(phase+1)/multiple,scene),actual=readback(device.Get(),context.Get(),batch.frames[phase]);
                 sum+=mse(actual,expected,w,h);held+=mse(a,expected,w,h);
                 if(scene==0)for(int y=50;y<480;++y)for(int x=90;x<510;++x) {
                     double d=std::abs(std::hypot(x-300.0,y-265.0)-170);
@@ -100,10 +101,10 @@ int wmain(int argc,wchar_t** argv){try{
             }
             require(readback(device.Get(),context.Get(),first)==a,"Layer source modified");
         }
-        std::cout<<"LAYERS scene="<<scene<<" mse="<<sum/24<<" held="<<held/24<<" exterior_ghosts="<<ghosts<<" band="<<band<<std::endl;
+        std::cout<<"LAYERS multiple="<<multiple<<" scene="<<scene<<" mse="<<sum/(8*(multiple-1))<<" held="<<held/(8*(multiple-1))<<" exterior_ghosts="<<ghosts<<" band="<<band<<std::endl;
         if(!(sum<held*.6)){qualityPassed=false;std::cout<<"REGRESSION scene="<<scene<<" moving layer degraded to a hold or crossfade"<<std::endl;}
         if(scene==0&&!(ghosts<double(band)*.0001)){qualityPassed=false;std::cout<<"REGRESSION stationary outline leaked into moving background"<<std::endl;}
     }
     require(qualityPassed,"One or more layer quality regressions");
-    std::cout<<"PASS curved stationary outline exterior, repeated bars, moving bright object, moving thin curves, repeated moving glyph strokes, curved moving occluder, three phases and intact sources"<<std::endl;return 0;
+    std::cout<<"PASS curved stationary outline exterior, repeated bars, moving bright object, moving thin curves, repeated moving glyph strokes, curved moving occluder, x2/x4/x5 phases and intact sources"<<std::endl;return 0;
 }catch(const std::exception&e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

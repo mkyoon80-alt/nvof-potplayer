@@ -27,12 +27,13 @@ The controller reads and writes `NvofPotPlayer.ini` beside the executable and fi
 | Key | Values | Default |
 | --- | --- | --- |
 | `Enabled` | `1` or `0` | `1` |
-| `DoubleRate` | Legacy rollback compatibility; always `1` | `1` |
+| `OutputFpsLimit` | `60` or `120` | `60` |
+| `DoubleRate` | Legacy rollback compatibility; ignored by this filter | `1` |
 | `InputRateMask` | Integer from `0` through `63` | `63` |
 
 Source-rate bits are 24 fps=`1`, 25=`2`, 30=`4`, 50=`8`, 60=`16`, and other=`32`. Rates 23.976, 29.97, and 59.94 belong to the 24, 30, and 60 groups. An empty selection preserves original frames for every source. Turning the master switch off disables the checkboxes without discarding their selection.
 
-Output is always ×2. The filter ignores legacy `TargetFps` and `DoubleRate` choices. On a normal controller launch, migration removes `TargetFps` and writes `DoubleRate=1` for rollback compatibility, preserving source selections, enablement and unrelated settings. Previews and tests never change the installed settings. Changes take effect when the player opens a video again. Unknown or unsupported doubled rates bypass interpolation.
+Output uses the largest integer multiple within the selected cap, preserving above-cap sources and original-rate exclusions. Missing/invalid limits default to 60. Historical TargetFps/DoubleRate keys are ignored; the controller does not rewrite unrelated settings on launch. Changes apply when reopening the video. Previews and tests do not write installed settings. Runtime diagnostics separately report the applied output limit and multiplier.
 
 Runtime status comes from `%LOCALAPPDATA%/NvofPotPlayer/status.json` and stays independent of the saved settings. The controller uses `processId`, `state`, `transport`, `inputFps`, `outputFps`, `outputFrames`, `message`, `bypassReason`, `inputRateSelected`, `inputRateMask`, and `doubleRate`. Supported states are `waiting`, `active`, `bypass`, `error`, and `stopped`.
 
