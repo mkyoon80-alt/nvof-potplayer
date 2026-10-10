@@ -72,7 +72,7 @@ endfunction()
 nvof_shaders(blend nvof-gpu-blend vs vs_4_0 ps ps_4_0)
 nvof_shaders(p010 nvof-gpu-blend ps ps_5_0)
 nvof_shaders(scene nvof-scene main cs_5_0)
-nvof_shaders(motion nvof-motion-synthesis vs vs_5_0 midpoint ps_5_0 downsample ps_5_0 inverseMap ps_5_0 inverseMapBlend ps_5_0 inverseMapOff ps_5_0 stationaryMask ps_5_0 expandStationaryMask ps_5_0 repairMotion ps_5_0 assessMotion cs_5_0)
+nvof_shaders(motion nvof-motion-synthesis vs vs_5_0 midpoint ps_5_0 downsample ps_5_0 inverseMap ps_5_0 inverseMapBlend ps_5_0 inverseMapOff ps_5_0 stationaryMask ps_5_0 expandStationaryMask ps_5_0 repairMotion ps_5_0 glyphGroup cs_5_0 assessMotion cs_5_0)
 # A dedicated dependency prevents parallel builds from compiling the consumer
 # before its generated header exists.
 add_custom_target(nvof_shader_headers DEPENDS

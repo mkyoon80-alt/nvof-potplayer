@@ -89,5 +89,36 @@ int wmain(){try {
     require(at(render(0))==-928,"Flat dark area was mistaken for glyph evidence");
     upload(8,true,true,false);
     require(at(render(0))==-928,"Unsupported neighboring trajectory was accepted");
-    std::cout<<"PASS glyph row-alias correction in both directions, small/fast scroll, flat area, unsupported trajectory"<<std::endl;return 0;
+    // Common-motion layer: recover a whole glyph group even when individual
+    // vectors point into other rows; reject fixed, fast, colored or mixed layers.
+    ComPtr<ID3D11ComputeShader> groups;
+    check(device->CreateComputeShader(shaders::motion::glyphGroup,sizeof(shaders::motion::glyphGroup),nullptr,&groups),"Glyph groups CS");
+    auto models=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,3,3,0,nullptr,D3D11_BIND_UNORDERED_ACCESS|D3D11_BIND_SHADER_RESOURCE);
+    ComPtr<ID3D11UnorderedAccessView> modelUav;check(device->CreateUnorderedAccessView(models.Get(),nullptr,&modelUav),"Glyph groups UAV");
+    D3D11_TEXTURE2D_DESC md{};models->GetDesc(&md);md.BindFlags=0;md.Usage=D3D11_USAGE_STAGING;md.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> modelStage;check(device->CreateTexture2D(&md,nullptr,&modelStage),"Model staging");
+    auto fit=[&]() {
+        float constants[]={float(w),float(h),float(aw),float(ah),4,0,0,.5f};context->UpdateSubresource(cb.Get(),0,nullptr,constants,0,0);
+        ID3D11ShaderResourceView* raw[6]{};for(int i=0;i<6;++i)raw[i]=views[i].Get();
+        auto c=cb.Get();auto sampler=sp.Get();auto target=modelUav.Get();context->CSSetShader(groups.Get(),nullptr,0);
+        context->CSSetConstantBuffers(0,1,&c);context->CSSetSamplers(0,1,&sampler);context->CSSetShaderResources(0,6,raw);context->CSSetUnorderedAccessViews(1,1,&target,nullptr);
+        context->Dispatch(3,3,1);ID3D11ShaderResourceView* empty[6]{};target=nullptr;context->CSSetShaderResources(0,6,empty);context->CSSetUnorderedAccessViews(1,1,&target,nullptr);context->CSSetShader(nullptr,nullptr,0);
+        context->CopyResource(modelStage.Get(),models.Get());D3D11_MAPPED_SUBRESOURCE data{};check(context->Map(modelStage.Get(),0,D3D11_MAP_READ,0,&data),"Model map");
+        std::array<float,4> result{};memcpy(result.data(),static_cast<uint8_t*>(data.pData)+data.RowPitch+16,16);context->Unmap(modelStage.Get(),0);return result;
+    };
+    upload(8,true,true,true);auto model=fit();
+    require(model[3]==1&&std::abs(model[0])<.26f&&std::abs(model[1]+8)<.26f,"Common glyph translation failed to reject row aliases");
+    auto b8=source(8,true),b9=source(9,true);for(size_t i=0;i<b8.size();++i)b8[i]=b8[i]*.75f+b9[i]*.25f;
+    context->UpdateSubresource(input[1].Get(),0,nullptr,b8.data(),w*4,0);model=fit();
+    require(model[3]==1&&std::abs(model[1]+8.25f)<.26f,"Fractional glyph translation was lost");
+    upload(0,true,true,true);require(fit()[3]==0,"Fixed text entered common scroll layer");
+    upload(58,true,false,true);require(fit()[3]==0,"Fast scroll was shortened by common motion layer");
+    upload(8,false,true,true);require(fit()[3]==0,"Flat black accepted as text");
+    upload(8,true,true,true);std::fill(uv.begin(),uv.end(),180.f/255.f);context->UpdateSubresource(input[2].Get(),0,nullptr,uv.data(),w*8,0);
+    require(fit()[3]==0,"Colored source accepted as monochrome credits");
+    std::fill(uv.begin(),uv.end(),128.f/255.f);context->UpdateSubresource(input[2].Get(),0,nullptr,uv.data(),w*8,0);
+    auto mixed=source(8,true),opposite=source(-8,true);for(int y=0;y<h;++y)for(int x=w/2;x<w;++x)mixed[y*w+x]=opposite[y*w+x];
+    context->UpdateSubresource(input[1].Get(),0,nullptr,mixed.data(),w*4,0);
+    require(fit()[3]==0,"Opposing text layers incorrectly share one translation");
+    std::cout<<"PASS glyph row-alias correction in both directions, small/fast scroll, flat area, unsupported trajectory; rigid/subpixel group, fixed/colored/mixed rejection"<<std::endl;return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

@@ -16,6 +16,7 @@ struct MotionSessionTestAccess {
    for(unsigned y=0;y<d.Height;++y)f.write(static_cast<const char*>(m.pData)+y*m.RowPitch,d.Width*bytes);
    s.context->Unmap(copy.Get(),0);
   };
+  save(s.glyphTexture.Get(),"glyph.bin",16);
   save(s.layerTextures[0].Get(),"mask.bin",2);
   save(s.warpMaps[0].Get(),"offsets.bin",16);save(s.warpMaps[1].Get(),"weights.bin",16);
   save(s.repairedTextures[0].Get(),"fw.bin",4);save(s.repairedTextures[1].Get(),"bw.bin",4);

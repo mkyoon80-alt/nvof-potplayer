@@ -12,6 +12,7 @@ Texture2D<uint> forwardCost:register(t9);
 Texture2D<uint> backwardCost:register(t10);
 Texture2D<int2> rawForward:register(t11);
 Texture2D<int2> rawBackward:register(t12);
+Texture2D<float4> glyphMotion:register(t13);
 RWStructuredBuffer<uint> riskStatistics:register(u0);
 SamplerState linearClamp:register(s0);
 cbuffer Parameters:register(b0) {
@@ -510,8 +511,127 @@ float2 mappedColor(float2 p,float4 offsets,float4 weights) {
     return lerp(result,fixed,still);
 }
 
+// Fit a rigid translation to a whole monochrome glyph group. This is a
+// separate, image-verified layer: unreliable per-letter flow must not bend
+// letters that demonstrably translate together. No screen location is assumed.
+// One workgroup per overlapping patch. Cache source samples once and score
+// candidate translations in parallel; no readback or per-frame allocation.
+RWTexture2D<float4> glyphOutput:register(u1);
+groupshared float glyphSource[289];
+groupshared float4 glyphStats[32];
+groupshared float2 glyphErrors[32];
+groupshared float4 glyphFits[32];
+groupshared float4 glyphBest;
+groupshared uint glyphAccepted;
+float cachedGroupCost(float2 p,float2 v) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    if(!inside(p+v-24.0*scale)||!inside(p+v+24.0*scale))return 255.0;
+    float error=0,ink=0;
+    [loop]for(int i=0;i<289;++i) {
+        float2 q=p+float2(i%17-8,i/17-8)*3.0*scale;
+        float a=glyphSource[i],b=yAt(q+v,true)*255.0;
+        float active=max(a,b)>40.0?1.0:0.0;
+        error+=abs(a-b)*active;ink+=active;
+    }
+    return error/max(ink,1.0);
+}
+[numthreads(32,1,1)]void glyphGroup(uint3 group:SV_GroupID,uint lane:SV_GroupIndex) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    float2 p=(float2(group.xy)+0.5)*32.0*scale;
+    if(lane==0)glyphOutput[group.xy]=0;
+    if(!inside(p-24.0*scale)||!inside(p+24.0*scale))return;
+    float4 stats=0;float2 errors=0;
+    [loop]for(int i=int(lane);i<289;i+=32) {
+        float2 q=p+float2(i%17-8,i/17-8)*3.0*scale;
+        float a=yAt(q,false)*255.0,b=yAt(q,true)*255.0;glyphSource[i]=a;
+        float active=max(a,b)>40.0?1.0:0.0;errors+=float2(abs(a-b),1)*active;
+        stats.x+=a<28.0?1.0:0.0;stats.y+=abs(a-16.0)<3.0?1.0:0.0;stats.z+=a>160.0?1.0:0.0;
+        float2 uv=max(abs(uvAt(q,false)*255.0-128.0),abs(uvAt(q,true)*255.0-128.0));
+        stats.w=max(stats.w,max(uv.x,uv.y));
+    }
+    glyphStats[lane]=stats;glyphErrors[lane]=errors;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll]for(uint step=16;step>0;step/=2) {
+        if(lane<step){glyphStats[lane].xyz+=glyphStats[lane+step].xyz;glyphStats[lane].w=max(glyphStats[lane].w,glyphStats[lane+step].w);glyphErrors[lane]+=glyphErrors[lane+step];}
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if(lane==0) {
+        float4 st=glyphStats[0];float zero=glyphErrors[0].x/max(glyphErrors[0].y,1.0);
+        glyphAccepted=st.x>=160.0&&st.y>=st.x*0.85&&st.z>=8.0&&st.w<3.0&&zero>=12.0;
+        glyphBest=float4(0,0,zero,zero);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if(!glyphAccepted)return;
+    float2 v=0;float cost=255.0;
+    if(lane<17) {
+        float2 anchor=p;
+        if(lane>0) {
+            int k=int(lane)-1,d=k%4;float radius=16.0*exp2(float(k/4))*scale;
+            anchor+=d==0?float2(radius,0):d==1?float2(-radius,0):d==2?float2(0,radius):float2(0,-radius);
+        }
+        if(inside(anchor)) {
+            v=flow(anchor,false);
+            if(length(v)>=scale&&length(v)<=16.0*scale)cost=cachedGroupCost(p,v);
+        }
+    }
+    glyphFits[lane]=float4(v,cost,0);
+    GroupMemoryBarrierWithGroupSync();
+    if(lane==0) {
+        [unroll]for(int i=0;i<17;++i)if(glyphFits[i].z<glyphBest.z)glyphBest.xyz=glyphFits[i].xyz;
+        glyphAccepted=glyphBest.z<glyphBest.w*0.65;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if(!glyphAccepted)return;
+    [loop]for(int level=0;level<4;++level) {
+        float step=scale*exp2(-float(level));v=glyphBest.xy;cost=255.0;
+        if(lane<9){v+=float2(int(lane)%3-1,int(lane)/3-1)*step;cost=cachedGroupCost(p,v);}
+        glyphFits[lane]=float4(v,cost,0);
+        GroupMemoryBarrierWithGroupSync();
+        if(lane==0)[unroll]for(int i=0;i<9;++i)if(glyphFits[i].z<glyphBest.z)glyphBest.xyz=glyphFits[i].xyz;
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float neutral=0;
+    [loop]for(int i=int(lane);i<289;i+=32) {
+        float2 q=p+float2(i%17-8,i/17-8)*3.0*scale+glyphBest.xy;
+        float2 uv=abs(uvAt(q,true)*255.0-128.0);neutral=max(neutral,max(uv.x,uv.y));
+    }
+    glyphStats[lane].w=neutral;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll]for(uint step=16;step>0;step/=2) {
+        if(lane<step)glyphStats[lane].w=max(glyphStats[lane].w,glyphStats[lane+step].w);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if(lane==0&&glyphStats[0].w<3.0&&glyphBest.z<=10.0&&glyphBest.z<=glyphBest.w*0.35&&length(glyphBest.xy)>=scale)
+        glyphOutput[group.xy]=float4(glyphBest.xyz,1);
+}
+bool glyphGroupColor(float2 p,out float2 value) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    float2 cell=p/(32.0*scale)-0.5;
+    int2 base=int2(floor(cell)),hi=int2(ceil(size.xy/(32.0*scale)))-1;
+    float2 velocity=0;float total=0;float2 lo=1e5,high=-1e5;
+    [unroll]for(int y=0;y<2;++y)[unroll]for(int x=0;x<2;++x) {
+        int2 index=clamp(base+int2(x,y),0,hi);
+        float4 model=glyphMotion.Load(int3(index,0));
+        float2 center=(float2(index)+0.5)*32.0*scale+mode.w*model.xy;
+        float2 weight=saturate(1.0-abs(p-center)/(24.0*scale));
+        float a=weight.x*weight.y*model.w;
+        if(a>0){velocity+=model.xy*a;total+=a;lo=min(lo,model.xy);high=max(high,model.xy);}
+    }
+    value=0;
+    if(total<0.02||length(high-lo)>1.5*scale)return false;
+    velocity/=total;
+    float2 a=p-mode.w*velocity,b=p+(1.0-mode.w)*velocity;
+    if(!inside(a)||!inside(b))return false;
+    float2 chroma=max(abs(uvAt(a,false)*255.0-128.0),abs(uvAt(b,true)*255.0-128.0));
+    if(max(chroma.x,chroma.y)>3.0)return false;
+    if(abs(yAt(a,false)-yAt(b,true))*255.0>80.0)return false;
+    value=lerp(color(a,false),color(b,true),mode.w);return true;
+}
+
 float4 midpoint(float4 screen:SV_Position):SV_Target {
     float2 p=screen.xy*(mode.y!=0?2.0:1.0);
+    float2 groupColor;
+    if(glyphGroupColor(p,groupColor))return float4(groupColor,0,1);
     float2 q=p*size.zw/size.xy-0.5;
     int2 cell=int2(floor(q)),hi=int2(size.zw)-1;
     float2 f=frac(q);

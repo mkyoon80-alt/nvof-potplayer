@@ -41,6 +41,10 @@ struct MotionSynthesizer::Impl {
 #endif
     ComPtr<ID3D11VertexShader> vertex;
     ComPtr<ID3D11PixelShader> synth,reduce,invert,stationary,expandStationary,repair;
+    ComPtr<ID3D11ComputeShader> glyphGroup;
+    ComPtr<ID3D11Texture2D> glyphTexture;
+    ComPtr<ID3D11UnorderedAccessView> glyphUav;
+    ComPtr<ID3D11ShaderResourceView> glyphView;
     std::array<ComPtr<ID3D11Texture2D>,2> repairScratch,repairedTextures;
     std::array<ComPtr<ID3D11RenderTargetView>,2> repairScratchTargets;
     std::array<ComPtr<ID3D11ShaderResourceView>,2> repairScratchViews;
@@ -96,6 +100,7 @@ struct MotionSynthesizer::Impl {
             check(d->CreatePixelShader(shaders::motion::stationaryMask,sizeof(shaders::motion::stationaryMask),nullptr,&stationary),"Motion stationaryMask");
             check(d->CreatePixelShader(shaders::motion::expandStationaryMask,sizeof(shaders::motion::expandStationaryMask),nullptr,&expandStationary),"Motion expandStationaryMask");
             check(d->CreatePixelShader(shaders::motion::repairMotion,sizeof(shaders::motion::repairMotion),nullptr,&repair),"Motion repairMotion");
+            check(d->CreateComputeShader(shaders::motion::glyphGroup,sizeof(shaders::motion::glyphGroup),nullptr,&glyphGroup),"Motion glyphGroup");
             check(d->CreateComputeShader(shaders::motion::assessMotion,sizeof(shaders::motion::assessMotion),nullptr,&assess),"Motion assessMotion");
             D3D11_BUFFER_DESC rb{};rb.ByteWidth=4;rb.Usage=D3D11_USAGE_DEFAULT;rb.BindFlags=D3D11_BIND_UNORDERED_ACCESS;
             rb.MiscFlags=D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;rb.StructureByteStride=4;
@@ -133,6 +138,7 @@ struct MotionSynthesizer::Impl {
         for(auto& p:repairedViews)p.Reset();for(auto& p:repairedTargets)p.Reset();for(auto& p:repairedTextures)p.Reset();
         for(auto& p:costViews)p.Reset();for(auto& p:costs)p.Reset();
         for(auto& p:repairScratchViews)p.Reset();for(auto& p:repairScratchTargets)p.Reset();for(auto& p:repairScratch)p.Reset();
+        glyphView.Reset();glyphUav.Reset();glyphTexture.Reset();
         w=h=aw=ah=0;grid=inputSlot=0;costFormat=DXGI_FORMAT_UNKNOWN;inputDone.Reset();
     }
     ComPtr<ID3D11ShaderResourceView> srv(ID3D11Texture2D* t,DXGI_FORMAT format) {
@@ -166,6 +172,15 @@ struct MotionSynthesizer::Impl {
                 check(device->CreateTexture2D(&d,nullptr,&layerTextures[i]),"Stationary mask texture");
                 check(device->CreateRenderTargetView(layerTextures[i].Get(),nullptr,&layerTargets[i]),"Stationary mask RTV");
                 layerViews[i]=srv(layerTextures[i].Get(),d.Format);
+            }
+            {
+                const float scale=(std::max)(float(w)/aw,float(h)/ah);
+                D3D11_TEXTURE2D_DESC d{};d.Width=UINT(std::ceil(w/(32.f*scale)));d.Height=UINT(std::ceil(h/(32.f*scale)));
+                d.MipLevels=d.ArraySize=1;d.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;d.SampleDesc.Count=1;
+                d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
+                check(device->CreateTexture2D(&d,nullptr,&glyphTexture),"Glyph group texture");
+                check(device->CreateUnorderedAccessView(glyphTexture.Get(),nullptr,&glyphUav),"Glyph group UAV");
+                glyphView=srv(glyphTexture.Get(),d.Format);
             }
             of(api.nvCreateOpticalFlowD3D11(device.Get(),context.Get(),&handle),"Create NVOFA");
             uint32_t count=0;
@@ -260,7 +275,7 @@ struct MotionSynthesizer::Impl {
         context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
         // Mapping reads the completed stationary mask from prepare() so inverse
         // recovery does not borrow motion across fixed overlay edges.
-        ID3D11ShaderResourceView* views[]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),down?nullptr:(repairing?(fraction>0?fvs[0].Get():repairScratchViews[0].Get()):repairedViews[0].Get()),down?nullptr:(repairing?(fraction>0?fvs[1].Get():repairScratchViews[1].Get()):repairedViews[1].Get()),down||mapping||stationaryStage||repairing?nullptr:warpViews[0].Get(),down||mapping||stationaryStage||repairing?nullptr:warpViews[1].Get(),stationaryStage>1?layerViews[stationaryStage-2].Get():(down||stationaryStage||repairing?nullptr:layerViews[0].Get()),mapping?costViews[0].Get():nullptr,mapping?costViews[1].Get():nullptr,mapping&&costMode!=MotionCostMode::disabled?fvs[0].Get():nullptr,mapping&&costMode!=MotionCostMode::disabled?fvs[1].Get():nullptr};
+        ID3D11ShaderResourceView* views[14]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),down?nullptr:(repairing?(fraction>0?fvs[0].Get():repairScratchViews[0].Get()):repairedViews[0].Get()),down?nullptr:(repairing?(fraction>0?fvs[1].Get():repairScratchViews[1].Get()):repairedViews[1].Get()),down||mapping||stationaryStage||repairing?nullptr:warpViews[0].Get(),down||mapping||stationaryStage||repairing?nullptr:warpViews[1].Get(),stationaryStage>1?layerViews[stationaryStage-2].Get():(down||stationaryStage||repairing?nullptr:layerViews[0].Get()),mapping?costViews[0].Get():nullptr,mapping?costViews[1].Get():nullptr,mapping&&costMode!=MotionCostMode::disabled?fvs[0].Get():nullptr,mapping&&costMode!=MotionCostMode::disabled?fvs[1].Get():nullptr};
         auto cb=constants.Get();auto sp=sampler.Get();
         context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->VSSetShader(vertex.Get(),nullptr,0);context->HSSetShader(nullptr,nullptr,0);
@@ -273,8 +288,20 @@ struct MotionSynthesizer::Impl {
         context->RSSetViewports(1,&vp);
         if(mapping){ID3D11RenderTargetView* targets[]={warpTargets[0].Get(),warpTargets[1].Get()};context->OMSetRenderTargets(2,targets,nullptr);}
         else context->OMSetRenderTargets(1,&target,nullptr);
-        context->PSSetShaderResources(0,13,views);context->Draw(3,0);
-        ID3D11ShaderResourceView* empty[13]{};context->PSSetShaderResources(0,13,empty);context->OMSetRenderTargets(0,nullptr,nullptr);
+        views[13]=(!down&&!mapping&&!repairing&&!stationaryStage)?glyphView.Get():nullptr;
+        context->PSSetShaderResources(0,14,views);context->Draw(3,0);
+        ID3D11ShaderResourceView* empty[14]{};context->PSSetShaderResources(0,14,empty);context->OMSetRenderTargets(0,nullptr,nullptr);
+    }
+    void estimate_glyphs() {
+        float data[8]={float(w),float(h),float(aw),float(ah),float(grid),0,0,0};
+        context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
+        ID3D11ShaderResourceView* views[]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),repairedViews[0].Get(),repairedViews[1].Get()};
+        auto cb=constants.Get();auto sp=sampler.Get();auto target=glyphUav.Get();
+        context->CSSetShader(glyphGroup.Get(),nullptr,0);context->CSSetConstantBuffers(0,1,&cb);context->CSSetSamplers(0,1,&sp);
+        context->CSSetShaderResources(0,6,views);context->CSSetUnorderedAccessViews(1,1,&target,nullptr);
+        D3D11_TEXTURE2D_DESC desc{};glyphTexture->GetDesc(&desc);context->Dispatch(desc.Width,desc.Height,1);
+        ID3D11ShaderResourceView* empty[6]{};target=nullptr;
+        context->CSSetShaderResources(0,6,empty);context->CSSetUnorderedAccessViews(1,1,&target,nullptr);context->CSSetShader(nullptr,nullptr,0);
     }
     void validate(ID3D11Texture2D* t,int width,int height) {
         if(!t||width<4||height<4||width>8192||height>8192||(width&1)||(height&1))
@@ -368,6 +395,7 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
         // to a different vector produced by our repair passes.
         impl_->draw(impl_->repairedTargets[0].Get(),0,false,0,0.0f,false,0,true);
         impl_->draw(impl_->repairedTargets[1].Get(),0,false,1,0.0f,false,0,true);
+        impl_->estimate_glyphs();
         impl_->draw(impl_->layerTargets[0].Get(),0,false,0,0.5f,false,1);
         impl_->draw(impl_->layerTargets[1].Get(),0,false,0,0.5f,false,2);
         impl_->draw(impl_->layerTargets[0].Get(),0,false,1,0.5f,false,3);
