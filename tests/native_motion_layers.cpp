@@ -106,6 +106,17 @@ int wmain(int argc,wchar_t** argv){try{
             for(int phase=0;phase<multiple-1;++phase) {
                 auto expected=fixture(t+double(phase+1)/multiple,scene),actual=readback(device.Get(),context.Get(),batch.frames[phase]);
                 sum+=mse(actual,expected,w,h);held+=mse(a,expected,w,h);
+                if(scene==2&&i==0) {
+                    auto edge=[&](const std::vector<uint8_t>& image) {
+                        double total=0;int rows=0;
+                        for(int y=140;y<170;++y)for(int x=140;x<300;++x)
+                            if(image[size_t(y)*w+x]>=205){total+=x;++rows;break;}
+                        require(rows==30,"Moving object lost its leading edge");return total/rows;
+                    };
+                    const double measured=edge(actual),truth=edge(expected);
+                    std::cout<<"PHASE multiple="<<multiple<<" phase="<<phase+1<<" measured_x="<<measured<<" expected_x="<<truth<<std::endl;
+                    // Occlusion edges can differ from the ideal silhouette; report separately.
+                }
                 if(scene==0)for(int y=50;y<480;++y)for(int x=90;x<510;++x) {
                     double d=std::abs(std::hypot(x-300.0,y-265.0)-170);
                     if(d>3&&d<25){size_t k=size_t(y)*w+x;++band;ghosts+=actual[k]>200&&int(actual[k])-expected[k]>24;}
@@ -116,6 +127,30 @@ int wmain(int argc,wchar_t** argv){try{
         std::cout<<"LAYERS multiple="<<multiple<<" scene="<<scene<<" mse="<<sum/(8*(multiple-1))<<" held="<<held/(8*(multiple-1))<<" exterior_ghosts="<<ghosts<<" band="<<band<<std::endl;
         if(!(sum<held*.6)){qualityPassed=false;std::cout<<"REGRESSION scene="<<scene<<" moving layer degraded to a hold or crossfade"<<std::endl;}
         if(scene==0&&!(ghosts<double(band)*.0001)){qualityPassed=false;std::cout<<"REGRESSION stationary outline leaked into moving background"<<std::endl;}
+    }
+    // Check phase timing in the interior of a translating textured plane,
+    // independently of the moving-rectangle occlusion boundary above.
+    auto phaseA=moving_color(w,h,0,false),phaseB=moving_color(w,h,20,false);
+    auto pa=engine.copy(uploadGuard(device.Get(),phaseA,w,h,0));
+    auto pb=engine.copy(uploadGuard(device.Get(),phaseB,w,h,400000));
+    std::vector<std::vector<uint8_t>> references;
+    for(int k=0;k<=88;++k)references.push_back(moving_color(w,h,-1+k*.25,false));
+    for(int multiple:{2,5}) {
+        std::vector<int64_t> times;for(int j=1;j<multiple;++j)times.push_back(400000LL*j/multiple);
+        auto batch=engine.interpolate_pair(pa,pb,times);
+        require(batch.frames.size()==times.size()&&!batch.quality.repeated_mask&&!batch.quality.scene_cut,"Texture phases were held");
+        double last=-1;
+        for(int j=0;j<multiple-1;++j) {
+            auto actual=readback(device.Get(),context.Get(),batch.frames[j]);double best=1e30,position=0;
+            for(int k=0;k<=88;++k) {
+                double error=0;
+                for(int y=60;y<h-60;y+=3)for(int x=60;x<w-60;x+=3){double e=int(actual[size_t(y)*w+x])-references[k][size_t(y)*w+x];error+=e*e;}
+                if(error<best){best=error;position=-1+k*.25;}
+            }
+            const double expected=20.*(j+1)/multiple;
+            std::cout<<"TEXTURE_PHASE multiple="<<multiple<<" phase="<<j+1<<" measured_shift="<<position<<" expected_shift="<<expected<<std::endl;
+            require(std::abs(position-expected)<1.0&&position>last+1.0,"Texture phase was duplicated or assigned the wrong time");last=position;
+        }
     }
     require(qualityPassed,"One or more layer quality regressions");
     std::cout<<"PASS curved stationary outline exterior, repeated bars, moving bright object, moving thin curves, repeated moving glyph strokes, curved moving occluder, small moving foreground, x2/x4/x5 phases and intact sources"<<std::endl;return 0;

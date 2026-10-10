@@ -1,5 +1,5 @@
 #ifndef AppVersion
-#define AppVersion "0.3.2-rate.2"
+#define AppVersion "0.3.2-rate.3"
 #endif
 #ifndef PayloadDir
 #error PayloadDir is required

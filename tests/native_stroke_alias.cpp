@@ -6,7 +6,7 @@
 int wmain(){try {
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
     check(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"WARP");
-    constexpr int w=384,h=384,g=4,gw=w/g,gh=h/g;
+    constexpr int w=512,h=512,g=4,gw=w/g,gh=h/g;
     auto texture=[&](DXGI_FORMAT fmt,int width,int height,int pitch,const void* pixels,UINT bind) {
         D3D11_TEXTURE2D_DESC d{};d.Width=width;d.Height=height;d.MipLevels=d.ArraySize=1;d.Format=fmt;d.SampleDesc.Count=1;d.BindFlags=bind;
         D3D11_SUBRESOURCE_DATA data{pixels,UINT(pitch),0};ComPtr<ID3D11Texture2D> t;
@@ -41,10 +41,10 @@ int wmain(){try {
             for(int y=0;y<h;++y)for(int x=0;x<w;++x) {
                 double q=(horizontal?y:x)-motion*n;
                 image[y*w+x]=float(140+50*std::cos(q*6.283185307/16)+(scenario==2?0:12*std::cos(q*6.283185307/64)))/255.f;
-                if(scenario>=4) {
+                if(scenario>=4&&scenario<=6) {
                     double u=x+n,v=y-n;
                     bool ink=u>=160&&u<210&&v>=100&&v<280&&!(u>=170&&u<198&&v>=112&&v<268);
-                    image[y*w+x]=float(40+10*std::cos(u*6.283185307/5)+10*std::cos(v*6.283185307/5)+(scenario==4&&ink?150:0))/255.f;
+                    image[y*w+x]=float(40+10*std::cos(u*6.283185307/5)+10*std::cos(v*6.283185307/5)+((scenario==4||scenario==6)&&ink?150:0))/255.f;
                 }
             }
             context->UpdateSubresource(input[n].Get(),0,nullptr,image.data(),w*4,0);
@@ -53,11 +53,12 @@ int wmain(){try {
                 float v=motion;
                 if(scenario!=1&&x>=40&&x<56&&y>=40&&y<56)v=15;
                 if(scenario==3&&(horizontal?x:y)<40)v=4;
+                if(scenario==7)v=((horizontal?x:y)>=24&&(horizontal?x:y)<104)?15:motion;
                 vectors[(y*gw+x)*2+(horizontal?1:0)]=int16_t(std::lround((n?-v:v)*32));
-                if(scenario>=4) {
+                if(scenario>=4&&scenario<=6) {
                     bool alias=x>=40&&x<56&&y>=40&&y<56;
-                    vectors[(y*gw+x)*2]=int16_t((n?-1:1)*(alias?19:-1)*32);
-                    vectors[(y*gw+x)*2+1]=int16_t((n?-1:1)*(alias?11:1)*32);
+                    vectors[(y*gw+x)*2]=int16_t((n?-1:1)*(alias?(scenario==6?4:19):-1)*32);
+                    vectors[(y*gw+x)*2+1]=int16_t((n?-1:1)*(alias?(scenario==6?-4:11):1)*32);
                 }
             }
             context->UpdateSubresource(input[n+4].Get(),0,nullptr,vectors.data(),gw*4,0);
@@ -69,13 +70,14 @@ int wmain(){try {
         D3D11_VIEWPORT vp{0,0,float(gw),float(gh),0,1};context->RSSetViewports(1,&vp);context->RSSetState(rs.Get());auto r=rt.Get();context->OMSetRenderTargets(1,&r,nullptr);context->Draw(3,0);
         ID3D11ShaderResourceView* empty[6]{};context->PSSetShaderResources(0,6,empty);context->OMSetRenderTargets(0,nullptr,nullptr);
         context->CopyResource(stage.Get(),output.Get());D3D11_MAPPED_SUBRESOURCE mapped{};check(context->Map(stage.Get(),0,D3D11_MAP_READ,0,&mapped),"Map");
-        auto row=reinterpret_cast<const int16_t*>(static_cast<const uint8_t*>(mapped.pData)+48*mapped.RowPitch);
-        int value=row[48*2+(horizontal?1:0)],vx=row[48*2],vy=row[48*2+1];context->Unmap(stage.Get(),0);
+        int center=scenario==7?64:48;
+        auto row=reinterpret_cast<const int16_t*>(static_cast<const uint8_t*>(mapped.pData)+center*mapped.RowPitch);
+        int value=row[center*2+(horizontal?1:0)],vx=row[center*2],vy=row[center*2+1];context->Unmap(stage.Get(),0);
         std::cout<<"axis="<<horizontal<<" scenario="<<scenario<<" motion="<<vx/32.f<<","<<vy/32.f<<std::endl;
-        if(scenario==4)require(std::abs(vx+32)<=4&&std::abs(vy-32)<=4,"Periodic screen displaced the glyph instead of following its true motion");
+        if(scenario==4||scenario==6)require(std::abs(vx+32)<=4&&std::abs(vy-32)<=4,"Periodic screen displaced the glyph instead of following its true motion");
         else if(scenario==5)require(vx==19*32&&vy==11*32,"Indistinguishable screen pattern gained unsupported correction");
-        else require(value==(scenario==0?-32:480),scenario==0?"Disambiguated bar still follows its neighbor":"Valid or ambiguous motion was replaced without evidence");
+        else require(value==((scenario==0||scenario==7)?-32:480),scenario==0?"Disambiguated bar still follows its neighbor":"Valid or ambiguous motion was replaced without evidence");
     };
-    for(bool horizontal:{false,true})for(int scenario=0;scenario<6;++scenario)run(horizontal,scenario);
+    for(bool horizontal:{false,true})for(int scenario=0;scenario<8;++scenario)run(horizontal,scenario);
     std::cout<<"PASS both axes: alias, genuine fast motion, indistinguishable bars, disagreeing donors, screen glyph, ambiguous microtexture"<<std::endl;return 0;
 }catch(const std::exception&e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

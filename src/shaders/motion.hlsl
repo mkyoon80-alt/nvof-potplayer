@@ -132,7 +132,7 @@ float2 repairParallelStrokeAlias(float2 p,float2 original,bool next) {
     float2 speed=abs(original)/scale;
     if(length(original)/scale<=8.0||length(original)/scale>32.0)return original;
     float2 normal=speed.x>speed.y?float2(1,0):float2(0,1),tangent=normal.yx;
-    if(max(speed.x,speed.y)<4.0*min(speed.x,speed.y)+4.0)return original;
+    if(max(speed.x,speed.y)<2.0*min(speed.x,speed.y)+4.0)return original;
     float across=0,along=0,lo=255,hi=0;
     [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-2;x<=2;++x) {
         float2 q=p+(normal*float(x*4)+tangent*float(y*12))*scale;
@@ -141,12 +141,14 @@ float2 repairParallelStrokeAlias(float2 p,float2 original,bool next) {
         along+=abs(yAt(q+tangent*scale,next)-yAt(q-tangent*scale,next))*255.0;
         float value=yAt(q,next)*255.0;lo=min(lo,value);hi=max(hi,value);
     }
-    if(across<8.0*along+8.0||hi-lo<24.0)return original;
+    if(across<4.0*along+8.0||hi-lo<24.0)return original;
     float oldCost=strokePatchCost(p,original,normal,next);
     if(oldCost<5.0)return original;
     float2 best=original;float bestCost=oldCost;
-    [loop]for(int k=0;k<2;++k) {
-        float2 delta=tangent*(k==0?64.0:128.0)*scale;
+    // An alias can contaminate the nearer donors too. Extend the same
+    // opposing-donor and image checks before giving up on the stroke.
+    [loop]for(int k=0;k<3;++k) {
+        float2 delta=tangent*(64.0+64.0*float(k))*scale;
         float2 left=p-delta,right=p+delta;
         if(!inside(left)||!inside(right))continue;
         float2 a=flow(left,next),b=flow(right,next);
@@ -165,7 +167,9 @@ float2 repairParallelStrokeAlias(float2 p,float2 original,bool next) {
 // This is source-motion repair; all output phases still use Newton inversion.
 float2 repairNearStaticAlias(float2 p,float2 original,bool next) {
     float scale=max(size.x/size.z,size.y/size.w);
-    if(length(original)<8.0*scale||length(original)>32.0*scale)return original;
+    // Include short texture aliases; acceptance still needs a well-conditioned
+    // fit, sub-three-level mean error, low peak error and a decisive improvement.
+    if(length(original)<4.0*scale||length(original)>32.0*scale)return original;
     float radius=24.0*scale+4.0;
     if(!inside(p-radius)||!inside(p+radius)||!inside(p+original-radius)||!inside(p+original+radius))return original;
     float oldError=0,zeroError=0,lo=255,hi=0;
@@ -175,7 +179,7 @@ float2 repairNearStaticAlias(float2 p,float2 original,bool next) {
         oldError+=abs(a-yAt(q+original,!next)*255.0);
         zeroError+=abs(a-yAt(q,!next)*255.0);lo=min(lo,a);hi=max(hi,a);
     }
-    if(hi-lo<48.0||oldError<49.0*8.0||zeroError>49.0*32.0||zeroError>oldError*1.5)return original;
+    if(hi-lo<32.0||oldError<49.0*4.0||zeroError>49.0*32.0||zeroError>oldError*4.0)return original;
     float2 v=0;
     [loop]for(int iteration=0;iteration<6;++iteration) {
         float xx=0,xy=0,yy=0;float2 rhs=0;

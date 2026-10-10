@@ -1,5 +1,5 @@
 param(
-    [string]$Version='0.3.2-rate.2',
+    [string]$Version='0.3.2-rate.3',
     [string]$UiDirectory,
     [string]$NativeDirectory,
     [string]$RuntimeDirectory,
