@@ -156,7 +156,7 @@ private:
 }
 int wmain(int argc, wchar_t** argv) {
     try {
-        if (argc < 2) { std::cerr << "gpu_interop_stress <runtime> [seconds=30] [resets=100] [width=320] [height=180] [protected|mutex] [x2]\n"; return 2; }
+        if (argc < 2) { std::cerr << "gpu_interop_stress <runtime> [seconds=30] [resets=100] [width=320] [height=180] [protected|mutex] [x2|native]\n"; return 2; }
         const int seconds = argc > 2 ? _wtoi(argv[2]) : 30;
         const int requested_resets = argc > 3 ? _wtoi(argv[3]) : 100;
         const int width = argc > 4 ? _wtoi(argv[4]) : 320, height = argc > 5 ? _wtoi(argv[5]) : 180;
@@ -165,6 +165,7 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring lock_mode = argc > 6 ? argv[6] : L"protected";
         require(lock_mode == L"protected" || lock_mode == L"mutex", "Lock mode must be protected or mutex");
         const bool x2=argc>7;
+        const bool native=argc>7&&std::wstring(argv[7])==L"native";
         const int phase_count=x2?1:4;
         const auto options=x2?nvof::GpuCompletionMode::context_ordered:nvof::GpuCompletionMode::blocking;
         MutexHandle shared_mutex;
@@ -194,7 +195,7 @@ int wmain(int argc, wchar_t** argv) {
             const auto create_engine = [&] {
                 renderer.stage("engine constructor");
                 std::cout << "GPU_INTEROP_STAGE constructor_begin" << std::endl;
-                auto result = std::make_unique<GpuFrucEngine>(std::filesystem::path(argv[1]), device.Get(), context.Get(), mutex,options);
+                auto result = std::make_unique<GpuFrucEngine>(std::filesystem::path(argv[1]), device.Get(), context.Get(), mutex,options,true,!native,!native,native?nvof::GpuInterpolationBackend::native_experimental:nvof::GpuInterpolationBackend::fruc);
                 renderer.stage("constructor complete");
                 renderer.rethrow_failure();
                 std::cout << "GPU_INTEROP_STAGE constructor_complete" << std::endl;
@@ -236,7 +237,7 @@ int wmain(int argc, wchar_t** argv) {
                 const auto batch = engine->interpolate_pair(previous, current, times);
                 renderer.stage("interpolation complete"); renderer.rethrow_failure();
                 skipped+=batch.quality.identical_warp_skipped;
-                require((batch.quality.repetition_known||batch.quality.identical_warp_skipped) && !batch.quality.scene_cut && batch.frames.size() == size_t(phase_count), "Interpolation failed under contention");
+                require((batch.quality.repetition_known||batch.quality.identical_warp_skipped||(native&&batch.quality.native_synthesized_mask==1)) && !batch.quality.scene_cut && batch.frames.size() == size_t(phase_count), "Interpolation failed under contention");
                 if (pairs == 0) {
                     require(!batch.quality.repeated_mask, "Initial phases unexpectedly repeated");
                     retained = batch.frames.front();

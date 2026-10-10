@@ -519,9 +519,9 @@ void run_case(IClassFactory* factory,ID3D11Device* device,ID3D11DeviceContext* c
     }
 }
 void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t source_den,
-    int64_t expected_num,int64_t expected_den,bool gpu,const std::string& reason) {
+    int64_t expected_num,int64_t expected_den,bool gpu,const std::string& reason,REFERENCE_TIME header_duration=-1) {
     if(source_num>0)kDuration=(10000000LL*source_den+source_num/2)/source_num;
-    declared_duration=source_num>0?kDuration:0;
+    declared_duration=header_duration>=0?header_duration:source_num>0?kDuration:0;
     const REFERENCE_TIME expected_duration=expected_num>0?(10000000LL*expected_den+expected_num/2)/expected_num:0;
     const bool interpolate=reason=="selected";
     ComPtr<IBaseFilter> filter;check(factory->CreateInstance(nullptr,IID_PPV_ARGS(&filter)),"policy filter");
@@ -588,16 +588,17 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
         return gpu?source->pin().push_gpu(index,device.Get(),context.Get(),false,true,false,no_stop,changed):
             source->pin().push(index,false,no_stop,changed);
     };
-    for(int i=0;i<6;++i) {
+    const int frame_count=header_duration>=0?144:6;
+    for(int i=0;i<frame_count;++i) {
         check(push(i),"policy source frame");
         if(i==0 && (sink->pin().count()!=1 || !sink->pin().discontinuities.back()))
             throw std::runtime_error("policy first original delayed or missing discontinuity");
         if(!interpolate && (sink->pin().count()!=size_t(i+1) || sink->pin().times.back()!=i*kDuration || sink->pin().ends.back()!=(i+1)*kDuration))
             throw std::runtime_error("bypass changed original frame count or timestamps");
     }
-    if(interpolate && sink->pin().count()<=6)throw std::runtime_error("selected source did not interpolate");
-    check(push(6,true),"policy missing stop timestamp");
-    if(!interpolate && (sink->pin().count()!=7 || sink->pin().ends.back()!=7*kDuration))
+    if(interpolate && sink->pin().count()<=size_t(frame_count))throw std::runtime_error("selected source did not interpolate");
+    check(push(frame_count,true),"policy missing stop timestamp");
+    if(!interpolate && (sink->pin().count()!=size_t(frame_count+1) || sink->pin().ends.back()!=(frame_count+1)*kDuration))
         throw std::runtime_error("bypass synthesized invalid missing stop duration");
     if(interpolate) {
         for(size_t i=0;i<sink->pin().times.size();++i) {
@@ -713,7 +714,7 @@ void check_color_rejection(IClassFactory* factory,ID3D11Device* device,ID3D11Dev
 }
 int wmain(int argc,wchar_t** argv) {
     if(argc<2){std::cerr<<"usage: directshow_gpu_smoke <NativeD3D11=1 filter.ax>\n";return 2;}
-    p010_fixture=argc>2 && wcscmp(argv[2],L"--p010-input")==0;
+    p010_fixture=argc>2 && (wcscmp(argv[2],L"--p010-input")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0);
     require_services=argc>2 && wcscmp(argv[2],L"--probe-services")==0;
     check(CoInitializeEx(nullptr,COINIT_MULTITHREADED),"CoInitialize");
     HMODULE module=LoadLibraryExW(argv[1],nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
@@ -727,7 +728,10 @@ int wmain(int argc,wchar_t** argv) {
             nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"D3D11 device");
         ComPtr<ID3D10Multithread> multithread;
         if(SUCCEEDED(context.As(&multithread)))multithread->SetMultithreadProtected(TRUE);
-        if(argc>=9 && (wcscmp(argv[2],L"--rate-policy")==0 || wcscmp(argv[2],L"--metadata-legacy")==0 || wcscmp(argv[2],L"--metadata-tagged")==0)) {
+        if(argc>2 && (wcscmp(argv[2],L"--rounded-duration")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0)) {
+            run_rate_policy_case(factory.Get(),24000,1001,1000,21,true,"selected",420000);
+            std::cout<<"PASS 42ms header with 23.976 PTS through MF GPU transport; P010="<<p010_fixture<<std::endl;
+        } else if(argc>=9 && (wcscmp(argv[2],L"--rate-policy")==0 || wcscmp(argv[2],L"--metadata-legacy")==0 || wcscmp(argv[2],L"--metadata-tagged")==0)) {
             color_fixture=wcscmp(argv[2],L"--metadata-legacy")==0?1:wcscmp(argv[2],L"--metadata-tagged")==0?2:0;
             if(color_fixture){check_malformed_media(factory.Get());check_explicit_metadata_preservation(factory.Get());}
             const std::wstring wide_reason=argv[8];

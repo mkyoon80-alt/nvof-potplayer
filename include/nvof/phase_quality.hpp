@@ -7,6 +7,7 @@ struct PairQuality {
     bool repetition_known = false;
     bool identical_warp_skipped = false;
     uint32_t repeated_mask = 0;
+    uint32_t native_synthesized_mask = 0; // Separate from legacy correction passes.
     // Phases passed through native fractional-flow refinement; unreliable pixels
     // retain FRUC output. This is not a claim that every pixel was replaced.
     uint32_t subpixel_refined_mask = 0;

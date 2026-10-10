@@ -17,6 +17,8 @@ struct GpuFrame {
     std::shared_ptr<void> lease; // Keeps a pooled surface reserved until every owner releases it.
 };
 enum class GpuCompletionMode { blocking, context_ordered };
+// Native synthesis remains opt-in until real-video A/B acceptance.
+enum class GpuInterpolationBackend { fruc, native_experimental };
 // 8-bit NV12 GPU-only image path. Native Y/UV processing preserves stored
 // channel values; the caller remains responsible for supported color metadata.
 // Input textures must remain unchanged until
@@ -34,7 +36,9 @@ public:
                   GpuCompletionMode completion = GpuCompletionMode::blocking,
                   bool skip_identical_warp = true,
                   bool stabilize_midpoint = true,
-                  bool protect_appearance = true); // Independent optional GPU passes.
+                  bool protect_appearance = true,
+                  GpuInterpolationBackend backend = GpuInterpolationBackend::fruc,
+                  unsigned max_flow_dimension = 1920);
     ~GpuFrucEngine();
     GpuFrucEngine(const GpuFrucEngine&) = delete;
     GpuFrucEngine& operator=(const GpuFrucEngine&) = delete;

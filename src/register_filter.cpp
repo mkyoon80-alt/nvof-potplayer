@@ -159,6 +159,22 @@ int wmain(int argc,wchar_t** argv) {
     const DWORD length=GetModuleFileNameW(nullptr,path,_countof(path));
     if(!length || length>=_countof(path))return 3;
     const auto filter=std::filesystem::path(path).parent_path()/L"NvofPotPlayer.ax";
+    if(!install) {
+        // Refuse to unregister a different installation sharing the same CLSIDs.
+        // Read the explicit hive, never the merged HKCR view.
+        for(const CLSID& id : {kFilter,kPage}) {
+            wchar_t clsid[40]{}; StringFromGUID2(id,clsid,40);
+            const std::wstring key=std::wstring(L"Software\\Classes\\CLSID\\")+clsid+L"\\InprocServer32";
+            wchar_t registered[32768]{}; DWORD bytes=sizeof(registered);
+            const LSTATUS status=RegGetValueW(machine?HKEY_LOCAL_MACHINE:HKEY_CURRENT_USER,key.c_str(),nullptr,
+                RRF_RT_REG_SZ|RRF_SUBKEY_WOW6464KEY,nullptr,registered,&bytes);
+            if(status==ERROR_FILE_NOT_FOUND || status==ERROR_PATH_NOT_FOUND)continue;
+            if(status!=ERROR_SUCCESS) { std::cerr<<"Cannot verify registration ownership: "<<status<<'\n'; return 14; }
+            if(_wcsicmp(registered,filter.c_str())!=0) {
+                std::cerr<<"Registration belongs to another folder; nothing changed.\n"; return 14;
+            }
+        }
+    }
     ModuleScope module;
     module.value=LoadLibraryExW(filter.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
     if(!module.value){std::cerr<<"Cannot load adjacent filter. Windows error "<<GetLastError()<<'\n';return 4;}

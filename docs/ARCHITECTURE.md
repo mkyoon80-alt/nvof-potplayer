@@ -1,3 +1,7 @@
+# Current playback architecture (0.3.0)
+
+The default is lab11 NVIDIA Optical Flow + custom D3D11 synthesis; see [current synthesis details](NATIVE-SYNTHESIS.md). The FRUC/CUDA sections below describe the retained legacy backend and research history, not the default 0.3.0 synthesis path. P010 conversion, sample lifetime and DirectShow negotiation are shared.
+
 # Pipeline and validation
 
 ## Current product scope: ×2 only (preview.5)

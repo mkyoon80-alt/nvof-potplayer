@@ -436,6 +436,9 @@ public:
             enabled_ = GetPrivateProfileIntW(L"Nvof", L"Enabled", 1, ini.c_str()) != 0;
             gpu_correction_=GetPrivateProfileIntW(L"Nvof",L"GpuMidpointCorrection",1,ini.c_str())!=0;
             appearance_protection_=GetPrivateProfileIntW(L"Nvof",L"AppearanceProtection",1,ini.c_str())!=0;
+            native_synthesis_=GetPrivateProfileIntW(L"Nvof",L"ExperimentalNativeSynthesis",1,ini.c_str())!=0;
+            if(native_synthesis_){gpu_correction_=false;appearance_protection_=false;}
+
             input_rate_mask_=GetPrivateProfileIntW(L"Nvof",L"InputRateMask",nvof::kAllInputRates,ini.c_str()) & nvof::kAllInputRates;
             // Fixed-rate modes were removed. Legacy INI keys cannot reactivate them.
             target_ = {0, 1};
@@ -551,7 +554,7 @@ public:
         catch(...) {return E_OUTOFMEMORY;}
         CAutoLock receive(&m_csReceive);
         try {
-            auto engine=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",device,context,duplicate,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_);
+            auto engine=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",device,context,duplicate,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_,native_synthesis_?nvof::GpuInterpolationBackend::native_experimental:nvof::GpuInterpolationBackend::fruc);
             auto* output=static_cast<nvof::transport::OutputPin*>(m_pOutput);
             const HRESULT transport=output ? output->set_gpu_mode(true) : E_UNEXPECTED;
             if(FAILED(transport)) {
@@ -982,7 +985,7 @@ public:
         } catch (const std::bad_alloc&) {
             return report_error("frame allocation failed", E_OUTOFMEMORY);
         } catch (const std::exception& error) {
-            return report_error(std::string("FRUC processing failed: ") + error.what(), E_FAIL);
+            return report_error(std::string("Frame interpolation failed: ") + error.what(), E_FAIL);
         } catch (...) {
             return report_error("unknown C++ processing failure", E_FAIL);
         }
@@ -1022,7 +1025,7 @@ private:
             write_log("GPU input surface="+format+" output=NV12 conversion="+input_conversion_);
         }
         if(!gpu_engine_)gpu_engine_=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",
-            native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_);
+            native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_,native_synthesis_?nvof::GpuInterpolationBackend::native_experimental:nvof::GpuInterpolationBackend::fruc);
         // Submit capture while the upstream sample is held. Decoder reuse and
         // renderer reads are ordered on this device's shared immediate context;
         // keep an owned output lease without a per-frame CPU completion wait.
@@ -1114,7 +1117,7 @@ private:
         else if(quality.identical_warp_skipped){identical_frames_+=count;quality_state_="identical-input-hold";}
         else if(quality.repeated_mask){++repeated_pairs_;protected_frames_+=count;quality_state_="fruc-repetition-hold";}
         else{
-            motion_frames_+=count;quality_state_="motion-interpolation";
+            motion_frames_+=count;quality_state_=quality.native_synthesized_mask?"native-motion-synthesis":"motion-interpolation";
             for(uint32_t bits=quality.midpoint_stabilized_mask;bits;bits>>=1)midpoint_pass_frames_+=bits&1U;
             for(uint32_t bits=quality.appearance_protected_mask;bits;bits>>=1)appearance_pass_frames_+=bits&1U;
             for(uint32_t bits=quality.subpixel_refined_mask;bits;bits>>=1)subpixel_pass_frames_+=bits&1U;
@@ -1249,6 +1252,8 @@ private:
                     << ",\"inputConversion\":" << json_string(input_conversion_)
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
                     << ",\"doubleRate\":" << (double_rate_?"true":"false")
+                    << ",\"requestedInterpolationBackend\":\"" << (native_synthesis_?"native-newton":"fruc") << "\""
+                    << ",\"nativeSynthesisRevision\":" << (native_synthesis_?11:0)
                     << ",\"gpuMidpointCorrection\":" << (gpu_correction_?"true":"false")
                     << ",\"appearanceProtection\":" << (appearance_protection_?"true":"false")
                     << ",\"appearancePassFrames\":" << appearance_pass_frames_
@@ -1274,7 +1279,7 @@ private:
                     << ",\"qualityState\":" << json_string(quality_state_)
                     << ",\"buildVersion\":" << json_string(kFilterBuild)
                     << ",\"gpuCompletion\":" << json_string(gpu_engine_&&gpu_engine_->queued_completion()?"context-ordered":"blocking")
-                    << ",\"algorithm\":" << json_string(midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
+                    << ",\"algorithm\":" << json_string(native_synthesis_&&native_gpu_active_?"x2-native-newton-0.3.0":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
                     << ",\"message\":" << json_string(message) << "}\n";
                 stream.flush();
                 if (!stream) return;
@@ -1312,7 +1317,7 @@ private:
     bool enabled_ = true;
     static constexpr bool double_rate_=true;
     unsigned input_rate_mask_=nvof::kAllInputRates;
-    bool gpu_correction_=true,appearance_protection_=true;
+    bool gpu_correction_=true,appearance_protection_=true,native_synthesis_=false;
     uint64_t appearance_pass_frames_=0;
     bool input_rate_selected_=true;
     bool engine_active_ = false;

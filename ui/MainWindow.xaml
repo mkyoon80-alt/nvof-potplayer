@@ -168,6 +168,13 @@
       </TabItem>
       <TabItem x:Name="EnhancementsTab" Header="화질 보정">
         <StackPanel TextElement.Foreground="{StaticResource Ink}" TextElement.FontWeight="Normal">
+          <StackPanel x:Name="NativeEnhancementPanel" Visibility="Collapsed">
+            <TextBlock Text="자동 화질 보호" FontWeight="SemiBold"/>
+            <TextBlock Text="움직임이 겹치는 경계와 화면에 고정된 글자를 분석해 보간 깨짐을 줄입니다." Style="{StaticResource Subtle}" Margin="0,8,0,0"/>
+            <TextBlock Text="0.3.0에서는 보간을 켜면 자동으로 적용됩니다. 예전 버전의 두 보정 옵션은 사용하지 않습니다." Style="{StaticResource Subtle}" Margin="0,12,0,0"/>
+            <TextBlock Text="빠르게 변하는 머리카락이나 연기, 겹친 물체에는 잔상이 남을 수 있습니다." Style="{StaticResource Subtle}" Margin="0,12,0,0"/>
+          </StackPanel>
+          <StackPanel x:Name="LegacyEnhancementPanel">
           <Grid Margin="0,0,0,18">
             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="108"/></Grid.ColumnDefinitions>
             <StackPanel Margin="0,0,14,0">
@@ -186,6 +193,7 @@
             </Grid>
           </Border>
           <TextBlock x:Name="EnhancementHint" Text="각각 따로 선택할 수 있습니다. 둘 다 끄면 기본 ×2 보간만 사용합니다. 형태 변화 보호만 켜도 GPU로 움직임을 분석합니다." Style="{StaticResource Subtle}"/>
+          </StackPanel>
         </StackPanel>
       </TabItem>
       <TabItem x:Name="SetupTab" Header="연결 설정">
@@ -194,6 +202,12 @@
             <TextBlock Text="처음 한 번만 연결하면 됩니다." FontWeight="SemiBold" Margin="0,0,0,10"/>
             <WrapPanel Margin="0,0,0,10"><Button x:Name="RegisterButton" Content="필터 등록" Style="{StaticResource PrimaryButton}" Margin="0,0,8,0"/><Button x:Name="LaunchButton" Content="팟플레이어 열기"/></WrapPanel>
             <TextBlock x:Name="RegisterNotice" Style="{StaticResource Subtle}" Margin="0,0,0,14"/>
+            <Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Margin="0,0,0,14" Padding="0,12,0,0">
+              <StackPanel>
+                <WrapPanel><Button x:Name="InstallFolderButton" Content="설치 폴더 열기" Margin="0,0,8,8"/><Button x:Name="UninstallButton" Content="프로그램 제거" Margin="0,0,0,8"/></WrapPanel>
+                <TextBlock Text="제거 전 팟플레이어를 닫아 주세요. 관리자용 필터가 있으면 Windows 권한 승인이 필요합니다." Style="{StaticResource Subtle}"/>
+              </StackPanel>
+            </Border>
             <TextBlock Style="{StaticResource Subtle}" Text="팟플레이어 F5 → 코덱/필터 → 전역 필터 우선 순위에서 NVIDIA Optical Flow for PotPlayer를 추가하고, 최우선 사용을 선택하세요."/>
             <TextBlock Style="{StaticResource Subtle}" Margin="0,8,0,0" Text="다른 보간 필터는 함께 연결하지 마세요."/>
             <TextBlock Style="{StaticResource Subtle}" Margin="0,8,0,0" Text="필터를 더블클릭한 뒤 설정 창 열기를 누르면 이 설정창을 다시 열 수 있습니다."/>

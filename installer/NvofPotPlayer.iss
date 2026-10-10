@@ -1,5 +1,5 @@
 ﻿#ifndef AppVersion
-#define AppVersion "0.2.0-beta.1"
+#define AppVersion "0.3.0"
 #endif
 #ifndef PayloadDir
 #error PayloadDir is required
@@ -39,7 +39,7 @@ CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
 UsePreviousLanguage=yes
-VersionInfoVersion=0.2.0.9
+VersionInfoVersion=0.3.0.0
 VersionInfoDescription=NVOF for PotPlayer offline setup
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
@@ -52,6 +52,8 @@ Source: "{#PayloadDir}\licenses\NVIDIA-COMPONENT-TERMS.txt"; Flags: dontcopy
 Name: "{group}\NVOF 설정"; Filename: "{app}\NvofControl.exe"
 Name: "{group}\사용 설명서"; Filename: "{app}\docs\manual\index.html"
 Name: "{group}\NVOF 제거"; Filename: "{uninstallexe}"
+Name: "{app}\NVOF 제거"; Filename: "{uninstallexe}"
+Name: "{group}\설치 폴더 열기"; Filename: "{app}"
 [Run]
 Filename: "{app}\docs\manual\index.html"; Description: "사용 설명서 열기"; Flags: postinstall shellexec skipifsilent unchecked
 Filename: "{app}\NvofControl.exe"; Description: "NVOF 설정 열기"; Flags: postinstall nowait skipifsilent
@@ -179,6 +181,9 @@ begin
     SavedPrevious := GetIniString('Install', 'PreviousFilter', '', ExpandConstant('{app}\install-state.ini'));
     if (SavedPrevious = '') and (CompareText(PreviousFilter, ExpandConstant('{app}\NvofPotPlayer.ax')) <> 0) then
       SetIniString('Install', 'PreviousFilter', PreviousFilter, ExpandConstant('{app}\install-state.ini'));
+    { The 0.3 playback backend is lab11. Preserve user switches/rate selection. }
+    if not SetIniString('Nvof', 'ExperimentalNativeSynthesis', '1', ExpandConstant('{app}\NvofPotPlayer.ini')) then
+      RaiseException('Cannot select the 0.3 interpolation backend.');
     if not Exec(ExpandConstant('{app}\NvofRegister.exe'), '--register', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
     if Code = 0 then
       if not Exec(ExpandConstant('{app}\NvofRegister.exe'), '--verify', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
@@ -202,24 +207,36 @@ end;
 function GetCustomSetupExitCode: Integer;
 begin if RegisteredOK then Result := 0 else Result := 10; end;
 function InitializeUninstall: Boolean;
-var Current: String;
+var Attempt: Integer;
 begin
   Result := False;
-  if not AppsClosed then begin SuppressibleMsgBox(CloseMessage, mbError, MB_OK, IDOK); exit; end;
-  if RegQueryStringValue(HKLM64, FilterKey, '', Current) and (CompareText(Current, ExpandConstant('{app}\NvofPotPlayer.ax')) = 0) then begin
-    SuppressibleMsgBox(L('이 폴더의 관리자용 필터가 등록되어 있습니다. 관리자 PowerShell에서 이 설치 폴더의 NvofRegister.exe --unregister-machine을 실행한 뒤 다시 제거해 주세요. 사용 설명서에 안내가 있습니다.', 'Run this folder''s NvofRegister.exe --unregister-machine from an elevated PowerShell, then uninstall. See the user guide.'), mbError, MB_OK, IDOK); exit;
+  { The settings window closes immediately after launching this uninstaller. }
+  for Attempt := 1 to 10 do begin
+    if AppsClosed then begin Result := True; exit; end;
+    Sleep(200);
   end;
-  Result := True;
+  SuppressibleMsgBox(CloseMessage, mbError, MB_OK, IDOK);
 end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var Current: String; Code: Integer;
 begin
   if CurUninstallStep = usUninstall then begin
+    { Do this after the user's uninstall confirmation, but before any deletion.
+      Elevate the helper only, keeping HKCU bound to the original user even
+      when UAC is approved with a different administrator account. }
+    if RegQueryStringValue(HKLM64, FilterKey, '', Current) and (CompareText(Current, ExpandConstant('{app}\NvofPotPlayer.ax')) = 0) then begin
+      if not ShellExec('runas', ExpandConstant('{app}\NvofRegister.exe'), '--unregister-machine', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
+      if Code <> 0 then RaiseException(L('관리자용 필터 등록을 해제하지 못해 제거를 중단했습니다. 파일은 유지됩니다. 다시 제거하고 Windows 권한 요청을 승인해 주세요.', 'Machine filter unregistration failed or was cancelled. Files were retained. Retry uninstall and approve the Windows permission request.'));
+      if RegQueryStringValue(HKLM64, FilterKey, '', Current) and (CompareText(Current, ExpandConstant('{app}\NvofPotPlayer.ax')) = 0) then
+        RaiseException('Machine filter registration remains. Removal stopped.');
+    end;
     if RegQueryStringValue(HKCU64, FilterKey, '', Current) and (CompareText(Current, ExpandConstant('{app}\NvofPotPlayer.ax')) = 0) then begin
       if not Exec(ExpandConstant('{app}\NvofRegister.exe'), '--unregister', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
       if Code <> 0 then RaiseException('Filter unregistration failed. Removal stopped.');
-      PreviousFilter := GetIniString('Install', 'PreviousFilter', '', ExpandConstant('{app}\install-state.ini'));
-      RestorePrevious;
+      if RegQueryStringValue(HKCU64, FilterKey, '', Current) and (CompareText(Current, ExpandConstant('{app}\NvofPotPlayer.ax')) = 0) then
+        RaiseException('User filter registration remains. Removal stopped.');
     end;
+    { Normal removal must not silently reactivate an older filter. Installation
+      failure still uses RestorePrevious for rollback. Other folders are kept. }
   end;
 end;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(NvofPotPlayer VERSION 0.2.0 LANGUAGES CXX RC)
+project(NvofPotPlayer VERSION 0.3.0 LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -215,3 +215,50 @@ target_link_libraries(gpu_p010_conversion PRIVATE nvof_gpu_engine nvof_mf_bridge
 
 add_executable(p010_video_stress tests/p010_video_stress.cpp)
 target_link_libraries(p010_video_stress PRIVATE nvof_gpu_engine nvof_gpu_phase_pipeline)
+
+
+# Native optical-flow synthesis is the default playback backend in 0.3.
+add_library(nvof_motion_synthesizer STATIC src/motion_synthesizer.cpp)
+target_include_directories(nvof_motion_synthesizer PUBLIC include PRIVATE "${NVOF_API_INCLUDE_DIR}")
+target_compile_definitions(nvof_motion_synthesizer PUBLIC NOMINMAX)
+target_link_libraries(nvof_motion_synthesizer PUBLIC d3d11 dxgi d3dcompiler)
+target_link_libraries(nvof_gpu_engine PRIVATE nvof_motion_synthesizer)
+
+add_executable(native_motion_guard tests/native_motion_guard.cpp)
+target_link_libraries(native_motion_guard PRIVATE nvof_gpu_engine nvof_gpu_pipeline)
+
+add_executable(native_synthesis_compare tests/native_synthesis_compare.cpp)
+target_link_libraries(native_synthesis_compare PRIVATE nvof_gpu_engine nvof_gpu_pipeline)
+
+add_executable(native_motion_layers tests/native_motion_layers.cpp)
+target_link_libraries(native_motion_layers PRIVATE nvof_gpu_engine nvof_gpu_pipeline)
+
+# Compile the playback shaders once, on the build machine. No HLSL compilation
+# is performed when a player opens a video. Build failures abort packaging.
+add_executable(nvof_shader_compiler tools/shader_compiler.cpp)
+target_link_libraries(nvof_shader_compiler PRIVATE d3dcompiler)
+function(nvof_shaders group source_label)
+  set(header "${CMAKE_CURRENT_BINARY_DIR}/generated/${group}_shaders.hpp")
+  add_custom_command(OUTPUT "${header}"
+    COMMAND nvof_shader_compiler "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${group}.hlsl" "${header}" "${group}" "${source_label}" ${ARGN}
+    DEPENDS nvof_shader_compiler "src/shaders/${group}.hlsl" VERBATIM)
+  target_sources(nvof_gpu_engine PRIVATE "${header}")
+endfunction()
+nvof_shaders(blend nvof-gpu-blend vs vs_4_0 ps ps_4_0)
+nvof_shaders(p010 nvof-gpu-blend ps ps_5_0)
+nvof_shaders(scene nvof-scene main cs_5_0)
+nvof_shaders(motion nvof-motion-synthesis vs vs_5_0 midpoint ps_5_0 downsample ps_5_0 inverseMap ps_5_0 stationaryMask ps_5_0 expandStationaryMask ps_5_0 repairMotion ps_5_0 assessMotion cs_5_0)
+# A dedicated dependency prevents parallel builds from compiling the consumer
+# before its generated header exists.
+add_custom_target(nvof_shader_headers DEPENDS
+ "${CMAKE_CURRENT_BINARY_DIR}/generated/motion_shaders.hpp"
+ "${CMAKE_CURRENT_BINARY_DIR}/generated/blend_shaders.hpp"
+ "${CMAKE_CURRENT_BINARY_DIR}/generated/p010_shaders.hpp"
+ "${CMAKE_CURRENT_BINARY_DIR}/generated/scene_shaders.hpp")
+foreach(consumer nvof_gpu_engine nvof_motion_synthesizer)
+ add_dependencies(${consumer} nvof_shader_headers)
+ target_include_directories(${consumer} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+endforeach()
+
+add_executable(native_startup tests/native_startup.cpp)
+target_link_libraries(native_startup PRIVATE nvof_gpu_engine nvof_gpu_pipeline)

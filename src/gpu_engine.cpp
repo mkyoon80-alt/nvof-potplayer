@@ -1,11 +1,15 @@
 #include "nvof/gpu_engine.hpp"
 #include "nvof/fractional_refiner.hpp"
+#include "nvof/motion_synthesizer.hpp"
 #include <d3d11_4.h>
 #include "nvof/scene_cut.hpp"
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <d3d10_1.h>
-#include <d3dcompiler.h>
+#include "blend_shaders.hpp"
+#include "p010_shaders.hpp"
+#include "scene_shaders.hpp"
 #include <cuda.h>
 #include <cudaD3D11.h>
 #include <array>
@@ -43,59 +47,12 @@ uint32_t blend_weight(int64_t elapsed,int64_t interval){
     for(int bit=0;bit<16;++bit){result<<=1;if(remainder>=denominator-remainder){remainder-=denominator-remainder;result|=1;}else remainder*=2;}
     return result;
 }
-const char* shader_source=R"(
-Texture2D<float4> previousTexture:register(t0);
-Texture2D<float4> currentTexture:register(t1);
-cbuffer BlendWeight:register(b0){uint weight;uint3 padding;};
-float4 vs(uint vertex:SV_VertexID):SV_Position {
- float2 position=vertex==0?float2(-1,-1):(vertex==1?float2(-1,3):float2(3,-1));
- return float4(position,0,1);
-}
-float4 ps(float4 position:SV_Position):SV_Target {
- int3 p=int3(int2(position.xy),0);
- uint4 a=uint4(round(previousTexture.Load(p)*255.0f));
- uint4 b=uint4(round(currentTexture.Load(p)*255.0f));
- uint4 value=(a*(65536u-weight)+b*weight+32768u)>>16;
- return float4(value)/255.0f;
-}
-)";
+
 // P010 stores its 10-bit code value in the upper bits of each 16-bit word.
 // Divide code values by four, not by 1023: this preserves video black/white
 // and neutral chroma (64/940/512 -> 16/235/128). No RGB/range conversion.
-const char* p010_shader=R"(
-Texture2D<uint4> source:register(t0);
-float4 ps(float4 position:SV_Position):SV_Target {
- uint4 code=source.Load(int3(int2(position.xy),0))>>6;
- return float4(min((code+2u)>>2,255u))/255.0f;
-}
-)";
-const char* scene_shader=R"(
-Texture2D<float> sourceA:register(t0);Texture2D<float> sourceB:register(t1);
-Texture2D<float2> chromaA:register(t2);Texture2D<float2> chromaB:register(t3);
-RWStructuredBuffer<uint> stats:register(u0);
-cbuffer Dimensions:register(b0){uint width;uint height;uint2 padding;};
-groupshared uint different;
-[numthreads(16,16,1)] void main(uint3 id:SV_DispatchThreadID,uint groupIndex:SV_GroupIndex){
- if(groupIndex==0)different=0;GroupMemoryBarrierWithGroupSync();
- bool changed=false;
- if(id.x<width&&id.y<height){int3 p=int3(id.xy,0);changed=sourceA.Load(p)!=sourceB.Load(p);}
- if(id.x<width/2&&id.y<height/2){int3 p=int3(id.xy,0);changed=changed||any(chromaA.Load(p)!=chromaB.Load(p));}
- if(changed)InterlockedOr(different,1);GroupMemoryBarrierWithGroupSync();
- if(groupIndex==0&&different)InterlockedOr(stats[69],1);
- if(id.x>=64||id.y>=36)return;
- uint a=0,b=0;
- [unroll]for(uint oy=1;oy<=3;oy+=2)[unroll]for(uint ox=1;ox<=3;ox+=2){
-  int3 p=int3((id.x*4+ox)*width/256,(id.y*4+oy)*height/144,0);
-  a+=uint(round(sourceA.Load(p)*255));b+=uint(round(sourceB.Load(p)*255));
- }
- a=(a+2)/4;b=(b+2)/4;int delta=int(b)-int(a);uint diff=uint(abs(delta));
- InterlockedAdd(stats[0],1);InterlockedAdd(stats[1],diff);
- InterlockedAdd(stats[2],asuint(delta));InterlockedAdd(stats[3],uint(delta*delta));
- if(diff>=32)InterlockedAdd(stats[4],1);
- InterlockedAdd(stats[5+(a>>3)],1);InterlockedAdd(stats[37+(b>>3)],1);
-}
-)";
-ComPtr<ID3DBlob> compile_shader(const char* entry,const char* target,const char* source=shader_source){ComPtr<ID3DBlob>blob,error;HRESULT hr=D3DCompile(source,strlen(source),"nvof-gpu-blend",nullptr,nullptr,entry,target,D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&blob,&error);if(FAILED(hr))throw std::runtime_error(std::string("Shader compilation failed: ")+(error?static_cast<const char*>(error->GetBufferPointer()):"unknown"));return blob;}
+
+
 }
 
 struct GpuFrucEngine::Impl {
@@ -144,6 +101,7 @@ struct GpuFrucEngine::Impl {
     struct Session {void* wrapper=nullptr;};
     std::vector<Session> sessions;
     std::unique_ptr<FractionalRefiner> fractional_refiner;
+    std::unique_ptr<MotionSynthesizer> native_synthesizer;
     bool fractional_unavailable=false;
     CreateFn create=nullptr;LoadFn load=nullptr;DeleteFn destroy=nullptr;InitFn init=nullptr;RegisterFn register_resources=nullptr;ProcessFn process=nullptr;ProcessExFn process_ex=nullptr,advance=nullptr;
     bool primed=false;
@@ -167,7 +125,7 @@ struct GpuFrucEngine::Impl {
         ~DeviceScope(){owner.context1->SwapDeviceContextState(old_state.Get(),nullptr);if(owns_multithread)owner.multithread->Leave();if(owns_mutex)ReleaseMutex(owner.decoder_mutex);}
     };
 
-    Impl(const std::filesystem::path& directory,ID3D11Device* d,ID3D11DeviceContext* c,HANDLE shared_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect):completion_mode(mode),skip_identical_warp(skip),stabilize_midpoint(stabilize),protect_appearance(protect),decoder_mutex(shared_mutex),device(d),context(c){
+    Impl(const std::filesystem::path& directory,ID3D11Device* d,ID3D11DeviceContext* c,HANDLE shared_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect,GpuInterpolationBackend backend,unsigned flow_dimension):completion_mode(mode),skip_identical_warp(skip),stabilize_midpoint(stabilize),protect_appearance(protect),decoder_mutex(shared_mutex),device(d),context(c){
         try{
             if(!d||!c)throw std::invalid_argument("A decoder D3D11 device and immediate context are required");
             if(c->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)throw std::invalid_argument("D3D11 immediate context required");
@@ -182,22 +140,31 @@ struct GpuFrucEngine::Impl {
             if(SUCCEEDED(device.As(&device5))&&SUCCEEDED(context.As(&context4))&&SUCCEEDED(device5->CreateFence(0,D3D11_FENCE_FLAG_NONE,IID_PPV_ARGS(&completion_fence)))){
                 completion_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!completion_event)completion_fence.Reset();
             }
-            ComPtr<ID3DBlob> scene_blob,scene_error;
-            hr_check(D3DCompile(scene_shader,strlen(scene_shader),"nvof-scene",nullptr,nullptr,"main","cs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&scene_blob,&scene_error),"Compile scene detector");
-            hr_check(device->CreateComputeShader(scene_blob->GetBufferPointer(),scene_blob->GetBufferSize(),nullptr,&scene_compute),"Create scene detector");
+            hr_check(device->CreateComputeShader(shaders::scene::main,sizeof(shaders::scene::main),nullptr,&scene_compute),"Create scene detector");
             D3D11_BUFFER_DESC stats_desc{};stats_desc.ByteWidth=sizeof(SceneStats)+sizeof(uint32_t);stats_desc.Usage=D3D11_USAGE_DEFAULT;stats_desc.BindFlags=D3D11_BIND_UNORDERED_ACCESS;stats_desc.MiscFlags=D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;stats_desc.StructureByteStride=4;
             hr_check(device->CreateBuffer(&stats_desc,nullptr,&scene_buffer),"Create scene statistics");
             D3D11_UNORDERED_ACCESS_VIEW_DESC stats_view{};stats_view.Format=DXGI_FORMAT_UNKNOWN;stats_view.ViewDimension=D3D11_UAV_DIMENSION_BUFFER;stats_view.Buffer.NumElements=70;
             hr_check(device->CreateUnorderedAccessView(scene_buffer.Get(),&stats_view,&scene_uav),"Create scene statistics view");
             stats_desc.Usage=D3D11_USAGE_STAGING;stats_desc.BindFlags=0;stats_desc.MiscFlags=0;stats_desc.StructureByteStride=0;stats_desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
             hr_check(device->CreateBuffer(&stats_desc,nullptr,&scene_readback),"Create scene statistics readback");
-            const auto vs=compile_shader("vs","vs_4_0"),ps=compile_shader("ps","ps_4_0");
-            hr_check(device->CreateVertexShader(vs->GetBufferPointer(),vs->GetBufferSize(),nullptr,&vertex_shader),"CreateVertexShader");
-            hr_check(device->CreatePixelShader(ps->GetBufferPointer(),ps->GetBufferSize(),nullptr,&pixel_shader),"CreatePixelShader");
+            hr_check(device->CreateVertexShader(shaders::blend::vs,sizeof(shaders::blend::vs),nullptr,&vertex_shader),"CreateVertexShader");
+            hr_check(device->CreatePixelShader(shaders::blend::ps,sizeof(shaders::blend::ps),nullptr,&pixel_shader),"CreatePixelShader");
             D3D11_BUFFER_DESC cb{};cb.ByteWidth=16;cb.Usage=D3D11_USAGE_DEFAULT;cb.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
             hr_check(device->CreateBuffer(&cb,nullptr,&weight_buffer),"Create GPU blend constants");
             D3D11_RASTERIZER_DESC raster{};raster.FillMode=D3D11_FILL_SOLID;raster.CullMode=D3D11_CULL_NONE;raster.DepthClipEnable=TRUE;
             hr_check(device->CreateRasterizerState(&raster,&rasterizer),"CreateRasterizerState");
+            if(backend==GpuInterpolationBackend::native_experimental) {
+                DeviceScope scope(*this);
+                native_synthesizer=std::make_unique<MotionSynthesizer>(device.Get(),context.Get(),flow_dimension);
+                ComPtr<IDXGIDevice> dxgi;hr_check(device.As(&dxgi),"Native DXGI device");
+                ComPtr<IDXGIAdapter> adapter;hr_check(dxgi->GetAdapter(&adapter),"Native adapter");
+                DXGI_ADAPTER_DESC desc{};hr_check(adapter->GetDesc(&desc),"Native adapter name");
+                const int bytes=WideCharToMultiByte(CP_UTF8,0,desc.Description,-1,nullptr,0,nullptr,nullptr);
+                if(bytes<=0)throw std::runtime_error("Native adapter name conversion failed");
+                name.resize(bytes);WideCharToMultiByte(CP_UTF8,0,desc.Description,-1,name.data(),bytes,nullptr,nullptr);
+                name.pop_back();
+                return;
+            }
             const auto runtime=std::filesystem::absolute(directory);nvidia_module=load_module(runtime/L"NvOFFRUC.dll");wrapper_module=load_module(runtime/L"NvofFrucBridge.dll");
             create=symbol<CreateFn>(wrapper_module,"NVEncNVOFFRUCCreate");load=symbol<LoadFn>(wrapper_module,"NVEncNVOFFRUCLoad");destroy=symbol<DeleteFn>(wrapper_module,"NVEncNVOFFRUCDelete");
             init=symbol<InitFn>(wrapper_module,"NVEncNVOFFRUCCreateFURCHandle");register_resources=symbol<RegisterFn>(wrapper_module,"NVEncNVOFFRUCRegisterResource");process=symbol<ProcessFn>(wrapper_module,"NVEncNVOFFRUCProc");process_ex=symbol<ProcessExFn>(wrapper_module,"NVEncNVOFFRUCProcEx");advance=symbol<ProcessExFn>(wrapper_module,"NVEncNVOFFRUCAdvance");
@@ -222,6 +189,14 @@ struct GpuFrucEngine::Impl {
         output_pool.clear();for(auto& target:plane_targets)target.Reset();for(auto& view:plane_views)view.Reset();for(auto& texture:planes)texture.Reset();width=height=0;
     }
     void cleanup() noexcept {
+        if(native_synthesizer) {
+            try {DeviceScope scope(*this);wait_gpu();native_synthesizer.reset();output_pool.clear();}
+            catch(...) {
+                native_synthesizer.release(); // Same host-lock safety rule as FRUC teardown.
+                OutputDebugStringA("NVOF: shared D3D11 lock unavailable during native teardown\n");
+                return;
+            }
+        }
         if(cuda_context){
             try{
                 // Unregister and CUDA context destruction can also reset the
@@ -294,7 +269,7 @@ struct GpuFrucEngine::Impl {
     }
     ComPtr<ID3D11Texture2D> shader_source_texture(const GpuFrame& frame){
         D3D11_TEXTURE2D_DESC desc{};frame.texture->GetDesc(&desc);
-        if(desc.ArraySize==1 && (desc.BindFlags&D3D11_BIND_SHADER_RESOURCE))return frame.texture;
+        if(desc.ArraySize==1 && desc.Width==UINT(frame.width) && desc.Height==UINT(frame.height) && (desc.BindFlags&D3D11_BIND_SHADER_RESOURCE))return frame.texture;
         // Decoder arrays or decode-only surfaces are first captured on GPU.
         // All draws share the immediate context, so copy ordering is preserved.
         auto result=make_texture(DXGI_FORMAT_NV12,frame.width,frame.height);D3D11_BOX box{0,0,0,UINT(frame.width),UINT(frame.height),1};
@@ -311,8 +286,7 @@ struct GpuFrucEngine::Impl {
     }
     void normalize_p010(const GpuFrame& input,const GpuFrame& output) {
         if(!p010_pixel_shader) {
-            auto shader=compile_shader("ps","ps_5_0",p010_shader);
-            hr_check(device->CreatePixelShader(shader->GetBufferPointer(),shader->GetBufferSize(),nullptr,&p010_pixel_shader),"Create P010 normalization shader");
+            hr_check(device->CreatePixelShader(shaders::p010::ps,sizeof(shaders::p010::ps),nullptr,&p010_pixel_shader),"Create P010 normalization shader");
         }
         if(!p010_capture || p010_width!=input.width || p010_height!=input.height) {
             D3D11_TEXTURE2D_DESC desc{};desc.Width=input.width;desc.Height=input.height;
@@ -413,7 +387,7 @@ struct GpuFrucEngine::Impl {
 
 };
 
-GpuFrucEngine::GpuFrucEngine(const std::filesystem::path& runtime,ID3D11Device* device,ID3D11DeviceContext* context,HANDLE decoder_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect):impl_(std::make_unique<Impl>(runtime,device,context,decoder_mutex,mode,skip,stabilize,protect)){}
+GpuFrucEngine::GpuFrucEngine(const std::filesystem::path& runtime,ID3D11Device* device,ID3D11DeviceContext* context,HANDLE decoder_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect,GpuInterpolationBackend backend,unsigned flow_dimension):impl_(std::make_unique<Impl>(runtime,device,context,decoder_mutex,mode,skip,stabilize,protect,backend,flow_dimension)){}
 GpuFrucEngine::~GpuFrucEngine()=default;
 std::string GpuFrucEngine::device_name()const{return impl_->name;}
 bool GpuFrucEngine::queued_completion()const{return impl_->completion_mode==GpuCompletionMode::context_ordered&&!impl_->p010_completion.load();}
@@ -421,6 +395,10 @@ void GpuFrucEngine::reset()noexcept{
     std::lock_guard<std::mutex> lock(impl_->mutex);
     try{
         Impl::DeviceScope scope(*impl_);
+        if(impl_->native_synthesizer) {
+            impl_->native_synthesizer->invalidate_history();
+            impl_->cached_texture.Reset();impl_->cached_lease.reset();return;
+        }
         if(impl_->fractional_refiner)impl_->fractional_refiner->reset();
         if(cuCtxPushCurrent(impl_->cuda_context)==CUDA_SUCCESS){impl_->close_session();CUcontext previous=nullptr;cuCtxPopCurrent(&previous);}
     }catch(...){OutputDebugStringA("NVOF: shared D3D11 lock unavailable during history reset\n");}
@@ -447,6 +425,45 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
     if(timestamps.size()>32)throw std::invalid_argument("More than 32 motion phases per source pair are unsupported");
     int64_t last=previous.pts;for(auto pts:timestamps){if(pts<=last||pts>=current.pts)throw std::invalid_argument("Motion timestamps must increase inside source pair");last=pts;}
     PhaseBatch<GpuFrame> result{};if(timestamps.empty()&&impl_->sessions.empty())return result;
+    if(impl_->native_synthesizer) {
+        // A nominal x2 clock can land away from the midpoint when container
+        // duration and actual PTS differ, or when input is VFR. Synthesize the
+        // requested time; never label a midpoint as a different phase.
+        Impl::DeviceScope scope(*impl_);
+        try {
+            if(impl_->cached_texture.Get()!=previous.texture.Get()||impl_->cached_pts!=previous.pts||
+               impl_->cached_slice!=previous.array_slice)impl_->native_synthesizer->invalidate_history();
+            const auto analysis=impl_->scene(previous,current);
+            if(analysis.decision.cut) {
+                impl_->native_synthesizer->invalidate_history();
+                result.quality.scene_cut=true;impl_->cached_texture.Reset();impl_->cached_lease.reset();return result;
+            }
+            if(analysis.identical) {
+                for(auto pts:timestamps) {auto exact=previous;exact.pts=pts;result.frames.push_back(std::move(exact));}
+                result.quality.identical_warp_skipped=true;impl_->native_synthesizer->invalidate_history();
+            }else{
+                auto a=impl_->shader_source_texture(previous),b=impl_->shader_source_texture(current);
+                impl_->native_synthesizer->prepare(a.Get(),b.Get(),previous.width,previous.height);
+                result.quality.repetition_known=true;
+                for(size_t i=0;i<timestamps.size();++i) {
+                    if(!impl_->native_synthesizer->reliable()) {
+                        auto held=previous;held.pts=timestamps[i];result.frames.push_back(std::move(held));
+                        result.quality.repeated_mask|=uint32_t(1)<<i;continue;
+                    }
+                    auto output=impl_->make_output(previous.width,previous.height,timestamps[i]);
+                    auto y=impl_->target_view(output.texture.Get(),DXGI_FORMAT_R8_UNORM);
+                    auto uv=impl_->target_view(output.texture.Get(),DXGI_FORMAT_R8G8_UNORM);
+                    const float fraction=(std::min)(std::nextafter(1.0f,0.0f),float(double(timestamps[i]-previous.pts)/double(current.pts-previous.pts)));
+                    impl_->native_synthesizer->render_phase(y.Get(),uv.Get(),fraction);
+                    result.frames.push_back(std::move(output));result.quality.native_synthesized_mask|=uint32_t(1)<<i;
+                }
+            }
+            impl_->cached_texture=current.texture;impl_->cached_lease=current.lease;
+            impl_->cached_pts=current.pts;impl_->cached_slice=current.array_slice;
+            if(!queued_completion())impl_->wait_gpu();
+            return result;
+        }catch(...){impl_->native_synthesizer->invalidate_history();throw;}
+    }
     CudaScope cuda(impl_->cuda_context);
     try{
         impl_->configure(previous.width,previous.height);

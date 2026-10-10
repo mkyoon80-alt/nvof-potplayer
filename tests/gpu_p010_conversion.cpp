@@ -22,8 +22,8 @@ std::vector<uint8_t> download(ID3D11Device* d,ID3D11DeviceContext* c,const GpuFr
  for(int row=0;row<frame.height*3/2;++row)memcpy(result.data()+size_t(row)*frame.width,static_cast<uint8_t*>(mapped.pData)+size_t(row)*mapped.RowPitch,frame.width);
  c->Unmap(staging.Get(),0);return result;
 }
-void test_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int w,int h,int padded,int arrays,bool queued){
- GpuFrucEngine engine(runtime,bridge.device(),bridge.context(),bridge.mutex(),queued?GpuCompletionMode::context_ordered:GpuCompletionMode::blocking);
+void test_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int w,int h,int padded,int arrays,bool queued,bool native){
+ GpuFrucEngine engine(runtime,bridge.device(),bridge.context(),bridge.mutex(),queued?GpuCompletionMode::context_ordered:GpuCompletionMode::blocking,true,!native,!native,native?GpuInterpolationBackend::native_experimental:GpuInterpolationBackend::fruc);
  D3D11_TEXTURE2D_DESC desc{};desc.Width=w;desc.Height=padded;desc.ArraySize=arrays;desc.MipLevels=1;
  desc.Format=DXGI_FORMAT_P010;desc.SampleDesc.Count=1;desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_DECODER;
  ComPtr<ID3D11Texture2D> source;check(bridge.device()->CreateTexture2D(&desc,nullptr,&source),"Create P010 decoder array");
@@ -62,13 +62,14 @@ void test_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int w,
 }
 }
 int wmain(int argc,wchar_t** argv){
- if(argc!=2){std::cerr<<"Usage: gpu_p010_conversion <runtime-directory>\n";return 2;}
+ if(argc<2||argc>3){std::cerr<<"Usage: gpu_p010_conversion <runtime-directory> [native]\n";return 2;}
  auto hr=CoInitializeEx(nullptr,COINIT_MULTITHREADED);if(FAILED(hr))return 3;
  int result=0;try{
   MfD3d11Bridge bridge;
+  const bool native=argc==3&&std::wstring(argv[2])==L"native";
   for(bool queued:{false,true}){
-   test_case(bridge,argv[1],1024,64,80,22,queued);
-   test_case(bridge,argv[1],1920,1080,1152,22,queued);
+   test_case(bridge,argv[1],1024,64,80,22,queued,native);
+   test_case(bridge,argv[1],1920,1080,1152,22,queued,native);
   }
  }catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';result=1;}
  CoUninitialize();return result;

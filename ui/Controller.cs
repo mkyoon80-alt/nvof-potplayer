@@ -42,6 +42,7 @@ namespace NvofControl
             Write("InputRateMask", value.ToString(CultureInfo.InvariantCulture));
         }
         public void SetEnabled(bool value) { Write("Enabled", value ? "1" : "0"); }
+        public bool NativeSynthesis { get { return GetPrivateProfileInt("Nvof", "ExperimentalNativeSynthesis", 1, path) != 0; } }
         public bool GpuCorrection { get { return GetPrivateProfileInt("Nvof", "GpuMidpointCorrection", 1, path) != 0; } }
         public bool AppearanceProtection { get { return GetPrivateProfileInt("Nvof", "AppearanceProtection", 1, path) != 0; } }
         public void SetGpuCorrection(bool value) { Write("GpuMidpointCorrection", value ? "1" : "0"); }
@@ -300,6 +301,19 @@ namespace NvofControl
             registerNotice = Find<TextBlock>("RegisterNotice");
             registerButton = Find<Button>("RegisterButton");
             LoadSettings();
+            Find<FrameworkElement>("NativeEnhancementPanel").Visibility = settings.NativeSynthesis ? Visibility.Visible : Visibility.Collapsed;
+            Find<FrameworkElement>("LegacyEnhancementPanel").Visibility = settings.NativeSynthesis ? Visibility.Collapsed : Visibility.Visible;
+            Find<Button>("InstallFolderButton").Click += delegate {
+                try { Process.Start(new ProcessStartInfo(baseDirectory) { UseShellExecute=true }); }
+                catch (Exception ex) { Notify("설치 폴더를 열지 못했습니다.", true, ex.Message); }
+            };
+            Find<Button>("UninstallButton").Click += delegate {
+                if (preview) return;
+                string uninstaller = Path.Combine(baseDirectory, "unins000.exe");
+                if (!File.Exists(uninstaller)) { Notify("설치 프로그램으로 설치한 버전에서 제거할 수 있습니다.", true); return; }
+                try { Process.Start(new ProcessStartInfo(uninstaller) { UseShellExecute=true, WorkingDirectory=baseDirectory }); window.Close(); }
+                catch (Exception ex) { Notify("제거 프로그램을 열지 못했습니다.", true, ex.Message); }
+            };
             if (!preview)
             {
                 try { settings.MigrateToDoubleRate(); }
@@ -476,7 +490,7 @@ namespace NvofControl
                 statusDetail.Text = "팟플레이어가 관리자 권한으로 실행 중입니다. 연결 설정에서 관리자용 필터를 등록하세요.";
             }
             StringBuilder text = new StringBuilder();
-            text.AppendLine("NVOF for PotPlayer 0.2.0-beta.1");
+            text.AppendLine("NVOF for PotPlayer 0.3.0");
             if (registration != null)
             {
                 text.AppendLine("팟플레이어 권한: " + registration.PlayerDescription);

@@ -67,13 +67,13 @@ The `NVOF_ENABLE_EXPERIMENTAL_SUBPIXEL` option defaults to OFF. Preview.4 enable
 Use the official Inno Setup **7.1.0 x64** compiler. Its upstream setup SHA256 is `0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f` (Authenticode publisher: Pyrsys B.V.). Obtain it from [the upstream release](https://github.com/jrsoftware/issrc/releases/tag/is-7_1_0). It can be unpacked by its `/PORTABLE=1 /VERYSILENT /DIR=...` installation mode into a build-tools folder. The compiler is not bundled in the app.
 
 ```powershell
-.\tools\build-local-package.ps1 -Version 0.2.0-beta.1
+.\tools\build-local-package.ps1 -Version 0.3.0
 .\tools\build-installer.ps1 -CompilerPath "C:\BuildTools\Inno\ISCC.exe"
 ```
 
 `build-installer.ps1` checks every payload hash and required manual/terms file, then creates the setup EXE and SHA256 file in `dist/`. Publish these two files, not the intermediate ZIP. The application binaries use static MSVC linkage; NVIDIA-required CUDA/VC DLLs and the self-contained .NET Desktop Runtime remain app-local. The NVIDIA driver and PotPlayer are prerequisites, not bundled dependencies.
 
-The installer uses the current user's LocalAppData folder and HKCU registration. It refuses installation/removal while PotPlayer or NVOF Control is running. It preserves INI settings, records explicit component consent locally, and unregisters only the filter path it owns. Existing machine-wide registration is left unchanged. Use PotPlayer normally (not elevated); deliberately update or remove machine-wide registration through the controller if elevated playback is needed.
+The installer uses the current user's LocalAppData folder and HKCU registration. It refuses installation/removal while PotPlayer or NVOF Control is running. It preserves INI settings, records explicit component consent locally, and unregisters only the filter path it owns. Installation keeps machine registration unchanged; uninstall elevates the adjacent helper to remove only machine registration pointing to its own filter. Use PotPlayer normally (not elevated); deliberately update or remove machine-wide registration through the controller if elevated playback is needed.
 
 Interactive component acceptance is unchecked by default. For a deployment where the operator has read and accepted the bundled terms, the explicit silent parameter is `/NVIDIATERMS=2026-10-07`; `/VERYSILENT` alone must not install. A changed terms version requires new explicit acceptance. This parameter is an assent mechanism, not an additional distribution grant.
 
@@ -93,7 +93,11 @@ Stage the manual with its local license links, then build the standalone HTML an
 
 ```powershell
 python tools/build-manual-site.py --output build/manual-beta1
-python tools/build-manual-assets.py --site-dir build/manual-beta1 --version 0.2.0-beta.1
+python tools/build-manual-assets.py --site-dir build/manual-beta1 --version 0.3.0
 ```
 
 Both commands refuse to overwrite existing output. Publish the generated HTML and manual ZIP as release assets alongside the installer and SHA256 checksums. The standalone HTML embeds its stylesheet, script and images; the ZIP additionally carries the vendor documents. GitHub Pages publishes the same `docs/manual` source on changes to `main`.
+
+## Precompiled playback shaders (0.3.0)
+
+`tools/shader_compiler.cpp` compiles `src/shaders/*.hlsl` with D3DCompile optimization level 3 during the CMake build. Generated headers live under the build directory; the filter creates D3D11 shaders directly from embedded bytecode. Changes to any HLSL file regenerate the relevant header. The native playback path, scene detector, blend and P010 conversion require no runtime shader compilation. The legacy fractional refiner retains its separate research implementation.
