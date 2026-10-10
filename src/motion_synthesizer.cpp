@@ -62,7 +62,8 @@ struct MotionSynthesizer::Impl {
     std::array<ComPtr<ID3D11ShaderResourceView>,2> warpViews;
     ComPtr<ID3D11SamplerState> sampler;
     ComPtr<ID3D11RasterizerState> raster;
-    ComPtr<ID3D11Buffer> constants;
+    ComPtr<ID3D11Buffer> constants,formatConstants;
+    DXGI_FORMAT sourceFormat=DXGI_FORMAT_NV12;
     unsigned maxDimension,grid=0;
     MotionCostMode costMode;
     MotionFlowOptions flowOptions;
@@ -111,6 +112,7 @@ struct MotionSynthesizer::Impl {
             check(d->CreateBuffer(&rb,nullptr,&riskReadback),"Motion assessment readback");
             D3D11_BUFFER_DESC cb{};cb.ByteWidth=32;cb.Usage=D3D11_USAGE_DEFAULT;cb.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
             check(d->CreateBuffer(&cb,nullptr,&constants),"Motion constants");
+            cb.ByteWidth=16;check(d->CreateBuffer(&cb,nullptr,&formatConstants),"Motion pixel format");
             D3D11_SAMPLER_DESC sd{};sd.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;
             sd.AddressU=sd.AddressV=sd.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;sd.MaxLOD=D3D11_FLOAT32_MAX;
             check(d->CreateSamplerState(&sd,&sampler),"Motion sampler");
@@ -259,6 +261,7 @@ struct MotionSynthesizer::Impl {
         const UINT zero[4]{};context->ClearUnorderedAccessViewUint(riskUav.Get(),zero);
         float data[8]={float(w),float(h),float(aw),float(ah),float(grid),0,0,0};
         context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
+        auto formatCb=formatConstants.Get();context->PSSetConstantBuffers(1,1,&formatCb);context->CSSetConstantBuffers(1,1,&formatCb);
         auto cb=constants.Get();auto sp=sampler.Get();auto output=riskUav.Get();
         ID3D11ShaderResourceView* views[]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),fvs[0].Get(),fvs[1].Get()};
         context->CSSetShader(assess.Get(),nullptr,0);context->CSSetConstantBuffers(0,1,&cb);context->CSSetSamplers(0,1,&sp);
@@ -276,6 +279,7 @@ struct MotionSynthesizer::Impl {
         // Mapping reads the completed stationary mask from prepare() so inverse
         // recovery does not borrow motion across fixed overlay edges.
         ID3D11ShaderResourceView* views[14]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),down?nullptr:(repairing?(fraction>0?fvs[0].Get():repairScratchViews[0].Get()):repairedViews[0].Get()),down?nullptr:(repairing?(fraction>0?fvs[1].Get():repairScratchViews[1].Get()):repairedViews[1].Get()),down||mapping||stationaryStage||repairing?nullptr:warpViews[0].Get(),down||mapping||stationaryStage||repairing?nullptr:warpViews[1].Get(),stationaryStage>1?layerViews[stationaryStage-2].Get():(down||stationaryStage||repairing?nullptr:layerViews[0].Get()),mapping?costViews[0].Get():nullptr,mapping?costViews[1].Get():nullptr,mapping&&costMode!=MotionCostMode::disabled?fvs[0].Get():nullptr,mapping&&costMode!=MotionCostMode::disabled?fvs[1].Get():nullptr};
+        auto formatCb=formatConstants.Get();context->PSSetConstantBuffers(1,1,&formatCb);context->CSSetConstantBuffers(1,1,&formatCb);
         auto cb=constants.Get();auto sp=sampler.Get();
         context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->VSSetShader(vertex.Get(),nullptr,0);context->HSSetShader(nullptr,nullptr,0);
@@ -296,6 +300,7 @@ struct MotionSynthesizer::Impl {
         float data[8]={float(w),float(h),float(aw),float(ah),float(grid),0,0,0};
         context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
         ID3D11ShaderResourceView* views[]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),repairedViews[0].Get(),repairedViews[1].Get()};
+        auto formatCb=formatConstants.Get();context->PSSetConstantBuffers(1,1,&formatCb);context->CSSetConstantBuffers(1,1,&formatCb);
         auto cb=constants.Get();auto sp=sampler.Get();auto target=glyphUav.Get();
         context->CSSetShader(glyphGroup.Get(),nullptr,0);context->CSSetConstantBuffers(0,1,&cb);context->CSSetSamplers(0,1,&sp);
         context->CSSetShaderResources(0,6,views);context->CSSetUnorderedAccessViews(1,1,&target,nullptr);
@@ -307,14 +312,14 @@ struct MotionSynthesizer::Impl {
         if(!t||width<4||height<4||width>8192||height>8192||(width&1)||(height&1))
             throw std::invalid_argument("Invalid synthesis dimensions");
         D3D11_TEXTURE2D_DESC d{};t->GetDesc(&d);ComPtr<ID3D11Device> owner;t->GetDevice(&owner);
-        if(owner.Get()!=device.Get()||d.Format!=DXGI_FORMAT_NV12||d.Width!=UINT(width)||d.Height!=UINT(height)||
+        if(owner.Get()!=device.Get()||(d.Format!=DXGI_FORMAT_NV12&&d.Format!=DXGI_FORMAT_P010)||d.Width!=UINT(width)||d.Height!=UINT(height)||
            d.ArraySize!=1||d.MipLevels!=1||d.SampleDesc.Count!=1)
             throw std::invalid_argument("Synthesis needs exact-size single-slice NV12");
     }
     void validate_target(ID3D11RenderTargetView* t,unsigned plane) {
         if(!t)throw std::invalid_argument("Null synthesis target");
         D3D11_RENDER_TARGET_VIEW_DESC vd{};t->GetDesc(&vd);
-        if(vd.Format!=(plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM)||vd.ViewDimension!=D3D11_RTV_DIMENSION_TEXTURE2D||vd.Texture2D.MipSlice!=0)
+        if(vd.Format!=(sourceFormat==DXGI_FORMAT_P010?(plane?DXGI_FORMAT_R16G16_UNORM:DXGI_FORMAT_R16_UNORM):(plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM))||vd.ViewDimension!=D3D11_RTV_DIMENSION_TEXTURE2D||vd.Texture2D.MipSlice!=0)
             throw std::invalid_argument("Invalid synthesis target view");
         ComPtr<ID3D11Resource> resource;t->GetResource(&resource);
         ComPtr<ID3D11Texture2D> texture;check(resource.As(&texture),"Synthesis target texture");
@@ -346,15 +351,21 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
     mark(0);
     impl_->prepared=false;
     try {
-    impl_->validate(a,w,h);impl_->validate(b,w,h);impl_->configure(w,h);
+    impl_->validate(a,w,h);impl_->validate(b,w,h);
+    D3D11_TEXTURE2D_DESC ad{},bd{};a->GetDesc(&ad);b->GetDesc(&bd);
+    if(ad.Format!=bd.Format)throw std::invalid_argument("Motion pair bit depths differ");
+    if(impl_->sourceFormat!=ad.Format)impl_->reset();
+    impl_->sourceFormat=ad.Format;impl_->configure(w,h);
+    const UINT formatData[4]={ad.Format==DXGI_FORMAT_P010?1u:0u,0,0,0};
+    impl_->context->UpdateSubresource(impl_->formatConstants.Get(),0,nullptr,formatData,0,0);
     mark(1);
     if(impl_->hasPair)impl_->inputSlot=(impl_->inputSlot+2)%impl_->inputs.size();
     ID3D11Texture2D* sources[]={a,b};
     for(unsigned i=0;i<2;++i){
-        impl_->sources[i]=sources[i];impl_->ys[i]=impl_->srv(sources[i],DXGI_FORMAT_R8_UNORM);
-        impl_->uvs[i]=impl_->srv(sources[i],DXGI_FORMAT_R8G8_UNORM);
+        impl_->sources[i]=sources[i];impl_->ys[i]=impl_->srv(sources[i],ad.Format==DXGI_FORMAT_P010?DXGI_FORMAT_R16_UNORM:DXGI_FORMAT_R8_UNORM);
+        impl_->uvs[i]=impl_->srv(sources[i],ad.Format==DXGI_FORMAT_P010?DXGI_FORMAT_R16G16_UNORM:DXGI_FORMAT_R8G8_UNORM);
         const unsigned slot=impl_->inputSlot+i;
-        if(w==impl_->aw&&h==impl_->ah)impl_->context->CopyResource(impl_->inputs[slot].Get(),sources[i]);
+        if(ad.Format==DXGI_FORMAT_NV12&&w==impl_->aw&&h==impl_->ah)impl_->context->CopyResource(impl_->inputs[slot].Get(),sources[i]);
         else {impl_->draw(impl_->inputTargets[slot][0].Get(),0,true,i);impl_->draw(impl_->inputTargets[slot][1].Get(),1,true,i);}
     }
     // Complete prior synthesis reads of raw outputs AND current input writes

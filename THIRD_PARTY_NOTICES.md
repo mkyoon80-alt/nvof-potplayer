@@ -11,7 +11,7 @@ The project MIT License covers original NVOF for PotPlayer code. It does not rel
 - The app and native filter use the static MSVC runtime. Any Microsoft runtime components shipped with the .NET controller retain their own terms; they are not covered by the project MIT license.
 - The installer uses unmodified Inno Setup 7.1.0 by Jordan Russell and Martijn Laan. Its notices and site addresses are retained; see licenses/Inno-Setup-LICENSE.txt. The compiler is not shipped.
 
-The LAV/MPC COM interface declarations are independently authored ABI declarations, not a bundled LAV decoder or renderer implementation. Windows, a supported NVIDIA GPU/driver and the player's installation are external prerequisites.
+The LAV/MPC COM interface declarations are independently authored ABI declarations, not a bundled LAV decoder or renderer implementation. This includes the public IMediaSideData GUID/signatures and HDR static-metadata identifiers used for sample interoperability (reference: https://github.com/Nevcairiel/LAVFilters/blob/master/include/IMediaSideData.h). Metadata storage, copying and sample-lifetime handling are implemented in this project. Windows, a supported NVIDIA GPU/driver and the player's installation are external prerequisites.
 
 Earlier v0.3.0 and older packages included NvOFFRUC and CUDA runtime components under separate distribution notices. Their original release artifacts and Git history remain unchanged. These native standalone package notes do not retroactively change earlier releases.
 

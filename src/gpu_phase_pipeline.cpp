@@ -6,12 +6,13 @@
 #include <utility>
 namespace nvof {
 namespace {
+DXGI_FORMAT format(const GpuFrame& f) {D3D11_TEXTURE2D_DESC d{};f.texture->GetDesc(&d);return d.Format;}
 void validate(const GpuFrame& f) {
     if (!f.texture || f.width < 2 || f.height < 2 || f.width > 8192 || f.height > 8192 || (f.width & 1) || (f.height & 1) || f.pts < 0)
-        throw std::invalid_argument("Expected a nonnegative, even-sized GPU NV12 frame");
+        throw std::invalid_argument("Expected a nonnegative, even-sized GPU NV12/P010 frame");
     D3D11_TEXTURE2D_DESC desc{};
     f.texture->GetDesc(&desc);
-    if (desc.Format != DXGI_FORMAT_NV12 || UINT(f.width) > desc.Width || UINT(f.height) > desc.Height || f.array_slice >= desc.ArraySize)
+    if ((desc.Format != DXGI_FORMAT_NV12 && desc.Format != DXGI_FORMAT_P010) || UINT(f.width) > desc.Width || UINT(f.height) > desc.Height || f.array_slice >= desc.ArraySize)
         throw std::invalid_argument("GPU texture description does not match frame");
 }
 }
@@ -44,7 +45,7 @@ void GpuPhasePipeline::push(GpuFrame frame, bool discontinuity, const GpuEmit& e
         validate(frame);
         // A cut is quality evidence, never a clock reset. Only a seek or invalid
         // source continuity establishes a new clock origin.
-        if (previous_ && (frame.width != previous_->width || frame.height != previous_->height ||
+        if (previous_ && (format(frame)!=format(*previous_) || frame.width != previous_->width || frame.height != previous_->height ||
             frame.pts <= *previous_raw_pts_ || (*previous_raw_pts_ <= std::numeric_limits<int64_t>::max() - 10000000LL &&
             frame.pts > *previous_raw_pts_ + 10000000LL))) discontinuity = true;
         if (discontinuity) reset();
@@ -82,7 +83,7 @@ void GpuPhasePipeline::push(GpuFrame frame, bool discontinuity, const GpuEmit& e
             // Quality holds may omit generated frames; otherwise validate the whole batch first.
             for (size_t i = 0; !hold && i < timestamps.size(); ++i) {
                 validate(batch.frames[i]);
-                if (batch.frames[i].width != frame.width || batch.frames[i].height != frame.height ||
+                if (format(batch.frames[i])!=format(frame) || batch.frames[i].width != frame.width || batch.frames[i].height != frame.height ||
                     batch.frames[i].pts != timestamps[i])
                     throw std::runtime_error("Phase interpolation returned an invalid or out-of-order timestamp or frame size");
             }

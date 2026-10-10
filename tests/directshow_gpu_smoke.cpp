@@ -1,3 +1,4 @@
+#include "nvof/video_format.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -33,6 +34,8 @@ REFERENCE_TIME kDuration = 417083;
 REFERENCE_TIME declared_duration=-1;
 bool require_services=false;
 bool p010_fixture=false;
+bool p010_media=false;
+unsigned hdr_transfer=0;
 int color_fixture=0; // 0 default, 1 legacy VideoInfo, 2 explicitly tagged VideoInfo2.
 constexpr DWORD kMetadataTail=0x4e564f46;
 DWORD explicit_color_flags() {
@@ -40,6 +43,7 @@ DWORD explicit_color_flags() {
     color.VideoTransferMatrix=DXVA2_VideoTransferMatrix_BT709;
     color.VideoPrimaries=DXVA2_VideoPrimaries_BT709;
     color.VideoTransferFunction=DXVA2_VideoTransFunc_709;
+    if(hdr_transfer){color.VideoPrimaries=MFVideoPrimaries_BT2020;color.VideoTransferMatrix=MFVideoTransferMatrix_BT2020_10;color.VideoTransferFunction=hdr_transfer;}
     color.VideoChromaSubsampling=DXVA2_VideoChromaSubsampling_MPEG2;
     color.VideoLighting=DXVA2_VideoLighting_dim;
     return color.value | AMCONTROL_USED | AMCONTROL_COLORINFO_PRESENT | AMCONTROL_PAD_TO_16x9;
@@ -61,7 +65,7 @@ void check_diagnostic_services(IUnknown* object) {
 CMediaType input_type() {
     CMediaType type;
     type.SetType(&MEDIATYPE_Video);
-    type.SetSubtype(&MEDIASUBTYPE_NV12);
+    type.SetSubtype(p010_media?&nvof::p010_subtype:&MEDIASUBTYPE_NV12);
     type.SetFormatType(&FORMAT_VideoInfo2);
     type.SetTemporalCompression(FALSE);
     auto* video = reinterpret_cast<VIDEOINFOHEADER2*>(type.AllocFormatBuffer(sizeof(VIDEOINFOHEADER2)+(color_fixture?sizeof(DWORD):0)));
@@ -75,9 +79,10 @@ CMediaType input_type() {
     video->bmiHeader.biWidth = kWidth;
     video->bmiHeader.biHeight = kHeight;
     video->bmiHeader.biPlanes = 1;
-    video->bmiHeader.biBitCount = 12;
-    video->bmiHeader.biCompression = MAKEFOURCC('N','V','1','2');
-    video->bmiHeader.biSizeImage = kWidth*kHeight*3/2;
+    video->bmiHeader.biBitCount = p010_media?24:12;
+    video->bmiHeader.biCompression = p010_media?MAKEFOURCC('P','0','1','0'):MAKEFOURCC('N','V','1','2');
+    video->bmiHeader.biSizeImage = kWidth*kHeight*3/(p010_media?1:2);
+    if(hdr_transfer)video->dwControlFlags=explicit_color_flags();
     type.SetSampleSize(video->bmiHeader.biSizeImage);
     if(color_fixture) {
         std::memcpy(type.pbFormat+sizeof(VIDEOINFOHEADER2),&kMetadataTail,sizeof(kMetadataTail));
@@ -106,6 +111,7 @@ public:
     }
     STDMETHODIMP QueryInterface(REFIID id,void** value) override {
         if(!value)return E_POINTER;*value=nullptr;
+        if(id==__uuidof(nvof::MediaSideData))return original_->QueryInterface(id,value);
         if(id==IID_IUnknown || id==IID_IMediaSample)*value=static_cast<IMediaSample*>(this);
         else if(id==__uuidof(IMFGetService))*value=static_cast<IMFGetService*>(this);
         else return E_NOINTERFACE;
@@ -149,7 +155,7 @@ public:
         return index == 0 ? type->Set(type_) : VFW_S_NO_MORE_ITEMS;
     }
     HRESULT CheckMediaType(const CMediaType* type) override {
-        return type->majortype == MEDIATYPE_Video && type->subtype == MEDIASUBTYPE_NV12 ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
+        return type->majortype == MEDIATYPE_Video && (type->subtype == MEDIASUBTYPE_NV12 || type->subtype==nvof::p010_subtype) ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
     }
     HRESULT DecideBufferSize(IMemAllocator* allocator, ALLOCATOR_PROPERTIES* properties) override {
         properties->cBuffers = 4;
@@ -203,6 +209,12 @@ public:
         } else context->UpdateSubresource(texture.Get(),1,nullptr,pixels.data(),kWidth,0);
         REFERENCE_TIME start=index*kDuration,stop=start+kDuration;
         surface->assign({texture,1,kWidth,kHeight,start});
+        if(hdr_transfer==MFVideoTransFunc_2084) {
+            const double mastering[10]={.265,.15,.68,.69,.06,.32,.3127,.329,1000,.005};
+            const unsigned light[2]={1000,400};
+            check(surface->SetSideData(nvof::hdr_mastering_id,reinterpret_cast<const BYTE*>(mastering),sizeof(mastering)),"source HDR mastering");
+            check(surface->SetSideData(nvof::hdr_light_id,reinterpret_cast<const BYTE*>(light),sizeof(light)),"source HDR light");
+        }
         sample->SetTime(&start,no_stop?nullptr:&stop);sample->SetMediaType(changed);sample->SetActualDataLength(kWidth*kHeight*3/2);
         sample->SetDiscontinuity(discontinuity);sample->SetPreroll(FALSE);sample->SetSyncPoint(TRUE);
         if(mf) {
@@ -279,7 +291,7 @@ public:
         if (entered_) CloseHandle(entered_);
     }
     HRESULT CheckMediaType(const CMediaType* type) override {
-        return type->majortype == MEDIATYPE_Video && type->subtype == MEDIASUBTYPE_NV12 ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
+        return type->majortype == MEDIATYPE_Video && (type->subtype == MEDIASUBTYPE_NV12 || type->subtype==nvof::p010_subtype) ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
     }
     STDMETHODIMP NotifyAllocator(IMemAllocator* allocator,BOOL read_only) override {
         HRESULT result=CBaseInputPin::NotifyAllocator(allocator,read_only);
@@ -302,6 +314,11 @@ public:
     STDMETHODIMP Receive(IMediaSample* sample) override {
         HRESULT hr=CBaseInputPin::Receive(sample);
         if (hr != S_OK) return hr;
+        // Base Receive validates a dynamic type; a concrete renderer adopts it.
+        if (m_SampleProps.dwSampleFlags & AM_SAMPLE_TYPECHANGED) {
+            hr=SetMediaType(reinterpret_cast<const CMediaType*>(m_SampleProps.pMediaType));
+            if(FAILED(hr))return hr;
+        }
         if (block_.load()) {
             SetEvent(entered_);
             if (WaitForSingleObject(unblock_, 5000) != WAIT_OBJECT_0) return E_ABORT;
@@ -316,10 +333,18 @@ public:
             hr=texture_sample->GetD3D11Texture(0,&texture,&slice);
             if(FAILED(hr))return hr;
             D3D11_TEXTURE2D_DESC description{};texture->GetDesc(&description);
-            if(description.Format!=DXGI_FORMAT_NV12 || description.Width!=kWidth || description.Height!=kHeight || slice!=0)
+            if(description.Format!=(p010_fixture?DXGI_FORMAT_P010:DXGI_FORMAT_NV12) || description.Width!=kWidth || description.Height!=kHeight || slice!=0)
                 return E_UNEXPECTED;
             BYTE* forbidden=nullptr;
             if(sample->GetPointer(&forbidden)!=E_NOTIMPL || forbidden)return E_UNEXPECTED;
+            if(m_mt.subtype!=(p010_fixture?nvof::p010_subtype:MEDIASUBTYPE_NV12))return E_UNEXPECTED;
+            if(sample->GetActualDataLength()!=kWidth*kHeight*3/(p010_fixture?1:2))return E_UNEXPECTED;
+            auto metadata=nvof::capture_hdr(sample);
+            if(hdr_transfer==MFVideoTransFunc_2084) {
+                const double mastering[10]={.265,.15,.68,.69,.06,.32,.3127,.329,1000,.005};const unsigned light[2]={1000,400};
+                if(!metadata || metadata->data[0].size()!=sizeof(mastering) || metadata->data[1].size()!=sizeof(light) ||
+                   memcmp(metadata->data[0].data(),mastering,sizeof(mastering)) || memcmp(metadata->data[1].data(),light,sizeof(light)))return E_UNEXPECTED;
+            } else if(metadata)return E_UNEXPECTED;
             ++gpu_count_;
         } else {
             BYTE* data=nullptr;
@@ -556,9 +581,9 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
     const auto* tagged=reinterpret_cast<const VIDEOINFOHEADER2*>(negotiated.pbFormat);
     DXVA2_ExtendedFormat color{};color.value=tagged->dwControlFlags;
     if((tagged->dwControlFlags&(AMCONTROL_USED|AMCONTROL_COLORINFO_PRESENT))!=(AMCONTROL_USED|AMCONTROL_COLORINFO_PRESENT) ||
-       color.NominalRange!=DXVA2_NominalRange_16_235 || color.VideoTransferMatrix!=DXVA2_VideoTransferMatrix_BT709 ||
-       color.VideoPrimaries!=DXVA2_VideoPrimaries_BT709 || color.VideoTransferFunction!=DXVA2_VideoTransFunc_709)
-        throw std::runtime_error("negotiated output does not describe limited BT709 SDR");
+       color.NominalRange!=DXVA2_NominalRange_16_235 || color.VideoTransferMatrix!=(hdr_transfer?MFVideoTransferMatrix_BT2020_10:DXVA2_VideoTransferMatrix_BT709) ||
+       color.VideoPrimaries!=(hdr_transfer?MFVideoPrimaries_BT2020:DXVA2_VideoPrimaries_BT709) || color.VideoTransferFunction!=(hdr_transfer?hdr_transfer:DXVA2_VideoTransFunc_709))
+        throw std::runtime_error("negotiated output does not preserve expected color metadata");
     if(color_fixture) {
         DWORD tail=0;
         if(negotiated.cbFormat!=sizeof(VIDEOINFOHEADER2)+sizeof(DWORD))throw std::runtime_error("format tail size changed");
@@ -707,7 +732,7 @@ void check_color_rejection(IClassFactory* factory,ID3D11Device* device,ID3D11Dev
         if(incompatible==0)color.NominalRange=DXVA2_NominalRange_0_255;
         if(incompatible==1)color.VideoTransferMatrix=DXVA2_VideoTransferMatrix_BT601;
         if(incompatible==2)color.VideoPrimaries=DXVA2_VideoPrimaries_SMPTE170M;
-        if(incompatible==3)color.VideoTransferFunction=16; // PQ ST2084 modern DXVA extension.
+        if(incompatible==3)color.VideoTransferFunction=MFVideoTransFunc_2084; // PQ with incompatible BT709 primaries must be rejected.
         header->dwControlFlags=color.value|AMCONTROL_COLORINFO_PRESENT;
         check(graph->ConnectDirect(&source->pin(),input.Get(),&media),"color connect");
         ComPtr<nvof::transport::DecoderConfiguration> native;check(input.As(&native),"color native contract");
@@ -716,9 +741,32 @@ void check_color_rejection(IClassFactory* factory,ID3D11Device* device,ID3D11Dev
     }
     std::cout<<"explicit full-range/601/primaries/PQ color rejection=OK\n";
 }
+void check_hdr_storage() {
+    HRESULT hr=S_OK;auto* raw=new nvof::transport::SurfaceAllocator(&hr,true);check(hr,"metadata allocator");
+    ComPtr<IMemAllocator> allocator;check(raw->QueryInterface(IID_PPV_ARGS(&allocator)),"metadata allocator QI");
+    ALLOCATOR_PROPERTIES requested{1,1024,1,0},actual{};check(allocator->SetProperties(&requested,&actual),"metadata pool");check(allocator->Commit(),"metadata commit");
+    ComPtr<IMediaSample> sample;check(allocator->GetBuffer(&sample,nullptr,nullptr,0),"metadata sample");
+    ComPtr<nvof::MediaSideData> side;check(sample.As(&side),"metadata QI");
+    BYTE mastering[80]{};mastering[0]=41;unsigned light[2]={1000,400};
+    check(side->SetSideData(nvof::hdr_mastering_id,mastering,80),"metadata set");
+    const BYTE* retained=nullptr;size_t size=0;check(side->GetSideData(nvof::hdr_mastering_id,&retained,&size),"metadata get");
+    auto snapshot=nvof::capture_hdr(sample.Get());mastering[0]=72;
+    check(side->SetSideData(nvof::hdr_mastering_id,mastering,80),"metadata replace");
+    check(side->SetSideData(nvof::hdr_light_id,reinterpret_cast<BYTE*>(light),8),"metadata light");
+    if(size!=80 || retained[0]!=41 || snapshot->data[0][0]!=41 || nvof::capture_hdr(sample.Get())->data[0][0]!=72)throw std::runtime_error("HDR snapshot/pointer lifetime failure");
+    if(side->SetSideData(nvof::hdr_mastering_id,mastering,79)!=E_INVALIDARG || side->SetSideData(nvof::hdr_mastering_id,nullptr,80)!=E_POINTER)throw std::runtime_error("Malformed HDR accepted");
+    side.Reset();sample.Reset();check(allocator->GetBuffer(&sample,nullptr,nullptr,0),"recycled metadata sample");
+    if(nvof::capture_hdr(sample.Get()))throw std::runtime_error("Recycled sample leaked previous HDR metadata");
+    if(snapshot->data[0][0]!=41)throw std::runtime_error("Released source corrupted HDR snapshot");
+    sample.Reset();allocator->Decommit();std::cout<<"HDR metadata deepcopy/pointer lifetime/pool reuse/invalid size=OK\n";
+}
 int wmain(int argc,wchar_t** argv) {
     if(argc<2){std::cerr<<"usage: directshow_gpu_smoke <NativeD3D11=1 filter.ax>\n";return 2;}
+    check_hdr_storage();
     p010_fixture=(argc>9 && wcscmp(argv[9],L"p010")==0) || (argc>2 && (wcscmp(argv[2],L"--p010-input")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0));
+    p010_media=argc>9 && wcscmp(argv[9],L"p010-media")==0;
+    if(argc>9 && (wcscmp(argv[9],L"hdr10")==0 || wcscmp(argv[9],L"hlg")==0)) {p010_media=true;hdr_transfer=wcscmp(argv[9],L"hdr10")==0?MFVideoTransFunc_2084:MFVideoTransFunc_HLG;}
+    if(p010_media)p010_fixture=true;
     require_services=argc>2 && wcscmp(argv[2],L"--probe-services")==0;
     check(CoInitializeEx(nullptr,COINIT_MULTITHREADED),"CoInitialize");
     HMODULE module=LoadLibraryExW(argv[1],nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);

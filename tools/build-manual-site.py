@@ -34,10 +34,12 @@ def main():
     shutil.copytree(ROOT / "docs" / "manual", output, dirs_exist_ok=True)
     shutil.copytree(ROOT / "licenses", output / "licenses")
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", output)
+    shutil.copy2(ROOT / "docs" / "HDR-NATIVE-TRIAL.md", output)
     html_path = output / "index.html"
     html = html_path.read_text(encoding="utf-8")
     html = html.replace('href="../../THIRD_PARTY_NOTICES.md"', 'href="THIRD_PARTY_NOTICES.md"')
     html = html.replace('href="../../licenses/', 'href="licenses/')
+    html = html.replace('href="../HDR-NATIVE-TRIAL.md"', 'href="HDR-NATIVE-TRIAL.md"')
     html_path.write_text(html, encoding="utf-8")
     (output / ".nojekyll").touch()
     links = Links()

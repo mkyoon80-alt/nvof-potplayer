@@ -6,11 +6,12 @@
 #include <utility>
 namespace nvof {
 namespace {
+DXGI_FORMAT format(const GpuFrame& f) {D3D11_TEXTURE2D_DESC d{};f.texture->GetDesc(&d);return d.Format;}
 void validate(const GpuFrame& f) {
     if (!f.texture || f.width < 2 || f.height < 2 || f.width > 8192 || f.height > 8192 || (f.width & 1) || (f.height & 1) || f.pts < 0)
         throw std::invalid_argument("Expected a nonnegative, even-sized GPU NV12 frame");
     D3D11_TEXTURE2D_DESC desc{}; f.texture->GetDesc(&desc);
-    if (desc.Format != DXGI_FORMAT_NV12 || UINT(f.width) > desc.Width || UINT(f.height) > desc.Height || f.array_slice >= desc.ArraySize)
+    if ((desc.Format != DXGI_FORMAT_NV12 && desc.Format != DXGI_FORMAT_P010) || UINT(f.width) > desc.Width || UINT(f.height) > desc.Height || f.array_slice >= desc.ArraySize)
         throw std::invalid_argument("GPU texture description does not match frame");
 }
 }
@@ -39,7 +40,7 @@ bool GpuHybridPipeline::deliver(GpuFrame frame, bool discontinuity, const GpuEmi
 }
 void GpuHybridPipeline::push(GpuFrame frame, bool discontinuity, const GpuEmit& emit) {
     validate(frame);
-    if (previous_ && (frame.width != previous_->width || frame.height != previous_->height || frame.pts <= previous_->pts || frame.pts - previous_->pts > 10000000LL)) discontinuity = true;
+    if (previous_ && (format(frame)!=format(*previous_) || frame.width != previous_->width || frame.height != previous_->height || frame.pts <= previous_->pts || frame.pts - previous_->pts > 10000000LL)) discontinuity = true;
     if (discontinuity) reset();
     if (!previous_) {
         origin_ = frame.pts; previous_ = std::move(frame);

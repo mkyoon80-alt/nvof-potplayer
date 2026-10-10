@@ -1,3 +1,4 @@
+#include "nvof/video_format.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -49,7 +50,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.3.2-rate.3";
+constexpr char kFilterBuild[]="0.4.0";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -179,15 +180,19 @@ struct Layout {
     long size = 0;
     REFERENCE_TIME duration = 0;
     bool native_color_supported = true;
+    bool ten_bit = false;
+    unsigned hdr_transfer = 0;
 };
 
 bool parse_layout(const CMediaType& media, Layout& layout) noexcept {
-    if (media.majortype != MEDIATYPE_Video || media.subtype != MEDIASUBTYPE_NV12)
+    if (media.majortype != MEDIATYPE_Video || (media.subtype != MEDIASUBTYPE_NV12 && media.subtype != nvof::p010_subtype))
         return false;
+    const bool ten_bit=media.subtype==nvof::p010_subtype;
     const BITMAPINFOHEADER* bitmap = nullptr;
     size_t bitmap_offset=0;
     RECT source{};
     bool native_color_supported = true;
+    unsigned hdr_transfer=0;
     REFERENCE_TIME duration = 0;
     if (media.formattype == FORMAT_VideoInfo && media.cbFormat >= sizeof(VIDEOINFOHEADER)) {
         const auto* video = reinterpret_cast<const VIDEOINFOHEADER*>(media.pbFormat);
@@ -205,6 +210,13 @@ bool parse_layout(const CMediaType& media, Layout& layout) noexcept {
                 (color.VideoTransferMatrix==DXVA2_VideoTransferMatrix_Unknown || color.VideoTransferMatrix==DXVA2_VideoTransferMatrix_BT709) &&
                 (color.VideoPrimaries==DXVA2_VideoPrimaries_Unknown || color.VideoPrimaries==DXVA2_VideoPrimaries_BT709) &&
                 (color.VideoTransferFunction==DXVA2_VideoTransFunc_Unknown || color.VideoTransferFunction==DXVA2_VideoTransFunc_709);
+            // MF enum extensions are also carried in DirectShow DXVA color bits.
+            // Windows mfobjects.h: PQ=15, HLG=16, BT2020 primaries=9/matrix=4.
+            if(color.VideoTransferFunction==MFVideoTransFunc_2084 || color.VideoTransferFunction==MFVideoTransFunc_HLG) {
+                hdr_transfer=color.VideoTransferFunction;
+                native_color_supported=(color.NominalRange==DXVA2_NominalRange_Unknown || color.NominalRange==DXVA2_NominalRange_16_235) &&
+                    color.VideoPrimaries==MFVideoPrimaries_BT2020 && color.VideoTransferMatrix==MFVideoTransferMatrix_BT2020_10;
+            }
         }
         bitmap = &video->bmiHeader;
         bitmap_offset=offsetof(VIDEOINFOHEADER2,bmiHeader);
@@ -213,8 +225,8 @@ bool parse_layout(const CMediaType& media, Layout& layout) noexcept {
     } else return false;
     if (bitmap->biSize < sizeof(BITMAPINFOHEADER) || bitmap->biSize>media.cbFormat-bitmap_offset || bitmap->biWidth <= 0 ||
         bitmap->biHeight == std::numeric_limits<LONG>::min() ||
-        bitmap->biCompression != MAKEFOURCC('N', 'V', '1', '2') ||
-        bitmap->biPlanes != 1 || bitmap->biBitCount != 12) return false;
+        bitmap->biCompression != (ten_bit?MAKEFOURCC('P','0','1','0'):MAKEFOURCC('N','V','1','2')) ||
+        bitmap->biPlanes != 1 || bitmap->biBitCount != (ten_bit?24:12)) return false;
     const int storage_height = std::abs(bitmap->biHeight);
     if (storage_height <= 0 || storage_height > 8192 || bitmap->biWidth > 32768)
         return false;
@@ -230,7 +242,7 @@ bool parse_layout(const CMediaType& media, Layout& layout) noexcept {
         height = source.bottom;
     }
     if (width <= 0 || width > 8192 || (width & 1) || (height & 1)) return false;
-    int pitch = bitmap->biWidth;
+    int pitch = bitmap->biWidth*(ten_bit?2:1);
     const int64_t rows = int64_t(storage_height) * 3 / 2;
     if (bitmap->biSizeImage) {
         if (bitmap->biSizeImage < rows * pitch) return false;
@@ -245,7 +257,7 @@ bool parse_layout(const CMediaType& media, Layout& layout) noexcept {
     if ((pitch & 1) || pitch < width) return false;
     const int64_t size = rows * pitch;
     if (size > std::numeric_limits<long>::max()) return false;
-    layout = {width, height, pitch, static_cast<long>(size), duration, native_color_supported};
+    layout = {width, height, pitch, static_cast<long>(size), duration, native_color_supported, ten_bit, hdr_transfer};
     return true;
 }
 
@@ -534,7 +546,7 @@ public:
         if(!native_feature_enabled_)return E_NOINTERFACE;
         if(m_State!=State_Stopped)return VFW_E_NOT_STOPPED;
         if(!input_.native_color_supported) {
-            write_log("native activation rejected: only limited-range BT.709 SDR is supported");
+            write_log("native activation rejected: unsupported native color metadata (expected limited BT.709 SDR or BT.2020 PQ/HLG)");
             return VFW_E_TYPE_NOT_ACCEPTED;
         }
         auto renderer=native_renderer();
@@ -701,14 +713,14 @@ public:
     HRESULT CheckInputType(const CMediaType* type) override {
         if (!type) return E_POINTER;
         Layout layout;
-        return parse_layout(*type, layout) ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
+        return parse_layout(*type, layout) && (!(layout.ten_bit || layout.hdr_transfer) || native_feature_enabled_) ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
     }
 
     HRESULT CheckTransform(const CMediaType* input, const CMediaType* output) override {
         if (!input || !output) return E_POINTER;
         Layout in, out;
         if (!parse_layout(*input, in) || !parse_layout(*output, out) ||
-            in.width != out.width || in.height != out.height)
+            in.width != out.width || in.height != out.height || (in.ten_bit && !out.ten_bit) || (!native_feature_enabled_ && in.ten_bit!=out.ten_bit))
             return VFW_E_TYPE_NOT_ACCEPTED;
         if(native_feature_enabled_) {
             if(output->formattype!=FORMAT_VideoInfo2)return VFW_E_TYPE_NOT_ACCEPTED;
@@ -770,10 +782,10 @@ public:
         *destination = {0, 0, 0, 0};
         bitmap->biWidth = input_.width;
         bitmap->biHeight = input_.height;
-        bitmap->biSizeImage = static_cast<DWORD>(int64_t(input_.width) * input_.height * 3 / 2);
-        bitmap->biBitCount = 12;
+        bitmap->biSizeImage = static_cast<DWORD>(int64_t(input_.width) * input_.height * 3 / (input_.ten_bit?1:2));
+        bitmap->biBitCount = input_.ten_bit?24:12;
         bitmap->biPlanes = 1;
-        bitmap->biCompression = MAKEFOURCC('N', 'V', '1', '2');
+        bitmap->biCompression = input_.ten_bit?MAKEFOURCC('P','0','1','0'):MAKEFOURCC('N','V','1','2');
         *bit_rate = 0;
         media->SetSampleSize(bitmap->biSizeImage);
         media->SetTemporalCompression(FALSE);
@@ -784,7 +796,9 @@ public:
         if (!allocator || !properties) return E_POINTER;
         if (!output_.size) return VFW_E_NOT_CONNECTED;
         properties->cBuffers = (std::max)(properties->cBuffers, 4L);
-        properties->cbBuffer = (std::max)(properties->cbBuffer, output_.size);
+        // A decoder may advertise NV12 while exposing P010 native surfaces.
+        const long capacity=native_feature_enabled_?(std::max)(output_.size,long(output_.width*output_.height*3)):output_.size;
+        properties->cbBuffer = (std::max)(properties->cbBuffer, capacity);
         properties->cbAlign = (std::max)(properties->cbAlign, 1L);
         properties->cbPrefix = (std::max)(properties->cbPrefix, 0L);
         ALLOCATOR_PROPERTIES actual{};
@@ -819,7 +833,7 @@ public:
         engine_active_ = false;
         reset_history();
         write_status(interpolation_requested()?"waiting":"bypass",interpolation_requested()?"Waiting for the next adjacent frame":bypass_message());
-        write_log("stream start: NV12 " + std::to_string(input_.width) + "x" +
+        write_log(std::string("stream start: ")+(input_.ten_bit?"P010 ":"NV12 ") + std::to_string(input_.width) + "x" +
             std::to_string(input_.height) + " target=" + std::to_string(target_.num) +
             "/" + std::to_string(target_.den) + " inputRateGroup="+input_rate_group()+
             " InputRateMask="+std::to_string(input_rate_mask_)+" DoubleRate="+std::to_string(nvof::output_multiple(input_.duration,output_limit_)==2)+" bypassReason="+bypass_reason());
@@ -910,7 +924,7 @@ public:
                 const auto* media = reinterpret_cast<const CMediaType*>(properties->pMediaType);
                 Layout incoming;
                 if (!media || !parse_layout(*media, incoming) ||
-                    incoming.width != output_.width || incoming.height != output_.height ||
+                    incoming.width != output_.width || incoming.height != output_.height || incoming.ten_bit!=input_.ten_bit ||
                     !connected_output_color_matches(*media) ||
                     rate_selected(incoming.duration)!=input_rate_selected_ ||
                     interpolate_source(incoming.duration)!=interpolation_requested() ||
@@ -955,6 +969,7 @@ public:
                 last_pts_=start;
                 return receive_gpu(sample,start,end,discontinuity);
             }
+            if(input_.ten_bit || input_.hdr_transfer)return report_error("P010 requires native D3D11 decoder and renderer transport",VFW_E_TYPE_NOT_ACCEPTED);
             if (interpolation_requested()) ensure_pipeline();
             BYTE* data = nullptr;
             HRESULT hr = sample->GetPointer(&data);
@@ -1013,15 +1028,38 @@ public:
     }
 
 private:
+    HRESULT ensure_native_output_format(bool tenBit) {
+        if(output_.ten_bit==tenBit)return S_OK;
+        // Establish the true decoder storage before the first delivered frame.
+        // Do not silently downgrade 10-bit pixels or retag an active stream.
+        if(output_frames_!=0)return report_error("Native bit depth changed; reopen the video",VFW_E_TYPE_NOT_ACCEPTED);
+        CMediaType proposed=m_pOutput->CurrentMediaType();
+        if(proposed.formattype!=FORMAT_VideoInfo2)return VFW_E_TYPE_NOT_ACCEPTED;
+        auto* h=reinterpret_cast<VIDEOINFOHEADER2*>(proposed.pbFormat);
+        proposed.SetSubtype(tenBit?&nvof::p010_subtype:&MEDIASUBTYPE_NV12);
+        h->bmiHeader.biBitCount=tenBit?24:12;
+        h->bmiHeader.biCompression=tenBit?MAKEFOURCC('P','0','1','0'):MAKEFOURCC('N','V','1','2');
+        h->bmiHeader.biWidth=output_.width;h->bmiHeader.biHeight=output_.height;
+        h->bmiHeader.biSizeImage=output_.width*output_.height*3/(tenBit?1:2);
+        proposed.SetSampleSize(h->bmiHeader.biSizeImage);
+        Microsoft::WRL::ComPtr<IPin> receiver;
+        HRESULT hr=m_pOutput->ConnectedTo(&receiver);if(FAILED(hr))return hr;
+        if(receiver->QueryAccept(&proposed)!=S_OK)return report_error("Renderer rejected native video bit depth",VFW_E_TYPE_NOT_ACCEPTED);
+        hr=m_pOutput->SetMediaType(&proposed);if(FAILED(hr))return hr;
+        pending_gpu_media_type_=true;return S_OK;
+    }
     HRESULT receive_gpu(IMediaSample* sample,int64_t start,int64_t stop,bool discontinuity) {
         auto input=nvof::extract_gpu_frame(sample,input_.width,input_.height,start,input_.native_color_supported);
         D3D11_TEXTURE2D_DESC surface{};input.texture->GetDesc(&surface);
         const bool p010=surface.Format==DXGI_FORMAT_P010;
+        if(input_.hdr_transfer && !p010)return report_error("Native HDR requires a 10-bit P010 decoder surface",VFW_E_TYPE_NOT_ACCEPTED);
+        if(input_.hdr_transfer)input.hdr=nvof::capture_hdr(sample);
+        const HRESULT agreed=ensure_native_output_format(p010);if(FAILED(agreed))return agreed;
         const std::string format=p010?"P010":"NV12";
         if(input_surface_format_!=format) {
             input_surface_format_=format;
-            input_conversion_=p010?"p010-to-nv12-gpu":"none";
-            write_log("GPU input surface="+format+" output=NV12 conversion="+input_conversion_);
+            input_conversion_="none";
+            write_log("GPU input surface="+format+" output="+format+" conversion="+input_conversion_);
         }
         if(!gpu_engine_)gpu_engine_=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",
             native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_,nvof::GpuInterpolationBackend::native_experimental);
@@ -1056,7 +1094,8 @@ private:
         if(!surface)return report_error("renderer did not accept the native GPU allocator",E_UNEXPECTED);
         surface->assign(output.frame);
         sample->SetTime(&start,&stop);
-        sample->SetActualDataLength(output_.width*output_.height*3/2);
+        result=sample->SetMediaType(pending_gpu_media_type_?&m_pOutput->CurrentMediaType():nullptr);if(FAILED(result))return result;
+        sample->SetActualDataLength(output_.width*output_.height*3/(output_.ten_bit?1:2));
         sample->SetMediaTime(nullptr,nullptr);
         sample->SetSyncPoint(TRUE);
         sample->SetDiscontinuity(output.discontinuity);
@@ -1064,6 +1103,7 @@ private:
         if(cancelled_.load(std::memory_order_acquire))return S_FALSE;
         result=m_pOutput->Deliver(sample.get());
         if(result==S_OK) {
+            pending_gpu_media_type_=false;
             gpu_delivery_verified_=true;
             ++output_frames_;
             write_status(!interpolation_requested()?"bypass":engine_active_?"active":"waiting",
@@ -1249,6 +1289,8 @@ private:
                     << ",\"sampleTransport\":" << json_string(sample_transport_)
                     << ",\"inputSurfaceFormat\":" << json_string(input_surface_format_)
                     << ",\"inputConversion\":" << json_string(input_conversion_)
+                    << ",\"outputSurfaceFormat\":" << json_string(gpu_delivery_verified_?(output_.ten_bit?"P010":"NV12"):"")
+                    << ",\"colorMode\":" << json_string(gpu_delivery_verified_?(input_.hdr_transfer==MFVideoTransFunc_2084?"HDR10":input_.hdr_transfer==MFVideoTransFunc_HLG?"HLG":"SDR"):"")
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
                     << ",\"doubleRate\":" << (nvof::output_multiple(input_.duration,output_limit_)==2?"true":"false")
                     << ",\"outputFpsLimit\":" << output_limit_
@@ -1280,7 +1322,7 @@ private:
                     << ",\"qualityState\":" << json_string(quality_state_)
                     << ",\"buildVersion\":" << json_string(kFilterBuild)
                     << ",\"gpuCompletion\":" << json_string(gpu_engine_&&gpu_engine_->queued_completion()?"context-ordered":"blocking")
-                    << ",\"algorithm\":" << json_string(native_synthesis_?"integer-native-newton-0.3.2-rate.3":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
+                    << ",\"algorithm\":" << json_string(native_synthesis_?"integer-native-newton-0.4.0":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
                     << ",\"message\":" << json_string(message) << "}\n";
                 stream.flush();
                 if (!stream) return;
@@ -1299,6 +1341,7 @@ private:
     bool native_gpu_active_=false;
     bool gpu_delivery_verified_=false;
     bool native_pending_=false;
+    bool pending_gpu_media_type_=false;
     UINT native_flags_=0;
     Microsoft::WRL::ComPtr<ID3D11Device> native_device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> native_context_;
@@ -1416,10 +1459,10 @@ public:
     }
 };
 
-const AMOVIESETUP_MEDIATYPE pin_types[] = {{&MEDIATYPE_Video, &MEDIASUBTYPE_NV12}};
+const AMOVIESETUP_MEDIATYPE pin_types[] = {{&MEDIATYPE_Video, &MEDIASUBTYPE_NV12},{&MEDIATYPE_Video,&nvof::p010_subtype}};
 const AMOVIESETUP_PIN pins[] = {
-    {L"Input", FALSE, FALSE, FALSE, FALSE, &CLSID_NULL, nullptr, 1, pin_types},
-    {L"Output", FALSE, TRUE, FALSE, FALSE, &CLSID_NULL, nullptr, 1, pin_types},
+    {L"Input", FALSE, FALSE, FALSE, FALSE, &CLSID_NULL, nullptr, 2, pin_types},
+    {L"Output", FALSE, TRUE, FALSE, FALSE, &CLSID_NULL, nullptr, 2, pin_types},
 };
 const AMOVIESETUP_FILTER registration = {
     &CLSID_NvofPotPlayer, L"NVIDIA Optical Flow for PotPlayer", MERIT_DO_NOT_USE, 2, pins

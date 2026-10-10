@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include "phase_quality.hpp"
+#include "hdr_metadata.hpp"
 #include "motion_synthesizer.hpp"
 #include <vector>
 #include <filesystem>
@@ -16,11 +17,12 @@ struct GpuFrame {
     int height = 0;
     int64_t pts = 0;
     std::shared_ptr<void> lease; // Keeps a pooled surface reserved until every owner releases it.
+    std::shared_ptr<const HdrMetadata> hdr; // Immutable per-frame snapshot, never global history.
 };
 enum class GpuCompletionMode { blocking, context_ordered };
 // Native synthesis is the only playback backend. The old enum value is rejected.
 enum class GpuInterpolationBackend { fruc, native_experimental };
-// 8-bit NV12 GPU-only image path. Native Y/UV processing preserves stored
+// NV12/P010 GPU-only image path. Native Y/UV processing preserves stored
 // channel values; the caller remains responsible for supported color metadata.
 // Input textures must remain unchanged until
 // the method returns. For decoder arrays, retain IMediaSample through copy().
@@ -44,14 +46,14 @@ public:
     ~GpuFrucEngine();
     GpuFrucEngine(const GpuFrucEngine&) = delete;
     GpuFrucEngine& operator=(const GpuFrucEngine&) = delete;
-    // Also accepts P010 SDR and rounds its Y/UV code values to owned 8-bit NV12.
+    // Preserves NV12 or P010 in owned snapshots (P010 low six bits are cleared).
     // P010 selects conservative GPU completion for the engine lifetime.
-    // This is bit-depth conversion, not HDR tone mapping. Other methods require NV12.
+    // No range, transfer-function, gamut conversion or tone mapping is performed.
     GpuFrame copy(const GpuFrame& input);
     GpuFrame midpoint(const GpuFrame& previous, const GpuFrame& current);
     PhaseBatch<GpuFrame> interpolate_pair(const GpuFrame& previous, const GpuFrame& current, const std::vector<int64_t>& timestamps);
     // GPU target-rate resampling on native Y/UV planes, with CPU-equivalent
-    // fixed-point per-byte rounding, between immutable NV12 snapshots.
+    // code-value rounding, between immutable NV12/P010 snapshots.
     GpuFrame blend(const GpuFrame& previous, const GpuFrame& current, int64_t pts);
     void reset() noexcept;
     std::string device_name() const;

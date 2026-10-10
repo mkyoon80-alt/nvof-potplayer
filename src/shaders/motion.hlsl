@@ -19,14 +19,20 @@ cbuffer Parameters:register(b0) {
     float4 size; // original width/height, analysis width/height
     float4 mode; // flow grid, UV plane, downsample source index, interpolation fraction
 };
+cbuffer PixelFormat:register(b1) {uint tenBit;uint3 formatPadding;};
+float codeScale() {return tenBit!=0?65535.0/65280.0:1.0;}
+float4 storeColor(float2 value) {
+    if(tenBit!=0)value=clamp(round(value*1020.0),0.0,1023.0)*64.0/65535.0;
+    return float4(value,0,1);
+}
 float4 vs(uint v:SV_VertexID):SV_Position {
     return float4(v==0?float2(-1,-1):(v==1?float2(-1,3):float2(3,-1)),0,1);
 }
 float yAt(float2 p,bool next) {
-    return next?by.SampleLevel(linearClamp,p/size.xy,0):ay.SampleLevel(linearClamp,p/size.xy,0);
+    return (next?by.SampleLevel(linearClamp,p/size.xy,0):ay.SampleLevel(linearClamp,p/size.xy,0))*codeScale();
 }
 float2 uvAt(float2 p,bool next) {
-    return next?buv.SampleLevel(linearClamp,p/size.xy,0):auv.SampleLevel(linearClamp,p/size.xy,0);
+    return (next?buv.SampleLevel(linearClamp,p/size.xy,0):auv.SampleLevel(linearClamp,p/size.xy,0))*codeScale();
 }
 float2 color(float2 p,bool next) {return mode.y!=0?uvAt(p,next):float2(yAt(p,next),0);}
 bool inside(float2 p) {return all(p>=0.5)&&all(p<=size.xy-0.5);}
@@ -265,6 +271,7 @@ float4 downsample(float4 screen:SV_Position):SV_Target {
     float2 footprint=size.xy/size.zw*(mode.y!=0?2.0:1.0);
     float2 d=0.25*footprint;
     bool next=mode.z!=0;
+    if(all(size.xy==size.zw))return float4(color(p,next),0,1);
     return float4(0.25*(color(p-d,next)+color(p+d,next)+
         color(p+float2(d.x,-d.y),next)+color(p+float2(-d.x,d.y),next)),0,1);
 }
@@ -875,7 +882,7 @@ bool glyphGroupColor(float2 p,out float2 value) {
 float4 midpoint(float4 screen:SV_Position):SV_Target {
     float2 p=screen.xy*(mode.y!=0?2.0:1.0);
     float2 groupColor;
-    if(glyphGroupColor(p,groupColor))return float4(groupColor,0,1);
+    if(glyphGroupColor(p,groupColor))return storeColor(groupColor);
     float2 q=p*size.zw/size.xy-0.5;
     int2 cell=int2(floor(q)),hi=int2(size.zw)-1;
     float2 f=frac(q);
@@ -893,8 +900,8 @@ float4 midpoint(float4 screen:SV_Position):SV_Target {
     if(discontinuity>2.0&&any(f>0.001)) {
         float2 ca=mappedColor(p,oa,wa),cb=mappedColor(p,ob,wb);
         float2 cc=mappedColor(p,oc,wc),cd=mappedColor(p,od,wd);
-        return float4(lerp(lerp(ca,cb,f.x),lerp(cc,cd,f.x),f.y),0,1);
+        return storeColor(lerp(lerp(ca,cb,f.x),lerp(cc,cd,f.x),f.y));
     }
-    return float4(mappedColor(p,lerp(lerp(oa,ob,f.x),lerp(oc,od,f.x),f.y),
-        lerp(lerp(wa,wb,f.x),lerp(wc,wd,f.x),f.y)),0,1);
+    return storeColor(mappedColor(p,lerp(lerp(oa,ob,f.x),lerp(oc,od,f.x),f.y),
+        lerp(lerp(wa,wb,f.x),lerp(wc,wd,f.x),f.y)));
 }

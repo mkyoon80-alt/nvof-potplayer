@@ -43,6 +43,7 @@ def main():
     source = f"https://github.com/mkyoon80-alt/nvof-potplayer/blob/v{args.version}/"
     html = html.replace('href="THIRD_PARTY_NOTICES.md"', f'href="{source}THIRD_PARTY_NOTICES.md"')
     html = html.replace('href="licenses/', f'href="{source}licenses/')
+    html = html.replace('href="HDR-NATIVE-TRIAL.md"', f'href="{source}docs/HDR-NATIVE-TRIAL.md"')
     standalone.write_text(html, encoding="utf-8")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
         for file in sorted(site.rglob("*")):

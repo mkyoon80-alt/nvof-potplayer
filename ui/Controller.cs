@@ -63,6 +63,7 @@ namespace NvofControl
         public long OutputFrames;
         public string Message = "";
         public string Transport = "";
+        public string InputFormat="", OutputFormat="", ColorMode="";
         public string BypassReason = "";
         public bool InputRateSelected = true;
         public int InputRateMask = 63;
@@ -124,6 +125,9 @@ namespace NvofControl
                 status.OutputFrames = Value<long>(data, "outputFrames", 0);
                 status.Message = Value<string>(data, "message", "");
                 status.Transport = Value<string>(data, "transport", "");
+                status.InputFormat=Value<string>(data,"inputSurfaceFormat","");
+                status.OutputFormat=Value<string>(data,"outputSurfaceFormat","");
+                status.ColorMode=Value<string>(data,"colorMode","");
                 status.BypassReason = Value<string>(data, "bypassReason", "");
                 status.InputRateSelected = Value<bool>(data, "inputRateSelected", true);
                 status.InputRateMask = Value<int>(data, "inputRateMask", 63);
@@ -160,6 +164,7 @@ namespace NvofControl
         public bool UnknownPlayerElevation;
         public bool UserRegistered;
         public bool MachineRegistered;
+        public bool UserOwned, MachineOwned;
         public string PlayerDescription = "실행 중 아님";
         public string RegistrationReadError = "";
         [DllImport("kernel32.dll", SetLastError=true)]
@@ -230,17 +235,18 @@ namespace NvofControl
                     using (RegistryKey classes = root.OpenSubKey(@"Software\Classes"))
                     {
                         bool registered = classes != null && Matches(classes, FilterClsid, expected) && Matches(classes, PageClsid, expected);
-                        if (hive == RegistryHive.CurrentUser) info.UserRegistered = registered;
-                        else info.MachineRegistered = registered;
+                        bool owned = classes != null && (Matches(classes, FilterClsid, expected) || Matches(classes, PageClsid, expected));
+                        if (hive == RegistryHive.CurrentUser) { info.UserRegistered = registered; info.UserOwned=owned; }
+                        else { info.MachineRegistered = registered; info.MachineOwned=owned; }
                     }
                 }
                 catch (Exception ex) { info.RegistrationReadError = ex.Message; }
             }
             return info;
         }
-        public static ProcessStartInfo CreateStartInfo(string baseDirectory, bool machine)
+        public static ProcessStartInfo CreateStartInfo(string baseDirectory, bool machine, bool remove = false)
         {
-            ProcessStartInfo start = new ProcessStartInfo(Path.Combine(baseDirectory, "NvofRegister.exe"), machine ? "--register-machine" : "--register");
+            ProcessStartInfo start = new ProcessStartInfo(Path.Combine(baseDirectory, "NvofRegister.exe"), remove ? (machine ? "--unregister-machine" : "--unregister") : (machine ? "--register-machine" : "--register"));
             start.WorkingDirectory = baseDirectory;
             if (machine)
             {
@@ -270,14 +276,14 @@ namespace NvofControl
         private bool preview;
         private string diagnostics = "";
         private string lastActionError = "";
-        private ToggleButton enabled, gpuCorrection, appearanceProtection;
+        private ToggleButton enabled;
         private readonly CheckBox[] inputRates = new CheckBox[6];
         private TextBlock rateSelectionHint, outputRateHint;
         private RadioButton fps60, fps120;
         private TextBlock notice, statusTitle, statusDetail, registerNotice;
         private System.Windows.Shapes.Ellipse statusDot;
         private TextBox diagnosticsText;
-        private Button registerButton;
+        private Button registerButton, unregisterButton;
         private RegistrationInfo registration;
         private bool registering;
         private string registrationResult;
@@ -291,8 +297,6 @@ namespace NvofControl
             statusDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NvofPotPlayer");
             settings = new SettingsStore(Path.Combine(baseDirectory, "NvofPotPlayer.ini"));
             enabled = Find<ToggleButton>("EnabledToggle");
-            gpuCorrection = Find<ToggleButton>("GpuCorrectionToggle");
-            appearanceProtection = Find<ToggleButton>("AppearanceProtectionToggle");
             outputRateHint = Find<TextBlock>("OutputRateHint");
             fps60 = Find<RadioButton>("Fps60"); fps120 = Find<RadioButton>("Fps120");
             for (int index = 0; index < inputRates.Length; index++)
@@ -305,12 +309,13 @@ namespace NvofControl
             diagnosticsText = Find<TextBox>("DiagnosticsText");
             registerNotice = Find<TextBlock>("RegisterNotice");
             registerButton = Find<Button>("RegisterButton");
+            unregisterButton = Find<Button>("UnregisterButton");
+            unregisterButton.Click += delegate { UnregisterFilter(); };
+            ConfigurePackageUi(FindUninstaller(baseDirectory) != null);
             LoadSettings();
-            Find<FrameworkElement>("NativeEnhancementPanel").Visibility = settings.NativeSynthesis ? Visibility.Visible : Visibility.Collapsed;
-            Find<FrameworkElement>("LegacyEnhancementPanel").Visibility = settings.NativeSynthesis ? Visibility.Collapsed : Visibility.Visible;
             Find<Button>("InstallFolderButton").Click += delegate {
                 try { Process.Start(new ProcessStartInfo(baseDirectory) { UseShellExecute=true }); }
-                catch (Exception ex) { Notify("설치 폴더를 열지 못했습니다.", true, ex.Message); }
+                catch (Exception ex) { Notify("현재 폴더를 열지 못했습니다.", true, ex.Message); }
             };
             Find<Button>("UninstallButton").Click += delegate {
                 if (preview) return;
@@ -322,8 +327,6 @@ namespace NvofControl
             fps60.Checked += delegate { SaveOutputLimit(); };
             fps120.Checked += delegate { SaveOutputLimit(); };
             enabled.Click += delegate { SaveEnabled(); };
-            gpuCorrection.Click += delegate { SaveEnhancement(true); };
-            appearanceProtection.Click += delegate { SaveEnhancement(false); };
             foreach (CheckBox rate in inputRates) rate.Click += delegate { SaveInputRates(); };
             Find<Button>("CloseButton").Click += delegate { window.Close(); };
             Find<Button>("LaunchButton").Click += delegate { LaunchPlayer(); };
@@ -390,8 +393,6 @@ namespace NvofControl
         {
             loading = true;
             enabled.IsChecked = settings.Enabled;
-            gpuCorrection.IsChecked = settings.GpuCorrection;
-            appearanceProtection.IsChecked = settings.AppearanceProtection;
             fps120.IsChecked = settings.OutputFpsLimit == 120;
             fps60.IsChecked = !fps120.IsChecked;
             UpdateOutputHint();
@@ -405,17 +406,6 @@ namespace NvofControl
         {
             if (loading || preview) return;
             try { settings.SetEnabled(enabled.IsChecked == true); Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false); }
-            catch (Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
-        }
-        private void SaveEnhancement(bool gpu)
-        {
-            if (loading || preview) return;
-            try
-            {
-                if (gpu) settings.SetGpuCorrection(gpuCorrection.IsChecked == true);
-                else settings.SetAppearanceProtection(appearanceProtection.IsChecked == true);
-                Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false);
-            }
             catch (Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
         }
         private static string Choice(bool? value) { return value.HasValue ? (value.Value ? "켜짐" : "꺼짐") : "이전 필터 · 보고 없음"; }
@@ -547,7 +537,7 @@ namespace NvofControl
                 statusDetail.Text = "팟플레이어가 관리자 권한으로 실행 중입니다. 연결 설정에서 관리자용 필터를 등록하세요.";
             }
             StringBuilder text = new StringBuilder();
-            text.AppendLine("NVOF for PotPlayer 0.3.2-rate.3");
+            text.AppendLine("NVOF for PotPlayer 0.4.0");
             if (registration != null)
             {
                 text.AppendLine("팟플레이어 권한: " + registration.PlayerDescription);
@@ -563,9 +553,10 @@ namespace NvofControl
             for (int index = 0; index < inputRates.Length; index++)
                 if (inputRates[index].IsChecked == true) selectedLabels.Add(rateLabels[index]);
             text.AppendLine("보간할 원본 프레임: " + (selectedLabels.Count == 0 ? "선택 없음" : String.Join(", ", selectedLabels.ToArray()) + " fps"));
-            text.AppendLine("저장된 GPU 보정: " + Choice(gpuCorrection.IsChecked));
-            text.AppendLine("저장된 형태 변화 보호: " + Choice(appearanceProtection.IsChecked));
             text.AppendLine("영상 전달: " + status.TransportLabel);
+            if(!String.IsNullOrEmpty(status.InputFormat))text.AppendLine("입력 형식: "+status.InputFormat+(status.InputFormat=="P010"?" · 10bit":status.InputFormat=="NV12"?" · 8bit":""));
+            if(!String.IsNullOrEmpty(status.OutputFormat))text.AppendLine("출력 형식: "+status.OutputFormat+(status.OutputFormat=="P010"?" · 10bit":" · 8bit"));
+            if(!String.IsNullOrEmpty(status.ColorMode))text.AppendLine("영상 색 정보: "+status.ColorMode+" (디스플레이 HDR 활성화 여부와는 별개)");
             text.AppendLine("필터: " + (File.Exists(Path.Combine(baseDirectory, "NvofPotPlayer.ax")) ? "설치 파일 있음" : "설치 파일 없음"));
             text.AppendLine("상태: " + (status.Exists ? status.State : "아직 보고 없음"));
             if (status.Exists)
@@ -573,10 +564,6 @@ namespace NvofControl
                 text.AppendLine("프로세스: " + status.ProcessId + (status.ProcessAlive ? " (실행 중)" : " (종료됨)"));
                 text.AppendLine("FPS: " + Fps(status.InputFps) + " → " + Fps(status.OutputFps));
                 text.AppendLine("출력 프레임: " + status.OutputFrames);
-                text.AppendLine("현재 세션 GPU 보정 옵션: " + Choice(status.GpuCorrection));
-                text.AppendLine("현재 세션 형태 변화 보호 옵션: " + Choice(status.AppearanceProtection));
-                if (status.Transport == "d3d11-gpu") text.AppendLine("GPU 보정 / 형태 변화 보호 단계 실행 프레임: " + status.MidpointPassFrames + " / " + status.AppearancePassFrames + " (픽셀별 적용 여부와는 다름)");
-                else text.AppendLine("추가 보정은 GPU 직접 전달 경로에서만 동작합니다.");
                 text.AppendLine("재생에 적용된 원본 프레임 선택: " + status.InputRateMask);
                 text.AppendLine("재생에 적용된 출력 모드: " + (status.OutputFpsLimit > 0 ? "최대 " + status.OutputFpsLimit + " fps · ×" + status.OutputMultiple : status.DoubleRate ? "원본의 두 배 (×2)" : "이전 필터 · 보고 없음"));
                 if (!String.IsNullOrEmpty(status.BypassReason)) text.AppendLine("원본 재생 이유: " + (status.BypassReason == "source-rate" ? "원본 프레임 선택에서 제외" : status.BypassReason == "disabled" ? "보간 사용 꺼짐" : status.BypassReason == "at-or-above-target" ? "상한 내 정수배 없음" : status.BypassReason == "unknown-source-rate" ? "원본 FPS 확인 불가" : status.BypassReason == "output-rate-unsupported" ? "출력 FPS가 지원 범위 밖" : status.BypassReason));
@@ -594,6 +581,7 @@ namespace NvofControl
         {
             bool filesExist = File.Exists(Path.Combine(baseDirectory, "NvofRegister.exe")) && File.Exists(Path.Combine(baseDirectory, "NvofPotPlayer.ax"));
             registerButton.IsEnabled = filesExist && !registering;
+            unregisterButton.IsEnabled = filesExist && !registering && registration != null && (registration.UserOwned || registration.MachineOwned);
             registerButton.Content = registration != null && registration.ElevatedPlayer ? "관리자용 필터 등록" : "필터 등록";
             if (registering) return;
             registerNotice.Foreground = Color(registrationResultError ? "#A12D2D" : "#59635D");
@@ -608,6 +596,53 @@ namespace NvofControl
             else if (registration != null && registration.UserRegistered)
                 registerNotice.Text = "현재 사용자용 필터와 설정 창이 등록돼 있습니다. 필요하면 다시 등록할 수 있습니다.";
             else registerNotice.Text = "현재 Windows 사용자에게만 등록합니다.";
+        }
+        internal void ConfigurePackageUi(bool installed)
+        {
+            Find<Button>("UninstallButton").Visibility = installed ? Visibility.Visible : Visibility.Collapsed;
+            Find<TextBlock>("PackageHint").Text = installed
+                ? "제거 전 팟플레이어를 닫아 주세요. 관리자용 등록을 해제할 때는 Windows 승인이 필요합니다."
+                : "폴더를 옮기거나 삭제하기 전, 팟플레이어를 닫고 등록을 해제하세요. 옮긴 폴더에서는 다시 등록하면 됩니다.";
+        }
+        private async void UnregisterFilter()
+        {
+            if (preview || registering) return;
+            registration = RegistrationInfo.Read(baseDirectory);
+            if (registration.PlayerRunning) { Notify("팟플레이어를 완전히 종료한 뒤 등록을 해제하세요.", true); return; }
+            if (!String.IsNullOrEmpty(registration.RegistrationReadError)) { Notify("등록 상태를 확인하지 못했습니다. 진단 정보를 확인하세요.", true, registration.RegistrationReadError); return; }
+            bool machine=registration.MachineOwned, user=registration.UserOwned;
+            registering=true; registrationResult=null; registrationResultError=false;
+            RefreshRegistrationNotice();
+            registerNotice.Text=machine ? "관리자용 등록 해제를 위해 Windows 승인을 요청합니다…" : "필터 등록을 해제하는 중입니다…";
+            try
+            {
+                await Task.Run(delegate {
+                    // Remove the machine entry first: cancellation leaves the user's registration intact.
+                    foreach (bool elevated in new[] { true, false })
+                    {
+                        if (elevated ? !machine : !user) continue;
+                        using (Process process=Process.Start(RegistrationInfo.CreateStartInfo(baseDirectory,elevated,true)))
+                        {
+                            if(process==null)throw new IOException("등록 해제 도구를 시작하지 못했습니다.");
+                            Task<string> output=elevated?null:process.StandardOutput.ReadToEndAsync();
+                            Task<string> error=elevated?null:process.StandardError.ReadToEndAsync();
+                            if(!process.WaitForExit(30000))throw new TimeoutException("해제 작업이 아직 끝나지 않았습니다. 폴더를 이동하거나 삭제하지 마세요.");
+                            if(!elevated)Task.WaitAll(output,error);
+                            if(process.ExitCode!=0)throw new IOException("등록 해제 도구 종료 코드: "+process.ExitCode+(elevated?"":" · "+error.Result));
+                        }
+                    }
+                    RegistrationInfo verified=RegistrationInfo.Read(baseDirectory);
+                    if(verified.UserOwned || verified.MachineOwned || !String.IsNullOrEmpty(verified.RegistrationReadError))
+                        throw new IOException("등록 해제 결과를 확인하지 못했습니다. 폴더를 그대로 두고 진단 정보를 확인하세요.");
+                });
+                registrationResult="이 폴더의 필터 등록을 해제했습니다. 설정 창을 닫은 뒤 폴더를 이동하거나 삭제할 수 있습니다.";
+            }
+            catch (System.ComponentModel.Win32Exception ex) {
+                registrationResultError=true;
+                registrationResult=ex.NativeErrorCode==1223 ? "Windows 승인이 취소되어 등록을 해제하지 않았습니다." : "등록 해제 실패: "+ex.Message;
+            }
+            catch(Exception ex) { registrationResultError=true;registrationResult="등록 해제를 완료하지 못했습니다. "+ex.Message; }
+            finally { registering=false;RefreshStatus(); }
         }
         private async void RegisterFilter()
         {
@@ -738,8 +773,8 @@ namespace NvofControl
                     @"Preview fixture: Access to a deliberately long example path F:\ExampleFolder\AnotherLongExampleFolder\NvofPotPlayer\NvofPotPlayer.ini was denied. Additional diagnostic details remain available in the diagnostics tab.");
                 ShowStatus(fixture);
             }
+            if (state == "portable" || state == "installed") { ConfigurePackageUi(state=="installed"); registerNotice.Text="현재 폴더의 필터가 등록돼 있습니다."; unregisterButton.IsEnabled=true; Find<TabItem>("SetupTab").IsSelected=true; }
             if (state == "setup") Find<TabItem>("SetupTab").IsSelected = true;
-            if (state == "enhancements") Find<TabItem>("EnhancementsTab").IsSelected = true;
             if (state == "expanded" || state == "double-expanded") { Find<TabItem>("SetupTab").IsSelected = true; Find<TabItem>("DiagnosticsTab").IsSelected = true; }
         }
     }
@@ -915,12 +950,6 @@ namespace NvofControl
                 if (((TextBlock)testWindow.FindName("StatusTitle")).Text != "프레임 보간 꺼짐" || rate24.IsEnabled || rate60.IsEnabled || rate24.IsChecked != saved24 || rate60.IsChecked != saved60) throw new Exception("Master-off must disable source-rate controls without clearing their selection.");
                 ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked = true;
                 if (!rate24.IsEnabled || !rate60.IsEnabled) throw new Exception("Master-on must restore source-rate controls.");
-                ToggleButton gpuToggle=(ToggleButton)testWindow.FindName("GpuCorrectionToggle"), mouthToggle=(ToggleButton)testWindow.FindName("AppearanceProtectionToggle");
-                gpuToggle.IsChecked=false; mouthToggle.IsChecked=true;
-                ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=false;
-                if(gpuToggle.IsEnabled||mouthToggle.IsEnabled||gpuToggle.IsChecked!=false||mouthToggle.IsChecked!=true) throw new Exception("Master-off changed enhancement selection.");
-                ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=true;
-                if(!gpuToggle.IsEnabled||!mouthToggle.IsEnabled||gpuToggle.IsChecked!=false||mouthToggle.IsChecked!=true) throw new Exception("Independent enhancement selection lost.");
                 testController.PreviewState("double");
                 RadioButton cap60=(RadioButton)testWindow.FindName("Fps60"), cap120=(RadioButton)testWindow.FindName("Fps120");
                 cap120.IsChecked=true;
@@ -946,15 +975,11 @@ namespace NvofControl
                         if (bounds.Left < 0 || bounds.Right > width || bounds.Top < 0 || bounds.Bottom > footerTop) throw new Exception("Essential control clipped at " + width + ": " + controlName);
                     }
                 }
-                ((TabItem)testWindow.FindName("EnhancementsTab")).IsSelected=true;
-                FrameworkElement optionClient=(FrameworkElement)testWindow.Content;
-                optionClient.Measure(new Size(464,461)); optionClient.Arrange(new Rect(0,0,464,461)); optionClient.UpdateLayout();
-                double optionFooter=((TextBlock)testWindow.FindName("SaveNotice")).TransformToAncestor(optionClient).Transform(new Point(0,0)).Y-8;
-                foreach(string name in new[]{"GpuCorrectionToggle","AppearanceProtectionToggle","EnhancementHint"}) {
-                    FrameworkElement item=(FrameworkElement)testWindow.FindName(name);
-                    Rect b=item.TransformToAncestor(optionClient).TransformBounds(new Rect(0,0,item.ActualWidth,item.ActualHeight));
-                    if(b.Left<0||b.Right>464||b.Bottom>optionFooter)throw new Exception("Enhancement control clipped: "+name);
-                }
+                if(testWindow.FindName("EnhancementsTab")!=null || ((TabControl)testWindow.FindName("SettingsTabs")).Items.Count!=3)throw new Exception("Obsolete enhancements tab remains.");
+                testController.ConfigurePackageUi(false);
+                if(((Button)testWindow.FindName("UninstallButton")).Visibility!=Visibility.Collapsed)throw new Exception("Portable build exposes installer removal.");
+                testController.ConfigurePackageUi(true);
+                if(((Button)testWindow.FindName("UninstallButton")).Visibility!=Visibility.Visible)throw new Exception("Installed removal is hidden.");
                 ((TabItem)testWindow.FindName("InterpolationTab")).IsSelected=true;
                 System.Windows.Input.FocusManager.SetFocusedElement(testWindow, rate24);
                 if (!rate24.Focusable || !rate24.IsTabStop || !rate24.IsFocused) throw new Exception("Native checkbox logical focus is unavailable.");
@@ -969,6 +994,7 @@ namespace NvofControl
                 if (userRegistration.UseShellExecute || userRegistration.Arguments != "--register" || !String.IsNullOrEmpty(userRegistration.Verb)) throw new Exception("Per-user registration must not request elevation.");
                 ProcessStartInfo machineRegistration = RegistrationInfo.CreateStartInfo(folder, true);
                 if (!machineRegistration.UseShellExecute || machineRegistration.Verb != "runas" || machineRegistration.Arguments != "--register-machine") throw new Exception("Machine registration must use the explicit administrator action.");
+                if(RegistrationInfo.CreateStartInfo(folder,false,true).Arguments!="--unregister" || RegistrationInfo.CreateStartInfo(folder,true,true).Arguments!="--unregister-machine")throw new Exception("Unregister routing is incorrect.");
                 if (machineRegistration.RedirectStandardOutput || machineRegistration.RedirectStandardError) throw new Exception("Elevated shell execution cannot redirect streams.");
                 File.WriteAllText(Path.Combine(folder, "passed.txt"), "Settings, status, transport labels, and registration routing tests passed. No registration process was launched.");
                 return 0;

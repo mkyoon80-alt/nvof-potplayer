@@ -28,9 +28,10 @@ uint32_t blend_weight(int64_t elapsed,int64_t interval){
     return result;
 }
 
-// P010 stores its 10-bit code value in the upper bits of each 16-bit word.
-// Divide code values by four, not by 1023: this preserves video black/white
-// and neutral chroma (64/940/512 -> 16/235/128). No RGB/range conversion.
+DXGI_FORMAT texture_format(const GpuFrame& frame) {D3D11_TEXTURE2D_DESC desc{};frame.texture->GetDesc(&desc);return desc.Format;}
+DXGI_FORMAT plane_format(DXGI_FORMAT format,unsigned plane) {
+    return format==DXGI_FORMAT_P010?(plane?DXGI_FORMAT_R16G16_UNORM:DXGI_FORMAT_R16_UNORM):(plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM);
+}
 
 
 }
@@ -57,7 +58,7 @@ struct GpuFrucEngine::Impl {
     ComPtr<ID3D11ComputeShader> scene_compute;
     ComPtr<ID3D11Buffer> scene_buffer,scene_readback;
     ComPtr<ID3D11UnorderedAccessView> scene_uav;
-    struct OutputSlot {ComPtr<ID3D11Texture2D> texture;std::array<ComPtr<ID3D11ShaderResourceView>,2> views;std::array<ComPtr<ID3D11RenderTargetView>,2> targets;int width=0,height=0;};
+    struct OutputSlot {DXGI_FORMAT format=DXGI_FORMAT_NV12;ComPtr<ID3D11Texture2D> texture;std::array<ComPtr<ID3D11ShaderResourceView>,2> views;std::array<ComPtr<ID3D11RenderTargetView>,2> targets;int width=0,height=0;};
     std::vector<std::shared_ptr<OutputSlot>> output_pool;
     ComPtr<ID3D11VertexShader> vertex_shader;
     ComPtr<ID3D11PixelShader> pixel_shader,p010_pixel_shader;
@@ -143,7 +144,7 @@ struct GpuFrucEngine::Impl {
         }
         if(completion_event){CloseHandle(completion_event);completion_event=nullptr;}
     }
-    void validate(const GpuFrame& f,bool allow_p010=false) const {
+    void validate(const GpuFrame& f,bool allow_p010=true) const {
         if(!f.texture||f.width<2||f.height<2||f.width>8192||f.height>8192||(f.width&1)||(f.height&1))throw std::invalid_argument("GPU frame must be even-size NV12");
         D3D11_TEXTURE2D_DESC desc{};f.texture->GetDesc(&desc);
         if((desc.Format!=DXGI_FORMAT_NV12&&!(allow_p010&&desc.Format==DXGI_FORMAT_P010))||desc.Width<UINT(f.width)||desc.Height<UINT(f.height)||desc.ArraySize<=f.array_slice||desc.SampleDesc.Count!=1||desc.MipLevels!=1)throw std::invalid_argument("GPU NV12 texture format, dimensions or array slice invalid");
@@ -164,27 +165,28 @@ struct GpuFrucEngine::Impl {
         ComPtr<ID3D11Texture2D> result;hr_check(device->CreateTexture2D(&desc,nullptr,&result),"Create owned GPU texture");return result;
     }
     ComPtr<ID3D11ShaderResourceView> source_view(ID3D11Texture2D* texture,DXGI_FORMAT format){
-        for(auto& slot:output_pool)if(slot->texture.Get()==texture)return slot->views[format==DXGI_FORMAT_R8_UNORM?0:1];
+        for(auto& slot:output_pool)if(slot->texture.Get()==texture)return slot->views[(format==DXGI_FORMAT_R8_UNORM||format==DXGI_FORMAT_R16_UNORM)?0:1];
         D3D11_SHADER_RESOURCE_VIEW_DESC desc{};desc.Format=format;desc.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;desc.Texture2D.MipLevels=1;
         ComPtr<ID3D11ShaderResourceView> view;hr_check(device->CreateShaderResourceView(texture,&desc,&view),"Create native Y/UV shader view");return view;
     }
     ComPtr<ID3D11RenderTargetView> target_view(ID3D11Texture2D* texture,DXGI_FORMAT format){
-        for(auto& slot:output_pool)if(slot->texture.Get()==texture)return slot->targets[format==DXGI_FORMAT_R8_UNORM?0:1];
+        for(auto& slot:output_pool)if(slot->texture.Get()==texture)return slot->targets[(format==DXGI_FORMAT_R8_UNORM||format==DXGI_FORMAT_R16_UNORM)?0:1];
         D3D11_RENDER_TARGET_VIEW_DESC desc{};desc.Format=format;desc.ViewDimension=D3D11_RTV_DIMENSION_TEXTURE2D;
         ComPtr<ID3D11RenderTargetView> view;hr_check(device->CreateRenderTargetView(texture,&desc,&view),"Create native Y/UV target view");return view;
     }
-    GpuFrame make_output(int w,int h,int64_t pts){
-        for(auto& slot:output_pool)if(slot.use_count()==1&&slot->width==w&&slot->height==h)return {slot->texture,0,w,h,pts,slot};
-        auto slot=std::make_shared<OutputSlot>();slot->width=w;slot->height=h;slot->texture=make_texture(DXGI_FORMAT_NV12,w,h);
-        for(unsigned p=0;p<2;++p){auto format=p?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM;slot->views[p]=source_view(slot->texture.Get(),format);slot->targets[p]=target_view(slot->texture.Get(),format);}
+    GpuFrame make_output(int w,int h,int64_t pts,DXGI_FORMAT format=DXGI_FORMAT_NV12){
+        for(auto& slot:output_pool)if(slot.use_count()==1&&slot->width==w&&slot->height==h&&slot->format==format)return {slot->texture,0,w,h,pts,slot};
+        auto slot=std::make_shared<OutputSlot>();slot->width=w;slot->height=h;slot->format=format;slot->texture=make_texture(format,w,h);
+        for(unsigned p=0;p<2;++p){auto viewFormat=plane_format(format,p);slot->views[p]=source_view(slot->texture.Get(),viewFormat);slot->targets[p]=target_view(slot->texture.Get(),viewFormat);}
         if(output_pool.size()<64)output_pool.push_back(slot);
         return {slot->texture,0,w,h,pts,slot};
     }
     struct SceneAnalysis {SceneDecision decision;bool identical=false;};
     SceneAnalysis scene(const GpuFrame& a,const GpuFrame& b){
         DeviceScope scope(*this);auto ta=shader_source_texture(a),tb=shader_source_texture(b);
-        auto va=source_view(ta.Get(),DXGI_FORMAT_R8_UNORM),vb=source_view(tb.Get(),DXGI_FORMAT_R8_UNORM);
-        auto ua=source_view(ta.Get(),DXGI_FORMAT_R8G8_UNORM),ub=source_view(tb.Get(),DXGI_FORMAT_R8G8_UNORM);
+        const auto format=texture_format(a);
+        auto va=source_view(ta.Get(),plane_format(format,0)),vb=source_view(tb.Get(),plane_format(format,0));
+        auto ua=source_view(ta.Get(),plane_format(format,1)),ub=source_view(tb.Get(),plane_format(format,1));
         const UINT zero[4]={};context->ClearUnorderedAccessViewUint(scene_uav.Get(),zero);
         const uint32_t dimensions[4]={uint32_t(a.width),uint32_t(a.height),0,0};context->UpdateSubresource(weight_buffer.Get(),0,nullptr,dimensions,0,0);
         ID3D11ShaderResourceView* views[]={va.Get(),vb.Get(),ua.Get(),ub.Get()};ID3D11UnorderedAccessView* uav=scene_uav.Get();ID3D11Buffer* constants=weight_buffer.Get();
@@ -199,11 +201,11 @@ struct GpuFrucEngine::Impl {
         if(desc.ArraySize==1 && desc.Width==UINT(frame.width) && desc.Height==UINT(frame.height) && (desc.BindFlags&D3D11_BIND_SHADER_RESOURCE))return frame.texture;
         // Decoder arrays or decode-only surfaces are first captured on GPU.
         // All draws share the immediate context, so copy ordering is preserved.
-        auto result=make_texture(DXGI_FORMAT_NV12,frame.width,frame.height);D3D11_BOX box{0,0,0,UINT(frame.width),UINT(frame.height),1};
+        auto result=make_texture(desc.Format,frame.width,frame.height);D3D11_BOX box{0,0,0,UINT(frame.width),UINT(frame.height),1};
         context->CopySubresourceRegion(result.Get(),0,0,0,0,frame.texture.Get(),frame.array_slice,&box);return result;
     }
-    void draw_plane(ID3D11RenderTargetView* target,ID3D11ShaderResourceView* a,ID3D11ShaderResourceView* b,int w,int h,uint32_t weight,ID3D11PixelShader* override_shader=nullptr){
-        const uint32_t constants[4]={weight,0,0,0};context->UpdateSubresource(weight_buffer.Get(),0,nullptr,constants,0,0);
+    void draw_plane(ID3D11RenderTargetView* target,ID3D11ShaderResourceView* a,ID3D11ShaderResourceView* b,int w,int h,uint32_t weight,ID3D11PixelShader* override_shader=nullptr,bool tenBit=false){
+        const uint32_t constants[4]={weight,tenBit?1u:0u,0,0};context->UpdateSubresource(weight_buffer.Get(),0,nullptr,constants,0,0);
         ID3D11ShaderResourceView* views[]={a,b};ID3D11Buffer* constant=weight_buffer.Get();
         context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vertex_shader.Get(),nullptr,0);context->GSSetShader(nullptr,nullptr,0);context->HSSetShader(nullptr,nullptr,0);context->DSSetShader(nullptr,nullptr,0);context->PSSetShader(override_shader?override_shader:pixel_shader.Get(),nullptr,0);
         context->OMSetRenderTargets(1,&target,nullptr);context->OMSetBlendState(nullptr,nullptr,0xffffffff);context->OMSetDepthStencilState(nullptr,0);context->RSSetState(rasterizer.Get());
@@ -231,7 +233,7 @@ struct GpuFrucEngine::Impl {
         D3D11_BOX box{0,0,0,UINT(input.width),UINT(input.height),1};
         context->CopySubresourceRegion(p010_capture.Get(),0,0,0,0,input.texture.Get(),input.array_slice,&box);
         for(unsigned plane=0;plane<2;++plane) {
-            auto target=target_view(output.texture.Get(),plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM);
+            auto target=target_view(output.texture.Get(),plane?DXGI_FORMAT_R16G16_UNORM:DXGI_FORMAT_R16_UNORM);
             draw_plane(target.Get(),p010_views[plane].Get(),nullptr,plane?input.width/2:input.width,plane?input.height/2:input.height,0,p010_pixel_shader.Get());
         }
     }
@@ -258,8 +260,9 @@ void GpuFrucEngine::reset()noexcept{
 }
 GpuFrame GpuFrucEngine::copy(const GpuFrame& input){
     std::lock_guard<std::mutex> lock(impl_->mutex);impl_->validate(input,true);Impl::DeviceScope device(*impl_);
-    auto result=impl_->make_output(input.width,input.height,input.pts);
     D3D11_TEXTURE2D_DESC desc{};input.texture->GetDesc(&desc);
+    auto result=impl_->make_output(input.width,input.height,input.pts,desc.Format);
+    result.hdr=input.hdr;
     if(desc.Format==DXGI_FORMAT_P010){impl_->p010_completion.store(true);impl_->normalize_p010(input,result);}
     else {
         D3D11_BOX box{0,0,0,UINT(input.width),UINT(input.height),1};
@@ -274,7 +277,7 @@ GpuFrame GpuFrucEngine::midpoint(const GpuFrame& previous,const GpuFrame& curren
 }
 PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,const GpuFrame& current,const std::vector<int64_t>& timestamps){
     std::lock_guard<std::mutex> lock(impl_->mutex);impl_->validate(previous);impl_->validate(current);
-    if(previous.width!=current.width||previous.height!=current.height||previous.pts<0||current.pts<=previous.pts||current.pts-previous.pts>100000000LL)throw std::invalid_argument("GPU phase interpolation requires matching adjacent frames");
+    if(texture_format(previous)!=texture_format(current)||previous.width!=current.width||previous.height!=current.height||previous.pts<0||current.pts<=previous.pts||current.pts-previous.pts>100000000LL)throw std::invalid_argument("GPU phase interpolation requires matching adjacent frames");
     if(timestamps.size()>32)throw std::invalid_argument("More than 32 motion phases per source pair are unsupported");
     int64_t last=previous.pts;for(auto pts:timestamps){if(pts<=last||pts>=current.pts)throw std::invalid_argument("Motion timestamps must increase inside source pair");last=pts;}
     PhaseBatch<GpuFrame> result{};if(timestamps.empty())return result;
@@ -303,9 +306,10 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
                         auto held=previous;held.pts=timestamps[i];result.frames.push_back(std::move(held));
                         result.quality.repeated_mask|=uint32_t(1)<<i;continue;
                     }
-                    auto output=impl_->make_output(previous.width,previous.height,timestamps[i]);
-                    auto y=impl_->target_view(output.texture.Get(),DXGI_FORMAT_R8_UNORM);
-                    auto uv=impl_->target_view(output.texture.Get(),DXGI_FORMAT_R8G8_UNORM);
+                    auto output=impl_->make_output(previous.width,previous.height,timestamps[i],texture_format(previous));
+                    output.hdr=previous.hdr;
+                    auto y=impl_->target_view(output.texture.Get(),plane_format(texture_format(previous),0));
+                    auto uv=impl_->target_view(output.texture.Get(),plane_format(texture_format(previous),1));
                     const float fraction=(std::min)(std::nextafter(1.0f,0.0f),float(double(timestamps[i]-previous.pts)/double(current.pts-previous.pts)));
                     impl_->native_synthesizer->render_phase(y.Get(),uv.Get(),fraction);
                     result.frames.push_back(std::move(output));result.quality.native_synthesized_mask|=uint32_t(1)<<i;
@@ -323,15 +327,16 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
 GpuFrame GpuFrucEngine::blend(const GpuFrame& previous,const GpuFrame& current,int64_t pts){
     if(pts<=previous.pts){auto result=copy(previous);result.pts=pts;return result;}if(pts>=current.pts){auto result=copy(current);result.pts=pts;return result;}
     std::lock_guard<std::mutex> lock(impl_->mutex);impl_->validate(previous);impl_->validate(current);
-    if(previous.width!=current.width||previous.height!=current.height||previous.pts<0||current.pts<=previous.pts)throw std::invalid_argument("GPU blend requires matching dimensions and increasing nonnegative timestamps");
+    if(texture_format(previous)!=texture_format(current)||previous.width!=current.width||previous.height!=current.height||previous.pts<0||current.pts<=previous.pts)throw std::invalid_argument("GPU blend requires matching dimensions and increasing nonnegative timestamps");
     Impl::DeviceScope device(*impl_);
     const auto a=impl_->shader_source_texture(previous),b=impl_->shader_source_texture(current);
     const uint32_t weight=blend_weight(pts-previous.pts,current.pts-previous.pts);
-    auto result=impl_->make_output(previous.width,previous.height,pts);
+    auto result=impl_->make_output(previous.width,previous.height,pts,texture_format(previous));
+    result.hdr=previous.hdr;
     for(unsigned plane=0;plane<2;++plane){
-        const auto format=plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM;
+        const auto format=plane_format(texture_format(previous),plane);
         auto first=impl_->source_view(a.Get(),format),second=impl_->source_view(b.Get(),format);auto target=impl_->target_view(result.texture.Get(),format);
-        impl_->draw_plane(target.Get(),first.Get(),second.Get(),plane?previous.width/2:previous.width,plane?previous.height/2:previous.height,weight);
+        impl_->draw_plane(target.Get(),first.Get(),second.Get(),plane?previous.width/2:previous.width,plane?previous.height/2:previous.height,weight,nullptr,texture_format(previous)==DXGI_FORMAT_P010);
     }
     if(!queued_completion())impl_->wait_gpu();return result;
 }

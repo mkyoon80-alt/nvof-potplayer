@@ -22,7 +22,7 @@ MIDL_INTERFACE("BC8753F5-0AC8-4806-8E5F-A12B2AFE153E") TextureSample : public IU
     virtual HRESULT STDMETHODCALLTYPE GetD3D11Texture(int,ID3D11Texture2D**,UINT*)=0;
 };
 
-class SurfaceSample final : public CMediaSample, public TextureSample {
+class SurfaceSample final : public CMediaSample, public TextureSample, public MediaSideData {
 public:
     SurfaceSample(CBaseAllocator* owner,HRESULT* result,LONG size,LONG alignment,LONG prefix,bool gpu)
         : CMediaSample(NAME("NV12 CPU or D3D11 sample"),owner,result,nullptr,size),
@@ -36,6 +36,7 @@ public:
         if(!value)return E_POINTER;
         if(id==__uuidof(TextureSample) && gpu_)
             return GetInterface(static_cast<TextureSample*>(this),value);
+        if(id==__uuidof(MediaSideData))return GetInterface(static_cast<MediaSideData*>(this),value);
         return CMediaSample::QueryInterface(id,value);
     }
     STDMETHODIMP_(ULONG) AddRef() override {return CMediaSample::AddRef();}
@@ -46,6 +47,25 @@ public:
         if(view!=0 || !frame_.texture)return E_INVALIDARG;
         *texture=frame_.texture.Get();(*texture)->AddRef();*slice=frame_.array_slice;
         return S_OK;
+    }
+    STDMETHODIMP GetSideData(GUID id,const BYTE** data,size_t* size) override {
+        if(!data || !size)return E_POINTER;
+        *data=nullptr;*size=0;const int slot=hdr_slot(id);
+        if(slot<0 || !frame_.hdr || frame_.hdr->data[slot].empty())return E_FAIL;
+        *data=frame_.hdr->data[slot].data();*size=frame_.hdr->data[slot].size();return S_OK;
+    }
+    STDMETHODIMP SetSideData(GUID id,const BYTE* data,size_t size) override {
+        const int slot=hdr_slot(id);
+        if(slot<0)return E_INVALIDARG;
+        if(!data)return E_POINTER;
+        if(size!=hdr_size(slot))return E_INVALIDARG;
+        if(hdr_history_.size()>=16)return E_OUTOFMEMORY;
+        try {
+            auto next=frame_.hdr?std::make_shared<HdrMetadata>(*frame_.hdr):std::make_shared<HdrMetadata>();
+            next->data[slot].assign(data,data+size);
+            if(frame_.hdr)hdr_history_.push_back(frame_.hdr); // Keep earlier returned pointers alive.
+            frame_.hdr=std::move(next);return S_OK;
+        } catch(...) {return E_OUTOFMEMORY;}
     }
     STDMETHODIMP GetPointer(BYTE** data) override {
         if(!data)return E_POINTER;
@@ -63,7 +83,7 @@ public:
     }
     void assign(nvof::GpuFrame frame) {frame_=std::move(frame);m_pBuffer=nullptr;}
     void clear_surface() noexcept {
-        frame_={};
+        frame_={};hdr_history_.clear();
         if(!host_.empty()) {
             const uintptr_t first=reinterpret_cast<uintptr_t>(host_.data())+size_t(prefix_);
             m_pBuffer=reinterpret_cast<BYTE*>((first+alignment_-1)&~(uintptr_t(alignment_)-1));
@@ -71,6 +91,7 @@ public:
     }
 private:
     nvof::GpuFrame frame_;
+    std::vector<std::shared_ptr<const HdrMetadata>> hdr_history_;
     LONG alignment_=1,prefix_=0;
     const bool gpu_;
     std::vector<uint8_t> host_; // Allocated only for a CPU transport sample.

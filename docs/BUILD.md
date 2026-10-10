@@ -36,3 +36,9 @@ runtime_dependencies.exe audits a package for removed FRUC/CUDA/driver files and
 tools/test-release-installer.ps1 tests installation without NVIDIA assent parameters, same-folder upgrade cleanup, retained files/settings, COM registration, self-contained controller and removal/ownership safety. Run with the player and controller closed; it restores prior user registration.
 
 Session lifetime optimization and local regression commands: [SESSION-REUSE.md](SESSION-REUSE.md). The current local trial is `0.3.1-opt.1`.
+
+## Native P010 / HDR trial checks
+
+Use the normal Release build, with precompiled shaders. Run `gpu_p010_conversion.exe <runtime>` for code-value/phase tests. `directshow_gpu_smoke.exe <filter.ax> --rate-policy 24000 1001 120000 1001 mf selected <format>` accepts `p010`, `p010-media`, `hdr10`, and `hlg` fixtures. The first uses an NV12 media header with real P010 textures, the second a P010 media subtype. The HDR fixtures verify exact extended color flags and sample side data, including pool lifetime. Keep test LOCALAPPDATA separate from the real player's status directory.
+
+For explicitly supplied local media, `p010_video_stress.exe <runtime> <1920x1080-p010.raw> queued basic p010 concurrent` exercises shared D3D state/lifetime. It expects at least eleven tightly packed P010 frames; it is not a color-management or real-player display test. Do not package media or test logs. See HDR-NATIVE-TRIAL.md for results and pending actual playback checks.
