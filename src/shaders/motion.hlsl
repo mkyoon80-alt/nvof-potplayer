@@ -678,6 +678,11 @@ bool glyphGroupColor(float2 p,out float2 value) {
     float2 cell=p/(32.0*scale)-0.5;
     int2 base=int2(floor(cell)),hi=int2(ceil(size.xy/(32.0*scale)))-1;
     float2 velocity=0;float total=0,kind=0;float2 lo=1e5,high=-1e5;
+    // Full-patch fits cannot cover the last strip of the image. Continue only
+    // independently verified black-background glyph models into that strip.
+    bool edge=any(min(p,size.xy-p)<32.0*scale),edgeModel=false;
+    if(edge)base=clamp(base,int2(0,0),max(hi-1,0));
+    float2 edgeVelocity=0,edgeLo=1e5,edgeHi=-1e5;float edgeTotal=0;int edgeSupport=0;
     float2 foregroundVelocity=0,foregroundSum=0;float foregroundTotal=0;int support=0;
     float2 foregroundLo=1e5,foregroundHi=-1e5;
     [unroll]for(int y=-1;y<3;++y)[unroll]for(int x=-1;x<3;++x) {
@@ -685,6 +690,12 @@ bool glyphGroupColor(float2 p,out float2 value) {
         if(any(index<0)||any(index>hi))continue;
         float4 model=glyphMotion.Load(int3(index,0));
         float2 center=(float2(index)+0.5)*32.0*scale+mode.w*model.xy;
+        if(edge&&model.w==1.0) {
+            float2 weight=saturate(1.0-abs(p-center)/(80.0*scale));
+            float a=weight.x*weight.y;
+            if(a>0.02){edgeVelocity+=model.xy*a;edgeTotal+=a;++edgeSupport;
+                edgeLo=min(edgeLo,model.xy);edgeHi=max(edgeHi,model.xy);}
+        }
         if(model.w>1.5) {
             float2 weight=saturate(1.0-abs(p-center)/(64.0*scale));
             float a=weight.x*weight.y;
@@ -721,10 +732,22 @@ bool glyphGroupColor(float2 p,out float2 value) {
     if(support>=3&&length(foregroundHi-foregroundLo)<=1.5*scale) {
         kind=2;velocity=foregroundVelocity;total=foregroundTotal;lo=foregroundLo;high=foregroundHi;
     }
+    if(edgeSupport>=3&&length(edgeHi-edgeLo)<=1.5*scale) {
+        kind=1;velocity=edgeVelocity;total=edgeTotal;lo=edgeLo;high=edgeHi;edgeModel=true;
+    }
     if(total<0.02||length(high-lo)>1.5*scale)return false;
     velocity/=total;
     float2 a=p-mode.w*velocity,b=p+(1.0-mode.w)*velocity;
-    if(!inside(a)||!inside(b))return false;
+    bool validA=inside(a),validB=inside(b);
+    if(!validA||!validB) {
+        if(!edgeModel||(!validA&&!validB))return false;
+        // An entering/exiting glyph is visible in just one endpoint. Sampling
+        // the clamped missing endpoint would stretch its last visible row.
+        bool next=!validA;float2 q=validA?a:b;
+        float2 chroma=abs(uvAt(q,next)*255.0-128.0);
+        if(max(chroma.x,chroma.y)>3.0)return false;
+        value=color(q,next);return true;
+    }
     if(kind>1.5) {
         // Composite only glyph footprints. Unrelated background keeps Newton.
         float ink=max(glyphFeature(a,false),glyphFeature(b,true));

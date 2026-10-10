@@ -198,5 +198,37 @@ int wmain(){try {
     for(int i=0;i<9;++i){modelValues[i*4+1]=i%3==1?8.f:-8.f;modelValues[i*4+3]=2;}
     auto conflict=composeModels(modelValues);
     for(int y=64;y<128;++y)for(int x=64;x<128;++x)require(conflict[y*w+x]==ordinary[y*w+x],"Conflicting neighboring text motions were blended");
+    // Cropped rolling credits: only verified interior groups support the edge.
+    // Missing endpoint pixels must never be duplicated by the clamp sampler.
+    upload(8,true,false,true);
+    std::fill(uv.begin(),uv.end(),128.f/255.f);
+    context->UpdateSubresource(input[2].Get(),0,nullptr,uv.data(),w*8,0);
+    context->UpdateSubresource(input[3].Get(),0,nullptr,uv.data(),w*8,0);
+    std::fill(modelValues.begin(),modelValues.end(),0);
+    auto boundaryOrdinary=composeModels(modelValues);
+    for(int i=3;i<9;++i){modelValues[i*4+1]=-8;modelValues[i*4+3]=1;}
+    auto boundary=composeModels(modelValues),boundaryTruth=source(4,true);
+    int edgeRepaired=0;
+    for(int y=0;y<12;++y)for(int x=64;x<128;++x) {
+        int i=y*w+x;
+        require(std::abs(boundary[i]-boundaryTruth[i])<.0001f,"Exiting glyph rows were stretched or borrowed from another row");
+        if(std::abs(boundaryOrdinary[i]-boundaryTruth[i])>.01f)++edgeRepaired;
+    }
+    require(edgeRepaired>20,"Boundary test did not exercise invalid endpoint recovery");
+    for(int y=h-12;y<h;++y)for(int x=64;x<128;++x)
+        require(std::abs(boundary[y*w+x]-boundaryTruth[y*w+x])<.0001f,"Entering bottom glyph used an invalid endpoint");
+    // Reverse direction exercises entering top-edge glyphs from the other frame.
+    upload(-8,true,false,true);
+    for(int i=3;i<9;++i)modelValues[i*4+1]=8;
+    boundary=composeModels(modelValues);boundaryTruth=source(-4,true);
+    for(int y=0;y<4;++y)for(int x=64;x<128;++x)
+        require(std::abs(boundary[y*w+x]-boundaryTruth[y*w+x])<.0001f,"Entering glyph used an invalid previous endpoint");
+    for(int y=h-4;y<h;++y)for(int x=64;x<128;++x)
+        require(std::abs(boundary[y*w+x]-boundaryTruth[y*w+x])<.0001f,"Exiting bottom glyph used an invalid endpoint");
+    upload(8,true,false,true);
+    std::fill(modelValues.begin(),modelValues.end(),0);modelValues[4*4+1]=-8;modelValues[4*4+3]=1;
+    auto unsupportedEdge=composeModels(modelValues);
+    for(int y=0;y<12;++y)for(int x=64;x<128;++x)
+        require(unsupportedEdge[y*w+x]==boundaryOrdinary[y*w+x],"A single interior group extrapolated into the boundary");
     std::cout<<"PASS glyph row-alias correction in both directions, small/fast scroll, flat area, unsupported trajectory; rigid/subpixel group, fixed/colored/mixed rejection; non-reference black, colored moving background, glyph-only composition, isolated/conflicting support rejection"<<std::endl;return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}
