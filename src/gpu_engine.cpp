@@ -1,5 +1,4 @@
 #include "nvof/gpu_engine.hpp"
-#include "nvof/fractional_refiner.hpp"
 #include "nvof/motion_synthesizer.hpp"
 #include <d3d11_4.h>
 #include "nvof/scene_cut.hpp"
@@ -10,8 +9,6 @@
 #include "blend_shaders.hpp"
 #include "p010_shaders.hpp"
 #include "scene_shaders.hpp"
-#include <cuda.h>
-#include <cudaD3D11.h>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -23,24 +20,7 @@
 namespace nvof {
 namespace {
 using Microsoft::WRL::ComPtr;
-struct WrapperParams { void* frameIn; int64_t timestampIn; void* frameOut; int64_t timestampOut; };
-using CreateFn=int(__stdcall*)(void**); using LoadFn=int(__stdcall*)(void*); using DeleteFn=void(__stdcall*)(void*);
-using InitFn=int(__stdcall*)(void*,int,int,bool); using RegisterFn=int(__stdcall*)(void*,void*,void*,void*); using ProcessFn=int(__stdcall*)(void*,WrapperParams*);
-struct ProcessResult {uint32_t size=16,version=1,flags=0,reserved=0;};
-using ProcessExFn=int(__stdcall*)(void*,WrapperParams*,ProcessResult*);
 void hr_check(HRESULT hr,const char* action) { if(FAILED(hr)) throw std::runtime_error(std::string(action)+" failed, HRESULT="+std::to_string(static_cast<unsigned long>(hr))); }
-void cu_check(CUresult result,const char* action) { if(result==CUDA_SUCCESS)return;const char* name=nullptr;cuGetErrorName(result,&name);throw std::runtime_error(std::string(action)+": "+(name?name:"CUDA error")); }
-void wrapper_check(int status,const char* action) {if(status)throw std::runtime_error(std::string(action)+" failed, NVEnc status="+std::to_string(status));}
-HMODULE load_module(const std::filesystem::path& path){auto module=LoadLibraryExW(path.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);if(!module)throw std::runtime_error("Cannot load "+path.filename().string()+", Windows error="+std::to_string(GetLastError()));return module;}
-template<class T>T symbol(HMODULE module,const char* name){auto result=reinterpret_cast<T>(GetProcAddress(module,name));if(!result)throw std::runtime_error(std::string("Missing export ")+name);return result;}
-struct CudaScope { explicit CudaScope(CUcontext c){cu_check(cuCtxPushCurrent(c),"cuCtxPushCurrent");}~CudaScope(){CUcontext c=nullptr;cuCtxPopCurrent(&c);} };
-struct MappedPlanes {
-    CUgraphicsResource* resources;bool mapped=false;
-    explicit MappedPlanes(CUgraphicsResource* r):resources(r){cu_check(cuGraphicsMapResources(2,resources,0),"Map CUDA Y/UV planes");mapped=true;}
-    ~MappedPlanes(){if(mapped)cuGraphicsUnmapResources(2,resources,0);}
-    void close(const char* action){cu_check(cuGraphicsUnmapResources(2,resources,0),action);mapped=false;}
-    CUarray array(unsigned plane){CUarray result=nullptr;cu_check(cuGraphicsSubResourceGetMappedArray(&result,resources[plane],0,0),"Get CUDA Y/UV array");return result;}
-};
 uint32_t blend_weight(int64_t elapsed,int64_t interval){
     // Exact floor(elapsed * 65536 / interval), without a large timestamp product.
     uint64_t remainder=static_cast<uint64_t>(elapsed),denominator=static_cast<uint64_t>(interval);uint32_t result=0;
@@ -86,26 +66,9 @@ struct GpuFrucEngine::Impl {
     int p010_width=0,p010_height=0;
     ComPtr<ID3D11Buffer> weight_buffer;
     ComPtr<ID3D11RasterizerState> rasterizer;
-    // Y and UV are point-copied without an RGB conversion or chroma resampling.
-    // Slots 0/1 upload to packed CUDA NV12; slots 2/3 download the FRUC result.
-    std::array<ComPtr<ID3D11Texture2D>,4> planes;
-    std::array<ComPtr<ID3D11ShaderResourceView>,4> plane_views;
-    std::array<ComPtr<ID3D11RenderTargetView>,2> plane_targets;
-    std::array<CUgraphicsResource,4> interop{};
-    std::array<CUdeviceptr,3> buffers{};
-    std::unique_ptr<std::array<CUdeviceptr,3>> resources;
-    CUcontext cuda_context=nullptr;
     std::string name;
-    int width=0,height=0,cached_buffer=0;
-    HMODULE nvidia_module=nullptr,wrapper_module=nullptr;
-    struct Session {void* wrapper=nullptr;};
-    std::vector<Session> sessions;
-    std::unique_ptr<FractionalRefiner> fractional_refiner;
     std::unique_ptr<MotionSynthesizer> native_synthesizer;
-    bool fractional_unavailable=false;
-    CreateFn create=nullptr;LoadFn load=nullptr;DeleteFn destroy=nullptr;InitFn init=nullptr;RegisterFn register_resources=nullptr;ProcessFn process=nullptr;ProcessExFn process_ex=nullptr,advance=nullptr;
-    bool primed=false;
-    int64_t clock=0,cached_pts=0;
+    int64_t cached_pts=0;
     ComPtr<ID3D11Texture2D> cached_texture;
     std::shared_ptr<void> cached_lease;
     UINT cached_slice=0;
@@ -127,6 +90,7 @@ struct GpuFrucEngine::Impl {
 
     Impl(const std::filesystem::path& directory,ID3D11Device* d,ID3D11DeviceContext* c,HANDLE shared_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect,GpuInterpolationBackend backend,unsigned flow_dimension):completion_mode(mode),skip_identical_warp(skip),stabilize_midpoint(stabilize),protect_appearance(protect),decoder_mutex(shared_mutex),device(d),context(c){
         try{
+            if(backend!=GpuInterpolationBackend::native_experimental)throw std::invalid_argument("FRUC backend was removed; use native synthesis");
             if(!d||!c)throw std::invalid_argument("A decoder D3D11 device and immediate context are required");
             if(c->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)throw std::invalid_argument("D3D11 immediate context required");
             ComPtr<ID3D11Device> context_device;c->GetDevice(&context_device);if(context_device.Get()!=d)throw std::invalid_argument("D3D11 context belongs to another device");
@@ -165,56 +129,19 @@ struct GpuFrucEngine::Impl {
                 name.pop_back();
                 return;
             }
-            const auto runtime=std::filesystem::absolute(directory);nvidia_module=load_module(runtime/L"NvOFFRUC.dll");wrapper_module=load_module(runtime/L"NvofFrucBridge.dll");
-            create=symbol<CreateFn>(wrapper_module,"NVEncNVOFFRUCCreate");load=symbol<LoadFn>(wrapper_module,"NVEncNVOFFRUCLoad");destroy=symbol<DeleteFn>(wrapper_module,"NVEncNVOFFRUCDelete");
-            init=symbol<InitFn>(wrapper_module,"NVEncNVOFFRUCCreateFURCHandle");register_resources=symbol<RegisterFn>(wrapper_module,"NVEncNVOFFRUCRegisterResource");process=symbol<ProcessFn>(wrapper_module,"NVEncNVOFFRUCProc");process_ex=symbol<ProcessExFn>(wrapper_module,"NVEncNVOFFRUCProcEx");advance=symbol<ProcessExFn>(wrapper_module,"NVEncNVOFFRUCAdvance");
-            // Adapter discovery may clear the D3D immediate context internally.
-            // Preserve the caller state and exclude concurrent renderer work.
-            DeviceScope discovery_scope(*this);
-            cu_check(cuInit(0),"cuInit");CUdevice gpu=0;unsigned count=0;cu_check(cuD3D11GetDevices(&count,&gpu,1,device.Get(),CU_D3D11_DEVICE_LIST_ALL),"cuD3D11GetDevices");if(count!=1)throw std::runtime_error("Exactly one CUDA GPU must back the decoder D3D11 device");
-            char label[256]{};cu_check(cuDeviceGetName(label,sizeof(label),gpu),"cuDeviceGetName");name=label;
-            cu_check(cuCtxCreate(&cuda_context,CU_CTX_SCHED_BLOCKING_SYNC,gpu),"cuCtxCreate");CUcontext popped=nullptr;cu_check(cuCtxPopCurrent(&popped),"cuCtxPopCurrent after create");
         }catch(...){cleanup();throw;}
     }
     ~Impl(){cleanup();}
-    void close_session() noexcept {
-        if(cuda_context)cuCtxSynchronize();
-        for(auto& session:sessions)if(session.wrapper&&destroy)destroy(std::exchange(session.wrapper,nullptr));
-        sessions.clear();primed=false;clock=0;cached_texture.Reset();cached_lease.reset();
-    }
-    void clear_surfaces() noexcept {
-        fractional_refiner.reset();
-        for(auto&r:interop)if(r){cuGraphicsUnregisterResource(r);r=nullptr;}
-        for(auto&p:buffers)if(p){cuMemFree(p);p=0;}
-        output_pool.clear();for(auto& target:plane_targets)target.Reset();for(auto& view:plane_views)view.Reset();for(auto& texture:planes)texture.Reset();width=height=0;
-    }
     void cleanup() noexcept {
         if(native_synthesizer) {
             try {DeviceScope scope(*this);wait_gpu();native_synthesizer.reset();output_pool.clear();}
             catch(...) {
-                native_synthesizer.release(); // Same host-lock safety rule as FRUC teardown.
+                native_synthesizer.release(); // Host lock is unavailable: do not race its context.
                 OutputDebugStringA("NVOF: shared D3D11 lock unavailable during native teardown\n");
                 return;
             }
         }
-        if(cuda_context){
-            try{
-                // Unregister and CUDA context destruction can also reset the
-                // shared immediate context. Restore renderer state before unlock.
-                DeviceScope scope(*this);
-                wait_gpu();
-                if(cuCtxPushCurrent(cuda_context)==CUDA_SUCCESS){close_session();clear_surfaces();CUcontext popped=nullptr;cuCtxPopCurrent(&popped);}
-                cuCtxDestroy(cuda_context);cuda_context=nullptr;
-            }catch(...){
-                // On an invalid/timed-out host lock, retain driver registrations
-                // and DLL references rather than race the host during teardown.
-                fractional_refiner.release(); // Do not destroy driver objects without the shared lock.
-                OutputDebugStringA("NVOF: shared D3D11 lock unavailable during CUDA teardown\n");
-                return;
-            }
-        }
         if(completion_event){CloseHandle(completion_event);completion_event=nullptr;}
-        if(wrapper_module){FreeLibrary(wrapper_module);wrapper_module=nullptr;}if(nvidia_module){FreeLibrary(nvidia_module);nvidia_module=nullptr;}
     }
     void validate(const GpuFrame& f,bool allow_p010=false) const {
         if(!f.texture||f.width<2||f.height<2||f.width>8192||f.height>8192||(f.width&1)||(f.height&1))throw std::invalid_argument("GPU frame must be even-size NV12");
@@ -308,82 +235,6 @@ struct GpuFrucEngine::Impl {
             draw_plane(target.Get(),p010_views[plane].Get(),nullptr,plane?input.width/2:input.width,plane?input.height/2:input.height,0,p010_pixel_shader.Get());
         }
     }
-    void configure(int w,int h){
-        if(width==w&&height==h)return;
-        DeviceScope scope(*this);
-        close_session();clear_surfaces();
-        try{
-            for(unsigned i=0;i<planes.size();++i){
-                const bool uv=(i&1)!=0;const auto format=uv?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM;
-                planes[i]=make_texture(format,uv?w/2:w,uv?h/2:h);plane_views[i]=source_view(planes[i].Get(),format);
-                if(i<2)plane_targets[i]=target_view(planes[i].Get(),format);
-                cu_check(cuGraphicsD3D11RegisterResource(&interop[i],planes[i].Get(),CU_GRAPHICS_REGISTER_FLAGS_NONE),"Register native Y/UV plane with CUDA");
-            }
-            for(auto& buffer:buffers)cu_check(cuMemAlloc(&buffer,size_t(w)*h*3/2),"Allocate packed GPU NV12");
-            width=w;height=h;
-        }catch(...){close_session();clear_surfaces();throw;}
-    }
-    void upload_gpu(const GpuFrame& frame,int index){
-        // CUDA map/unmap also touch the shared D3D11 immediate context.
-        // Keep the renderer/decoder lock until the interop transfer is closed.
-        DeviceScope scope(*this);const auto source=shader_source_texture(frame);
-        for(unsigned plane=0;plane<2;++plane){
-            const auto format=plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM;auto view=source_view(source.Get(),format);
-            draw_plane(plane_targets[plane].Get(),view.Get(),view.Get(),plane?width/2:width,plane?height/2:height,0);
-        }
-        // Map orders preceding D3D work; no CPU completion poll here.
-        MappedPlanes mapped(interop.data());
-        for(unsigned plane=0;plane<2;++plane){
-            CUDA_MEMCPY2D copy{};copy.srcMemoryType=CU_MEMORYTYPE_ARRAY;copy.srcArray=mapped.array(plane);copy.dstMemoryType=CU_MEMORYTYPE_DEVICE;copy.dstDevice=buffers[index]+(plane?size_t(width)*height:0);copy.dstPitch=width;copy.WidthInBytes=width;copy.Height=plane?height/2:height;
-            cu_check(cuMemcpy2D(&copy),"GPU Y/UV plane to packed NV12");
-        }
-        if(p010_completion.load())cu_check(cuCtxSynchronize(),"Complete P010 CUDA input transfer");
-        mapped.close("Unmap CUDA input Y/UV planes");
-    }
-    GpuFrame output_gpu(int64_t pts,float refined_phase=-1.0f,bool midpoint_stable=false){
-        DeviceScope scope(*this);
-        {MappedPlanes mapped(interop.data()+2);
-            for(unsigned plane=0;plane<2;++plane){
-                CUDA_MEMCPY2D copy{};copy.srcMemoryType=CU_MEMORYTYPE_DEVICE;copy.srcDevice=buffers[2]+(plane?size_t(width)*height:0);copy.srcPitch=width;copy.dstMemoryType=CU_MEMORYTYPE_ARRAY;copy.dstArray=mapped.array(plane);copy.WidthInBytes=width;copy.Height=plane?height/2:height;
-                cu_check(cuMemcpy2D(&copy),"GPU packed NV12 to Y/UV plane");
-            }
-            if(p010_completion.load())cu_check(cuCtxSynchronize(),"Complete P010 CUDA output transfer");
-            mapped.close("Unmap CUDA output Y/UV planes");
-        }
-        auto result=make_output(width,height,pts);
-        if(refined_phase>=0.0f||midpoint_stable){
-            auto y=target_view(result.texture.Get(),DXGI_FORMAT_R8_UNORM);
-            auto uv=target_view(result.texture.Get(),DXGI_FORMAT_R8G8_UNORM);
-            if(midpoint_stable)fractional_refiner->render_midpoint(y.Get(),uv.Get(),plane_views[2].Get(),plane_views[3].Get());
-            else fractional_refiner->render(refined_phase,y.Get(),uv.Get(),plane_views[2].Get(),plane_views[3].Get());
-        }else for(unsigned plane=0;plane<2;++plane){
-            auto target=target_view(result.texture.Get(),plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM);
-            draw_plane(target.Get(),plane_views[plane+2].Get(),plane_views[plane+2].Get(),plane?width/2:width,plane?height/2:height,0);
-        }
-        return result;
-    }
-    void prime(const GpuFrame& previous){
-        close_session();
-        if(fractional_refiner)fractional_refiner->invalidate_history();
-        // Preserve resource-address identity until unregister; allocate its next
-        // generation before releasing the old addresses (SDK re-prime regression).
-        auto next_resources=std::make_unique<std::array<CUdeviceptr,3>>(buffers);
-        resources.swap(next_resources);
-        upload_gpu(previous,0);cached_buffer=0;cached_texture=previous.texture;cached_lease=previous.lease;cached_slice=previous.array_slice;cached_pts=previous.pts;primed=true;
-    }
-    void ensure_session(size_t index,const GpuFrame& previous){
-        while(sessions.size()<=index){
-            sessions.push_back({});auto& session=sessions.back();
-            wrapper_check(create(&session.wrapper),"Create FRUC phase");if(!session.wrapper)throw std::runtime_error("Null FRUC phase");
-            wrapper_check(load(session.wrapper),"Load FRUC phase");wrapper_check(init(session.wrapper,width,height,true),"Initialize FRUC phase");
-            wrapper_check(register_resources(session.wrapper,&(*resources)[0],&(*resources)[1],&(*resources)[2]),"Register shared FRUC phase buffers");
-            WrapperParams params{&(*resources)[cached_buffer],previous.pts,&(*resources)[2],previous.pts};ProcessResult ignored{};
-            wrapper_check(process_ex(session.wrapper,&params,&ignored),"Prime FRUC phase");
-            // Explicit startup boundary; steady-state phases do not use a
-            // whole-context synchronization.
-            cu_check(cuCtxSynchronize(),"Complete new FRUC history priming");
-        }
-    }
 
 };
 
@@ -399,8 +250,6 @@ void GpuFrucEngine::reset()noexcept{
             impl_->native_synthesizer->invalidate_history();
             impl_->cached_texture.Reset();impl_->cached_lease.reset();return;
         }
-        if(impl_->fractional_refiner)impl_->fractional_refiner->reset();
-        if(cuCtxPushCurrent(impl_->cuda_context)==CUDA_SUCCESS){impl_->close_session();CUcontext previous=nullptr;cuCtxPopCurrent(&previous);}
     }catch(...){OutputDebugStringA("NVOF: shared D3D11 lock unavailable during history reset\n");}
 }
 GpuFrame GpuFrucEngine::copy(const GpuFrame& input){
@@ -424,7 +273,7 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
     if(previous.width!=current.width||previous.height!=current.height||previous.pts<0||current.pts<=previous.pts||current.pts-previous.pts>100000000LL)throw std::invalid_argument("GPU phase interpolation requires matching adjacent frames");
     if(timestamps.size()>32)throw std::invalid_argument("More than 32 motion phases per source pair are unsupported");
     int64_t last=previous.pts;for(auto pts:timestamps){if(pts<=last||pts>=current.pts)throw std::invalid_argument("Motion timestamps must increase inside source pair");last=pts;}
-    PhaseBatch<GpuFrame> result{};if(timestamps.empty()&&impl_->sessions.empty())return result;
+    PhaseBatch<GpuFrame> result{};if(timestamps.empty())return result;
     if(impl_->native_synthesizer) {
         // A nominal x2 clock can land away from the midpoint when container
         // duration and actual PTS differ, or when input is VFR. Synthesize the
@@ -464,87 +313,9 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
             return result;
         }catch(...){impl_->native_synthesizer->invalidate_history();throw;}
     }
-    CudaScope cuda(impl_->cuda_context);
-    try{
-        impl_->configure(previous.width,previous.height);
-        const auto analysis=impl_->scene(previous,current);
-        if(analysis.decision.cut){result.quality.scene_cut=true;impl_->close_session();if(impl_->fractional_refiner){Impl::DeviceScope scope(*impl_);impl_->fractional_refiner->reset();}return result;}
-        if(!impl_->primed||impl_->cached_texture.Get()!=previous.texture.Get()||impl_->cached_slice!=previous.array_slice||impl_->cached_pts!=previous.pts)impl_->prime(previous);
-        const auto phase_count=(std::max)(timestamps.size(),impl_->sessions.size());
-        // Equality covers every stored Y/UV byte on the GPU. The cached CUDA
-        // resource already contains this exact picture. Advance FRUC once for
-        // the new timestamp, preserving temporal state without generating an
-        // unused warp or uploading the same pixels again.
-        const bool skip=analysis.identical&&impl_->skip_identical_warp;
-        const int next=skip?impl_->cached_buffer:1-impl_->cached_buffer;
-        if(!skip)impl_->upload_gpu(current,next);
-        result.quality.repetition_known=!skip;
-        result.quality.identical_warp_skipped=skip;
-        const int64_t duration=current.pts-previous.pts;
-        const auto fractional=[&](int64_t pts){return std::abs((pts-previous.pts)*2-duration)>1;};
-        const bool fractional_requested=NVOF_ENABLE_EXPERIMENTAL_SUBPIXEL&&!analysis.identical&&std::any_of(timestamps.begin(),timestamps.end(),fractional);
-        const bool has_midpoint=(impl_->stabilize_midpoint||impl_->protect_appearance)&&!analysis.identical&&
-            std::any_of(timestamps.begin(),timestamps.end(),[&](int64_t pts){return !fractional(pts);});
-        // RTX 5090 measurements: ~10 ms/pair at 1080p, ~34 ms at 2160p.
-        // Keep headroom for the renderer/VSR; high-rate large frames retain
-        // regular FRUC rather than introducing a processing backlog.
-        const bool within_midpoint_budget=int64_t(previous.width)*previous.height<=1920LL*1080 || duration>=333333;
-        result.quality.midpoint_budget_limited=has_midpoint&&!within_midpoint_budget;
-        const bool midpoint_requested=has_midpoint&&within_midpoint_budget;
-        bool prepared=false;
-        // Prepare only after FRUC accepts a generated phase. Cuts, repeated
-        // pictures, and identical pairs must never enter the extra warp pass.
-        const auto prepare_refinement=[&](){
-            if(prepared)return true;
-            if(impl_->fractional_unavailable)return false;
-            Impl::DeviceScope scope(*impl_);
-            try{
-                if(!impl_->fractional_refiner)impl_->fractional_refiner=std::make_unique<FractionalRefiner>(impl_->device.Get(),impl_->context.Get(),impl_->protect_appearance,impl_->stabilize_midpoint);
-                auto a=impl_->shader_source_texture(previous),b=impl_->shader_source_texture(current);
-                impl_->fractional_refiner->prepare(a.Get(),b.Get(),previous.width,previous.height);
-                prepared=true;
-            }catch(const std::exception& error){
-                // Raw flow is optional; keep the working FRUC path if this
-                // driver/device cannot provide it. Retry with a new engine.
-                impl_->fractional_refiner.reset();impl_->fractional_unavailable=true;
-                const std::string warning=std::string("NVOF: motion refinement unavailable: ")+error.what()+"\n";
-                OutputDebugStringA(warning.c_str());
-            }
-            return prepared;
-        };
-        // Each independent history receives each original once. Unused phases
-        // still advance, so variable-rate target clocks cannot leave stale A.
-        for(size_t i=0;i<phase_count;++i){
-            impl_->ensure_session(i,previous);
-            const int64_t pts=i<timestamps.size()?timestamps[i]:previous.pts+(current.pts-previous.pts)/2;
-            WrapperParams params{&(*impl_->resources)[next],current.pts,&(*impl_->resources)[2],pts};ProcessResult quality{};
-            wrapper_check((skip?impl_->advance:impl_->process_ex)(impl_->sessions[i].wrapper,&params,&quality),skip?"Advance identical FRUC input":"Generate FRUC motion phase");
-            if(!(quality.flags&(skip?4u:1u)))throw std::runtime_error("FRUC result status unavailable");
-            if(i<timestamps.size()){
-                if(quality.flags&2)result.quality.repeated_mask|=uint32_t(1)<<i;
-                // NvOFFRUC CUDA Process is blocking. Interop unmap orders CUDA
-                // copies before subsequent D3D draws; no full context sync.
-                if(analysis.identical){auto exact=previous;exact.pts=pts;result.frames.push_back(std::move(exact));}
-                else{
-                    const bool accepted=!(quality.flags&2);
-                    const bool refine_phase=fractional_requested&&fractional(pts)&&accepted&&prepare_refinement();
-                    const bool stable_phase=midpoint_requested&&!fractional(pts)&&accepted&&prepare_refinement();
-                    const float t=refine_phase?float(double(pts-previous.pts)/double(duration)):-1.0f;
-                    result.frames.push_back(impl_->output_gpu(pts,t,stable_phase));
-                    if(refine_phase)result.quality.subpixel_refined_mask|=uint32_t(1)<<i;
-                    if(stable_phase&&impl_->stabilize_midpoint)result.quality.midpoint_stabilized_mask|=uint32_t(1)<<i;
-                    if(stable_phase&&impl_->protect_appearance)result.quality.appearance_protected_mask|=uint32_t(1)<<i;
-                }
-            }
-        }
-        if(!prepared&&impl_->fractional_refiner)impl_->fractional_refiner->invalidate_history();
-        result.quality.subpixel_unavailable=fractional_requested&&impl_->fractional_unavailable;
-        result.quality.midpoint_stabilization_unavailable=midpoint_requested&&impl_->fractional_unavailable;
-        if(!result.frames.empty()&&!queued_completion()){Impl::DeviceScope scope(*impl_);impl_->wait_gpu();}
-        impl_->cached_texture=current.texture;impl_->cached_lease=current.lease;impl_->cached_slice=current.array_slice;impl_->cached_pts=current.pts;impl_->cached_buffer=next;
-        return result;
-    }catch(...){impl_->close_session();throw;}
+    throw std::logic_error("Native synthesizer unavailable");
 }
+
 GpuFrame GpuFrucEngine::blend(const GpuFrame& previous,const GpuFrame& current,int64_t pts){
     if(pts<=previous.pts){auto result=copy(previous);result.pts=pts;return result;}if(pts>=current.pts){auto result=copy(current);result.pts=pts;return result;}
     std::lock_guard<std::mutex> lock(impl_->mutex);impl_->validate(previous);impl_->validate(current);

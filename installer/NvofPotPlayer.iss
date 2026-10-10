@@ -1,5 +1,5 @@
-﻿#ifndef AppVersion
-#define AppVersion "0.3.0"
+#ifndef AppVersion
+#define AppVersion "0.3.1-standalone.1"
 #endif
 #ifndef PayloadDir
 #error PayloadDir is required
@@ -7,7 +7,6 @@
 #ifndef OutputDir
 #define OutputDir "..\dist"
 #endif
-#define TermsVersion "2026-10-07"
 [Setup]
 AppId={{4932901D-91E6-4FE4-A79E-D63258D637F2}
 AppName=NVOF for PotPlayer
@@ -39,7 +38,7 @@ CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
 UsePreviousLanguage=yes
-VersionInfoVersion=0.3.0.0
+VersionInfoVersion=0.3.1.1
 VersionInfoDescription=NVOF for PotPlayer offline setup
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
@@ -47,7 +46,19 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Excludes: "NvofPotPlayer.ini"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\NvofPotPlayer.ini"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall
-Source: "{#PayloadDir}\licenses\NVIDIA-COMPONENT-TERMS.txt"; Flags: dontcopy
+[InstallDelete]
+; Remove only known obsolete files from the application runtime subdirectory.
+Type: files; Name: "{app}\runtime\NvOFFRUC.dll"
+Type: files; Name: "{app}\runtime\NvofFrucBridge.dll"
+Type: files; Name: "{app}\runtime\NVEncNVOFFRUC.dll"
+Type: files; Name: "{app}\runtime\cudart64_110.dll"
+Type: files; Name: "{app}\runtime\cudart64_12.dll"
+Type: files; Name: "{app}\runtime\msvcp140.dll"
+Type: files; Name: "{app}\runtime\vcruntime140.dll"
+Type: files; Name: "{app}\runtime\vcruntime140_1.dll"
+Type: files; Name: "{app}\licenses\NVIDIA-COMPONENT-TERMS.txt"
+Type: files; Name: "{app}\licenses\NVIDIA-CUDA-11.2-EULA.html"
+Type: files; Name: "{app}\licenses\NVEnc-MIT.txt"
 [Icons]
 Name: "{group}\NVOF 설정"; Filename: "{app}\NvofControl.exe"
 Name: "{group}\사용 설명서"; Filename: "{app}\docs\manual\index.html"
@@ -61,10 +72,6 @@ Filename: "{app}\NvofControl.exe"; Description: "NVOF 설정 열기"; Flags: pos
 const
   FilterKey = 'Software\Classes\CLSID\{EDECA044-78CD-40EB-8F37-63D947C501A0}\InprocServer32';
 var
-  TermsPage: TWizardPage;
-  TermsMemo: TNewMemo;
-  TermsCheck: TNewCheckBox;
-  TermsButton: TNewButton;
   PreviousFilter: String;
   RegisteredOK: Boolean;
 
@@ -72,11 +79,6 @@ function Korean: Boolean;
 begin Result := ActiveLanguage = 'korean'; end;
 function L(Ko, En: String): String;
 begin if Korean then Result := Ko else Result := En; end;
-function HasConsent: Boolean;
-begin
-  Result := TermsCheck.Checked;
-  if WizardSilent then Result := ExpandConstant('{param:NVIDIATERMS|}') = '{#TermsVersion}';
-end;
 function AppsClosed: Boolean;
 var Services, Items: Variant;
 begin
@@ -96,61 +98,16 @@ begin
 end;
 function CloseMessage: String;
 begin Result := L('팟플레이어와 NVOF 설정 창을 모두 닫은 뒤 다시 시도해 주세요. 프로그램을 강제로 종료하지 않습니다.', 'Close PotPlayer and NVOF Control, then retry. Setup will not force-close applications.'); end;
-procedure TermsChanged(Sender: TObject);
-begin WizardForm.NextButton.Enabled := HasConsent; end;
-procedure OpenTerms(Sender: TObject);
-var Code: Integer;
-begin
-  ShellExec('open', ExpandConstant('{tmp}\NVIDIA-COMPONENT-TERMS.txt'), '', '', SW_SHOWNORMAL, ewNoWait, Code);
-end;
 procedure InitializeWizard;
 begin
   RegisteredOK := False;
   WizardForm.WelcomeLabel1.Caption := L('NVOF for PotPlayer 설치', 'Install NVOF for PotPlayer');
-  WizardForm.WelcomeLabel2.Caption := L('팟플레이어용 NVIDIA 프레임 보간을 설치합니다.'#13#10#13#10'별도 .NET, CUDA Toolkit, Visual C++ 설치가 필요하지 않습니다.'#13#10#13#10'Windows x64, 지원 NVIDIA GPU·드라이버와 팟플레이어 x64는 필요합니다.'#13#10#13#10'설치 전에 팟플레이어와 NVOF 설정 창을 닫아 주세요.', 'Install NVIDIA frame interpolation for PotPlayer.'#13#10#13#10'.NET and required CUDA / Visual C++ runtime files are included.'#13#10#13#10'Windows x64, a supported NVIDIA GPU/driver and PotPlayer x64 are required.'#13#10#13#10'Close PotPlayer and NVOF Control before installing.');
-  TermsPage := CreateCustomPage(wpWelcome, L('NVIDIA 구성요소 이용 약관', 'NVIDIA Component Terms'), L('프로젝트 MIT 라이선스와 구분되는 외부 구성요소 약관입니다.', 'Separate terms apply to NVIDIA components, outside the project MIT license.'));
-  ExtractTemporaryFile('NVIDIA-COMPONENT-TERMS.txt');
-  TermsMemo := TNewMemo.Create(TermsPage);
-  TermsMemo.Parent := TermsPage.Surface;
-  TermsMemo.SetBounds(0, 0, TermsPage.SurfaceWidth, TermsPage.SurfaceHeight - ScaleY(78));
-  TermsMemo.Anchors := [akLeft, akTop, akRight, akBottom];
-  TermsMemo.ReadOnly := True;
-  TermsMemo.ScrollBars := ssVertical;
-  TermsMemo.WordWrap := True;
-  TermsMemo.Lines.LoadFromFile(ExpandConstant('{tmp}\NVIDIA-COMPONENT-TERMS.txt'));
-  TermsButton := TNewButton.Create(TermsPage);
-  TermsButton.Parent := TermsPage.Surface;
-  TermsButton.SetBounds(0, TermsPage.SurfaceHeight - ScaleY(69), ScaleX(150), ScaleY(26));
-  TermsButton.Anchors := [akLeft, akBottom];
-  TermsButton.Caption := L('약관 원문 열기 / 저장', 'Open / save terms');
-  TermsButton.OnClick := @OpenTerms;
-  TermsCheck := TNewCheckBox.Create(TermsPage);
-  TermsCheck.Parent := TermsPage.Surface;
-  TermsCheck.SetBounds(0, TermsPage.SurfaceHeight - ScaleY(32), TermsPage.SurfaceWidth, ScaleY(32));
-  TermsCheck.Anchors := [akLeft, akRight, akBottom];
-  TermsCheck.Caption := L('NVIDIA 구성요소 이용 약관에 동의합니다.', 'I agree to the NVIDIA component terms.');
-  TermsCheck.Checked := False;
-  TermsCheck.OnClick := @TermsChanged;
-end;
-procedure CurPageChanged(CurPageID: Integer);
-begin
-  if CurPageID = TermsPage.ID then WizardForm.NextButton.Enabled := HasConsent;
-end;
-function NextButtonClick(CurPageID: Integer): Boolean;
-begin
-  Result := True;
-  if CurPageID = TermsPage.ID then begin
-    Result := HasConsent;
-    if not Result then Log('Explicit NVIDIA component consent was not given.');
-  end;
+  WizardForm.WelcomeLabel2.Caption := L('팟플레이어용 NVIDIA 프레임 보간을 설치합니다.'#13#10#13#10'별도 .NET, CUDA Toolkit, Visual C++ 설치가 필요하지 않습니다.'#13#10#13#10'Windows x64, 지원 NVIDIA GPU·드라이버와 팟플레이어 x64는 필요합니다.'#13#10#13#10'설치 전에 팟플레이어와 NVOF 설정 창을 닫아 주세요.', 'Install NVIDIA frame interpolation for PotPlayer.'#13#10#13#10'.NET is included. No FRUC or CUDA runtime is bundled.'#13#10#13#10'Windows x64, a supported NVIDIA GPU/driver and PotPlayer x64 are required.'#13#10#13#10'Close PotPlayer and NVOF Control before installing.');
 end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var Current: String;
 begin
   Result := '';
-  if not HasConsent then begin
-    Result := L('약관에 동의해야 설치할 수 있습니다.', 'Explicit acceptance of the component terms is required.'); exit;
-  end;
   if not AppsClosed then begin Result := CloseMessage; exit; end;
   if RegQueryStringValue(HKLM64, FilterKey, '', Current) and (Current <> '') and (CompareText(Current, ExpandConstant('{app}\NvofPotPlayer.ax')) <> 0) then
     Log('Existing machine-wide registration is retained. This setup registers for the current user only.');
@@ -191,14 +148,6 @@ begin
       Exec(ExpandConstant('{app}\NvofRegister.exe'), '--unregister', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code);
       RestorePrevious;
       RaiseException(L('필터 등록에 실패했습니다. 기존 등록 복원을 시도했습니다. 설치 로그를 확인해 주세요.', 'Filter registration failed. Previous registration restoration was attempted. Check the setup log.'));
-    end;
-    if not SetIniString('Consent', 'TermsVersion', '{#TermsVersion}', ExpandConstant('{app}\component-consent.ini')) or
-       not SetIniString('Consent', 'AppVersion', '{#AppVersion}', ExpandConstant('{app}\component-consent.ini')) or
-       not SetIniString('Consent', 'AcceptedAtLocal', GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':'), ExpandConstant('{app}\component-consent.ini')) or
-       not SetIniString('Consent', 'Method', 'explicit-interactive-or-versioned-command-line', ExpandConstant('{app}\component-consent.ini')) then begin
-      Exec(ExpandConstant('{app}\NvofRegister.exe'), '--unregister', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code);
-      RestorePrevious;
-      RaiseException('Cannot save component consent record. Previous registration restoration was attempted.');
     end;
     RegisteredOK := True;
     WizardForm.FinishedLabel.Caption := L('설치와 필터 등록이 완료되었습니다.'#13#10#13#10'팟플레이어 F5 → 코덱/필터 → 전역 필터 우선 순위에서 NVIDIA Optical Flow for PotPlayer를 추가하고 최우선 사용으로 설정해 주세요.'#13#10#13#10'자세한 순서는 사용 설명서에 있습니다.', 'Installation and filter registration completed.'#13#10#13#10'Add NVIDIA Optical Flow for PotPlayer in PotPlayer Preferences → Filter Control → Global Filter Priority and select Prefer.'#13#10#13#10'See the user guide for the complete steps.');

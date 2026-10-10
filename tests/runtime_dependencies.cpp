@@ -57,50 +57,18 @@ int wmain(int argc, wchar_t** argv) {
         if (argc != 2) throw std::runtime_error("Usage: runtime_dependencies.exe ABSOLUTE_PACKAGE_DIRECTORY");
         const fs::path package(argv[1]);
         if (!package.is_absolute()) throw std::runtime_error("The package directory must be absolute");
-        const fs::path runtime = package / L"runtime";
-        // Five pinned vendor runtimes plus the project-built /MT bridge.
-        constexpr std::array<const wchar_t*, 6> required = {
-            L"NvOFFRUC.dll", L"NvofFrucBridge.dll", L"cudart64_110.dll",
-            L"msvcp140.dll", L"vcruntime140.dll", L"vcruntime140_1.dll"
-        };
-        for (const auto name : required) {
-            if (!fs::is_regular_file(runtime / name)) {
-                std::wcerr << L"MISSING_PACKAGE_FILE " << name << L'\n';
-                throw std::runtime_error("The package is not self-contained");
-            }
-            if (const auto preloaded = GetModuleHandleW(name))
-                std::wcout << L"PRELOADED " << name << L" = " << module_path(preloaded) << L'\n';
+        const std::array<const wchar_t*,7> removed={
+            L"NvOFFRUC.dll",L"NvofFrucBridge.dll",L"NVEncNVOFFRUC.dll",
+            L"cudart64_110.dll",L"cudart64_12.dll",L"nvofapi64.dll",L"nvcuda.dll"};
+        for(const auto& entry:fs::recursive_directory_iterator(package)){
+            for(auto name:removed)if(_wcsicmp(entry.path().filename().c_str(),name)==0)
+                throw std::runtime_error("Forbidden FRUC/CUDA/driver file in package");
         }
         Modules modules;
-        modules.load(runtime / L"NvOFFRUC.dll");
-        const auto bridge = modules.load(runtime / L"NvofFrucBridge.dll");
-        if (!GetProcAddress(bridge, "NVEncNVOFFRUCProcEx"))
-            throw std::runtime_error("The bridge lacks versioned repetition metadata");
-        const auto filter = modules.load(package / L"NvofPotPlayer.ax");
-        bool valid = true;
-        for (const auto name : required) {
-            const auto module = GetModuleHandleW(name);
-            if (!module) {
-                std::wcerr << L"NOT_LOADED " << name << L'\n';
-                valid = false;
-                continue;
-            }
-            const auto actual = module_path(module);
-            std::wcout << L"LOADED " << name << L" = " << actual << L'\n';
-            if (!same_file_location(actual, runtime / name)) {
-                std::wcerr << L"OUTSIDE_PACKAGE " << name << L'\n';
-                valid = false;
-            }
-        }
-        std::wcout << L"LOADED NvofPotPlayer.ax = " << module_path(filter) << L'\n';
-        for (const auto name : { L"nvcuda.dll", L"nvofapi64.dll" }) {
-            if (const auto driver = GetModuleHandleW(name))
-                std::wcout << L"DRIVER " << name << L" = " << module_path(driver) << L'\n';
-            else
-                std::wcout << L"DRIVER " << name << L" = not loaded (no interpolation requested)\n";
-        }
-        if (!valid) throw std::runtime_error("A required runtime was missing or loaded from outside the package");
-        std::wcout << L"PASS all 6 native runtime DLLs loaded from package/runtime; no installed VC runtime was selected.\n";
+        modules.load(package / L"NvofPotPlayer.ax");
+        for(auto name:removed)if(GetModuleHandleW(name))
+            throw std::runtime_error("Filter startup loaded a removed runtime or GPU driver");
+        std::wcout<<L"PASS native package: no bundled FRUC/CUDA/driver DLL; filter loads without GPU runtime preload.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL " << error.what() << '\n';

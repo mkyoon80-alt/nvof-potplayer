@@ -19,8 +19,8 @@ public:
     FrucEngine(const FrucEngine&) = delete;
     FrucEngine& operator=(const FrucEngine&) = delete;
     // Generate up to 32 strictly increasing timestamps inside an original pair.
-    // Independent FRUC histories share one upload of each original. Empty requests
-    // advance existing histories. Hard cuts return no frames and close history.
+    // Native D3D11 synthesis with upload/readback for system-memory transport.
+    // Empty requests do no work. Hard cuts return no frames and reset history.
     // Output frames own their pixels; no input memory is retained by reference.
     PhaseBatch<Frame> interpolate_pair(const Frame& previous, const Frame& current,
                                       const std::vector<int64_t>& timestamps);

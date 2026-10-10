@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "audited_on": "2026-10-07",
+  "platform": "windows-x64",
+  "public_distribution": "Application installer includes app-local NVIDIA runtime; no standalone DLL release asset. Publisher relies on 2017 download-page agreement 1.1(ii); bundled 2022 grant relationship remains unconfirmed, and click-through does not expand rights.",
+  "archive": {
+    "url": "https://github.com/rigaya/NVEnc/releases/download/9.37/NVEncC_9.37_x64.7z",
+    "sha256": "26358C59FA4F97A2B3A1F25DD1E001AD13CE18A02E57F597277F3E2302B0ACBF",
+    "release_url": "https://github.com/rigaya/NVEnc/releases/tag/9.37"
+  },
+  "extractor": {
+    "url": "https://www.7-zip.org/a/7zr.exe",
+    "sha256": "256FECA8E274E5DA655E2A284FABAFD9F554365EB164862089DACD4E8276D282",
+    "role": "Acquisition-only extraction utility; not a playback dependency and not bundled in application release."
+  },
+  "license_urls": {
+    "nvidia_download_terms": "https://developer.nvidia.com/designworks/sdk-samples-tools-software-license-agreement",
+    "nvidia_download_page": "https://developer.nvidia.com/opticalflow/download",
+    "nvidia_documentation_terms": "https://docs.nvidia.com/video-technologies/optical-flow-sdk/license/index.html",
+    "cuda_11_2": "https://docs.nvidia.com/cuda/archive/11.2.0/eula/index.html",
+    "visual_studio": "https://visualstudio.microsoft.com/license-terms/vs2022-ga-community/",
+    "visual_studio_redist": "https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution#visual-c-runtime-files"
+  },
+  "files": [
+    {
+      "name": "NVEncNVOFFRUC.dll",
+      "bytes": 109568,
+      "sha256": "5B19083BC1D3B6F84B680C94D9E9F90C2178FC833C53E4592C484C97E3827DD1",
+      "signature": "NotSigned",
+      "acquisition": "nvenc_archive",
+      "license": "MIT",
+      "provenance": "NVEnc 9.37 release",
+      "dependency_notes": "No dynamic VC/CUDA runtime import; imports KERNEL32 and loads NvOFFRUC.dll.",
+      "role": "Historical adapter retained for comparison and provenance; not bundled or loaded by the 0.2 engine."
+    },
+    {
+      "name": "NvOFFRUC.dll",
+      "bytes": 783416,
+      "sha256": "5A0B6701D30709E25E7E5B92CA46B18AAB1459160CECD4F629872369D85C8B0A",
+      "signature": "Valid",
+      "acquisition": "nvenc_archive",
+      "license": "NVIDIA proprietary; public redistribution unresolved",
+      "provenance": "NVEnc 9.37 release",
+      "dependency_notes": "Imports cudart64_110.dll, nvcuda.dll, MSVCP140.dll, VCRUNTIME140.dll and Windows UCRT. Dynamic driver lookup: nvofapi64.dll."
+    },
+    {
+      "name": "cudart64_110.dll",
+      "bytes": 466488,
+      "sha256": "EDC35E7D0FA3F257BBEDFA7888911080C5696ACDD40B6187B6DD0173F20759AD",
+      "signature": "Valid",
+      "acquisition": "nvenc_archive",
+      "license": "NVIDIA CUDA EULA",
+      "provenance": "NVEnc 9.37 release",
+      "dependency_notes": "CUDA runtime 11.2 per file version 6,14,11,11020; imports KERNEL32."
+    },
+    {
+      "name": "msvcp140.dll",
+      "bytes": 575568,
+      "sha256": "B99EB28A471311113F5C4109CB3C463F39CFD9BDB3B07F706204DEDDDB4516A1",
+      "signature": "Valid",
+      "acquisition": "visual_studio_redist",
+      "version": "14.42.34438.0",
+      "license": "Microsoft Visual Studio 2022 Community distribution terms",
+      "provenance": "VC/Redist/MSVC/14.42.34433/x64/Microsoft.VC143.CRT/msvcp140.dll"
+    },
+    {
+      "name": "vcruntime140.dll",
+      "bytes": 120400,
+      "sha256": "052AD6A20D375957E82AA6A3C441EA548D89BE0981516CA7EB306E063D5027F4",
+      "signature": "Valid",
+      "acquisition": "visual_studio_redist",
+      "version": "14.42.34438.0",
+      "license": "Microsoft Visual Studio 2022 Community distribution terms",
+      "provenance": "VC/Redist/MSVC/14.42.34433/x64/Microsoft.VC143.CRT/vcruntime140.dll"
+    },
+    {
+      "name": "vcruntime140_1.dll",
+      "bytes": 49776,
+      "sha256": "6A99BC0128E0C7D6CBBF615FCC26909565E17D4CA3451B97F8987F9C6ACBC6C8",
+      "signature": "Valid",
+      "acquisition": "visual_studio_redist",
+      "version": "14.42.34438.0",
+      "license": "Microsoft Visual Studio 2022 Community distribution terms",
+      "provenance": "VC/Redist/MSVC/14.42.34433/x64/Microsoft.VC143.CRT/vcruntime140_1.dll"
+    }
+  ],
+  "driver_provided": [
+    "nvcuda.dll",
+    "nvofapi64.dll"
+  ],
+  "windows_provided": [
+    "KERNEL32.dll",
+    "USER32.dll",
+    "ADVAPI32.dll",
+    "SHELL32.dll",
+    "ole32.dll",
+    "dxgi.dll",
+    "d3d11.dll",
+    "D3DCOMPILER_47.dll",
+    "MFPlat.dll",
+    "Universal CRT api-ms-win-crt-*"
+  ],
+  "omitted_unneeded": [
+    "cudart64_12.dll"
+  ],
+  "built_components": [
+    {
+      "name": "NvofFrucBridge.dll",
+      "source": "src/fruc_bridge.cpp",
+      "license": "MIT (project adapter); NVIDIA SDK headers retain their own terms",
+      "build": "CMake NvofFrucBridge, Windows x64 /MT",
+      "dependency_notes": "Versioned repetition-status ABI; replaces NVEncNVOFFRUC.dll in 0.2 playback packages. Hash recorded by local package manifest."
+    }
+  ],
+  "sdk_verification": {
+    "version": "5.0.7",
+    "checked_on": "2026-10-07",
+    "archive_sha256": "89b0923adc6f34fbe86e63cc17d5db452e34b945c03ba90d8e09bd1a0158e917",
+    "license_sha256": "b8981c69975513d5671661be2f8dc1852d6f5e0715cf5b682e75409065635b5e",
+    "binary_directory": "Optical_Flow_SDK_5.0.7/NvOFFRUC/NvOFFRUCSample/bin/win64",
+    "exact_matches": [
+      "NvOFFRUC.dll",
+      "cudart64_110.dll"
+    ],
+    "distribution_note": "SDK provenance verified; accompanying May 10, 2022 license does not establish an express precompiled FRUC redistribution grant in this audit."
+  }
+}

@@ -228,7 +228,9 @@ int wmain(int argc, wchar_t** argv) {
             if (sink->pin().count()!=1) throw std::runtime_error("First-frame preview was not immediate");
             if (!no_gpu) {
                 for (int i=1;i<10;++i) check(source->pin().push(i),"GPU frame");
-                if (sink->pin().count()<20) throw std::runtime_error("Interpolation frame count too small");
+                if (sink->pin().count()!=19) throw std::runtime_error("Expected 19 x2 outputs before EOS; got "+std::to_string(sink->pin().count()));
+                check(source->pin().DeliverEndOfStream(),"x2 EOS tail");
+                if (sink->pin().count()!=20) throw std::runtime_error("Expected exactly 20 x2 outputs after EOS");
             }
             // Backward and forward timeline changes clear every retained frame.
             for (int frame : {100,2,300,1}) {
@@ -276,7 +278,7 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << "iteration=" << iteration << " output_samples=" << sink->pin().count()
                       << " property_page=OK preroll=OK first_frame=OK seeks=OK concurrent_flush=OK concurrent_stop=OK shutdown=OK\n";
         }
-        std::cout << (no_gpu ? "PASS native DirectShow lifecycle (no GPU)\n" : "PASS native DirectShow + real FRUC lifecycle\n");
+        std::cout << (no_gpu ? "PASS native DirectShow lifecycle (no GPU)\n" : "PASS native DirectShow + D3D11 synthesis lifecycle\n");
     } catch (const std::exception& error) {
         std::cerr << "FAIL " << error.what() << '\n';
         result=1;

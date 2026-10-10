@@ -2,7 +2,7 @@
 
 ## 처음 실행
 
-1. 팟플레이어와 NVOF 설정 창을 종료한 뒤 `NvofPotPlayer-0.3.0-Setup-x64.exe`를 실행합니다. NVIDIA 구성요소 약관에 직접 동의하면 현재 사용자용으로 설치하고 필터를 등록합니다. 별도 .NET, CUDA Toolkit, Visual C++ 설치는 필요하지 않습니다.
+1. 팟플레이어와 NVOF 설정 창을 종료한 뒤 `NvofPotPlayer-0.3.1-standalone.1-Setup-x64.exe`를 실행합니다. 설치 위치를 확인하면 현재 사용자용으로 설치하고 필터를 등록합니다. FRUC/CUDA 재배포 전용 동의 화면은 제거됐습니다. 별도 .NET, CUDA Toolkit, Visual C++ 설치는 필요하지 않습니다.
 2. 설치 완료 후 **NVOF 설정**을 엽니다. 기본 설치 위치는 `%LOCALAPPDATA%\Programs\NvofPotPlayer`입니다. 팟플레이어도 일반 권한으로 실행하세요. 관리자 권한 팟플레이어는 별도의 관리자용 필터 등록이 필요합니다.
 3. 팟플레이어 **F5 → 코덱/필터 → 전역 필터 우선 순위 → 시스템 코덱 추가**에서 **NVIDIA Optical Flow for PotPlayer**를 추가하고 **최우선 사용**을 선택합니다.
 4. 다른 보간 필터는 함께 활성화하지 않습니다.

@@ -42,7 +42,7 @@ namespace NvofControl
             Write("InputRateMask", value.ToString(CultureInfo.InvariantCulture));
         }
         public void SetEnabled(bool value) { Write("Enabled", value ? "1" : "0"); }
-        public bool NativeSynthesis { get { return GetPrivateProfileInt("Nvof", "ExperimentalNativeSynthesis", 1, path) != 0; } }
+        public bool NativeSynthesis { get { return true; } }
         public bool GpuCorrection { get { return GetPrivateProfileInt("Nvof", "GpuMidpointCorrection", 1, path) != 0; } }
         public bool AppearanceProtection { get { return GetPrivateProfileInt("Nvof", "AppearanceProtection", 1, path) != 0; } }
         public void SetGpuCorrection(bool value) { Write("GpuMidpointCorrection", value ? "1" : "0"); }
@@ -490,7 +490,7 @@ namespace NvofControl
                 statusDetail.Text = "팟플레이어가 관리자 권한으로 실행 중입니다. 연결 설정에서 관리자용 필터를 등록하세요.";
             }
             StringBuilder text = new StringBuilder();
-            text.AppendLine("NVOF for PotPlayer 0.3.0-cost.1");
+            text.AppendLine("NVOF for PotPlayer 0.3.1-standalone.1");
             if (registration != null)
             {
                 text.AppendLine("팟플레이어 권한: " + registration.PlayerDescription);

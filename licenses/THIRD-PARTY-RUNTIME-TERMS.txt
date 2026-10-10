@@ -1,11 +1,14 @@
-THIRD-PARTY RUNTIME TERMS
+THIRD-PARTY COMPONENT INFORMATION
 
-The MIT license for the project does not apply to proprietary NVIDIA or Microsoft runtime files acquired or installed separately. Those files retain their respective vendors' license terms and intellectual property rights. All upstream notices must be preserved.
+The native standalone package contains the project filter and registration helper,
+plus the self-contained .NET/WPF controller. Retained Microsoft, .NET, WPF,
+DirectShow baseclass, Inno Setup and other upstream notices apply to their
+respective components. The project's MIT license does not relicense those files.
 
-Use NVIDIA components only with supported NVIDIA hardware and in accordance with the applicable NVIDIA agreement, CUDA license, and export restrictions. Do not reverse engineer, decompile, disassemble, modify proprietary binaries, remove notices, bypass technical protection, redistribute a vendor SDK as a standalone product, or subject vendor components to an incompatible open-source license, except where the applicable license or mandatory law expressly permits it. NVIDIA grants no endorsement of this project.
+No NvOFFRUC, NVEnc wrapper, NvofFrucBridge, CUDA runtime or NVIDIA driver DLL is
+distributed. NVIDIA Optical Flow SDK development terms and the end user's GPU
+driver terms remain separate. The included original SDK agreements are reference
+materials, not a new license grant or an assertion of NVIDIA endorsement.
 
-Use Microsoft runtime files only as permitted by the applicable Microsoft Visual Studio distribution terms. Distribute only unmodified release runtime files with the application, retain the applicable terms and notices, and do not claim Microsoft endorsement or relicense its proprietary runtime files as project MIT code.
-
-Full vendor agreements, whose provisions govern over this summary, are listed and preserved in licenses/README.md. These terms are not a substitute for obtaining any distribution rights not granted by the relevant vendor. The application installer bundles the tested NVIDIA runtime under the publisher's reliance on the 2017 application-bundling provision. NVIDIA has not confirmed its relationship to the accompanying 2022 agreement. Component acceptance does not expand vendor rights. No standalone NVIDIA DLL download is provided.
-
-The components are provided under the vendors' respective warranty disclaimers and liability limitations, subject to applicable law. Do not use them where prohibited by their licenses, including restricted critical applications under the applicable NVIDIA terms.
+See licenses/README.md and THIRD_PARTY_NOTICES.txt for current package scope.
+Earlier release packages retain their original accompanying notices.

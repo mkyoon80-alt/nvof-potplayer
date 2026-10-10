@@ -1,5 +1,5 @@
-﻿param(
-    [string]$Version='0.3.0',
+param(
+    [string]$Version='0.3.1-standalone.1',
     [string]$PayloadDirectory,
     [string]$CompilerPath,
     [string]$OutputDirectory
@@ -18,7 +18,7 @@ $compilerVersion=(& $CompilerPath --version | Out-String).Trim()
 if($compilerVersion -notmatch '\b7\.1\.0\b'){throw "Expected Inno Setup 7.1.0; found $compilerVersion"}
 $manifest=Get-Content -LiteralPath (Join-Path $PayloadDirectory 'package-manifest.json') -Raw | ConvertFrom-Json
 if($manifest.version -ne $Version){throw 'Payload version mismatch.'}
-foreach($required in @('NvofPotPlayer.ax','NvofControl.exe','NvofRegister.exe','runtime/NvOFFRUC.dll','coreclr.dll','docs/manual/index.html','docs/manual/manual.css','docs/manual/manual.js','docs/manual/images/controller.png','licenses/NVIDIA-COMPONENT-TERMS.txt','licenses/NVIDIA-Optical-Flow-SDK-5.0.7-License.pdf','THIRD_PARTY_NOTICES.txt','RELEASE.md')){
+foreach($required in @('NvofPotPlayer.ax','NvofControl.exe','NvofRegister.exe','coreclr.dll','docs/manual/index.html','docs/manual/manual.css','docs/manual/manual.js','docs/manual/images/controller.png','licenses/NVIDIA-Optical-Flow-SDK-5.0.7-License.pdf','THIRD_PARTY_NOTICES.txt','RELEASE.md')){
     if($required -notin $manifest.files.path){throw "Required payload file missing: $required"}
 }
 $seen=@{}
@@ -32,7 +32,7 @@ foreach($entry in $manifest.files){
 }
 foreach($file in Get-ChildItem -LiteralPath $PayloadDirectory -Recurse -File){
     if($file.FullName -ne (Join-Path $PayloadDirectory 'package-manifest.json') -and -not $seen.ContainsKey($file.FullName)){throw "Unlisted payload file: $($file.Name)"}
-    if($file.Name -in @('nvcuda.dll','nvofapi64.dll','nvapi64.dll','NvOFFRUC.h')){throw "Forbidden driver/SDK payload: $($file.Name)"}
+    if($file.Name -in @('nvcuda.dll','nvofapi64.dll','nvapi64.dll','NvOFFRUC.h','NvOFFRUC.dll','NvofFrucBridge.dll','NVEncNVOFFRUC.dll','cudart64_110.dll','cudart64_12.dll')){throw "Forbidden driver/SDK payload: $($file.Name)"}
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $name="NvofPotPlayer-$Version-Setup-x64.exe"

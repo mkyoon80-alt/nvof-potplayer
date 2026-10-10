@@ -49,7 +49,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.3.0-cost.1";
+constexpr char kFilterBuild[]="0.3.1-standalone.1";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -434,10 +434,8 @@ public:
             probe_services_ = GetPrivateProfileIntW(L"Nvof", L"ProbeServices", 0, ini.c_str()) != 0;
             native_feature_enabled_ = GetPrivateProfileIntW(L"Nvof", L"NativeD3D11", 0, ini.c_str()) != 0;
             enabled_ = GetPrivateProfileIntW(L"Nvof", L"Enabled", 1, ini.c_str()) != 0;
-            gpu_correction_=GetPrivateProfileIntW(L"Nvof",L"GpuMidpointCorrection",1,ini.c_str())!=0;
-            appearance_protection_=GetPrivateProfileIntW(L"Nvof",L"AppearanceProtection",1,ini.c_str())!=0;
-            native_synthesis_=GetPrivateProfileIntW(L"Nvof",L"ExperimentalNativeSynthesis",1,ini.c_str())!=0;
-            if(native_synthesis_){gpu_correction_=false;appearance_protection_=false;}
+            // Historical INI keys cannot re-enable the removed FRUC backend.
+            gpu_correction_=false;appearance_protection_=false;native_synthesis_=true;
 
             input_rate_mask_=GetPrivateProfileIntW(L"Nvof",L"InputRateMask",nvof::kAllInputRates,ini.c_str()) & nvof::kAllInputRates;
             // Fixed-rate modes were removed. Legacy INI keys cannot reactivate them.
@@ -554,7 +552,7 @@ public:
         catch(...) {return E_OUTOFMEMORY;}
         CAutoLock receive(&m_csReceive);
         try {
-            auto engine=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",device,context,duplicate,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_,native_synthesis_?nvof::GpuInterpolationBackend::native_experimental:nvof::GpuInterpolationBackend::fruc);
+            auto engine=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",device,context,duplicate,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_,nvof::GpuInterpolationBackend::native_experimental);
             auto* output=static_cast<nvof::transport::OutputPin*>(m_pOutput);
             const HRESULT transport=output ? output->set_gpu_mode(true) : E_UNEXPECTED;
             if(FAILED(transport)) {
@@ -1025,7 +1023,7 @@ private:
             write_log("GPU input surface="+format+" output=NV12 conversion="+input_conversion_);
         }
         if(!gpu_engine_)gpu_engine_=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",
-            native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_,native_synthesis_?nvof::GpuInterpolationBackend::native_experimental:nvof::GpuInterpolationBackend::fruc);
+            native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_,nvof::GpuInterpolationBackend::native_experimental);
         // Submit capture while the upstream sample is held. Decoder reuse and
         // renderer reads are ordered on this device's shared immediate context;
         // keep an owned output lease without a per-frame CPU completion wait.
@@ -1279,7 +1277,7 @@ private:
                     << ",\"qualityState\":" << json_string(quality_state_)
                     << ",\"buildVersion\":" << json_string(kFilterBuild)
                     << ",\"gpuCompletion\":" << json_string(gpu_engine_&&gpu_engine_->queued_completion()?"context-ordered":"blocking")
-                    << ",\"algorithm\":" << json_string(native_synthesis_&&native_gpu_active_?"x2-native-newton-cost-0.3.0-cost.1":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
+                    << ",\"algorithm\":" << json_string(native_synthesis_?"x2-native-newton-cost-0.3.1-standalone.1":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
                     << ",\"message\":" << json_string(message) << "}\n";
                 stream.flush();
                 if (!stream) return;
