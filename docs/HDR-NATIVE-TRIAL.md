@@ -1,4 +1,4 @@
-# Native 10bit / HDR trial — 0.4.0
+# Native 10bit / HDR trial — 0.4.0 / 0.4.0-hdr.1
 
 ## Scope
 
@@ -31,7 +31,22 @@ Tests executed on the owner's Windows / RTX 5090 system; local evidence lives in
 
 The real-media fixture was supplied locally by the user: 3840×1604, 24000/1001, 10bit limited BT.2020/PQ, Dolby Vision profile 8, base-layer compatibility ID 1. Static mastering peak was 1000 nits; MaxCLL 604 and MaxFALL 120. Dolby Vision and HDR10+ dynamic data were also present. Twelve decoded frames at 1:32 were resized to the fixed 1920×1080 stress-fixture dimensions solely for concurrent texture-lifetime testing. This does not validate final 4K player performance or HDR appearance. Neither the movie nor decoded frames are distributed.
 
-Synthetic signal/metadata checks and decoded-pixel stress are not a claim of actual PotPlayer HDR display validation. Actual HDR10 playback/brightness, renderer side-data consumption, seek/close behavior and actual HLG media acceptance remain to be checked by playing the supplied video and an HLG sample. Physical monitor HDR activation is not inferred from the filter's signal label.
+## Actual-player correction — 0.4.0-hdr.1 (2026-10-11)
+
+The initial local 0.4.0 was washed out in actual PotPlayer HDR playback, while Fluid Motion displayed the same file correctly. Its decoded-pixel and explicitly tagged media-type fixtures did not cover the player's real connection. Actual evidence: the built-in decoder advertised legacy FORMAT_VideoInfo/NV12 without color flags, delivered native P010 samples, and provided IMediaSideData mastering (80 bytes) and light-level (8 bytes). The filter filled the absent header with BT.709 SDR and skipped side-data capture because the input header had not already been classified as HDR.
+
+The correction reads bounded HEVC hvcC/Annex B sequence-header VUI from the immediate decoder's connected compressed video input when raw output color fields are absent. Verified limited BT.2020 NCL PQ/HLG signalling is restored to the renderer's VIDEOINFOHEADER2. Explicit decoder color fields, including an explicitly tone-mapped SDR output, take precedence. Bit depth or filenames are never used to infer HDR. Color recovery is a connection/type-change operation, not a per-frame scan. Other codecs need correctly tagged decoder output; no external parser/decoder runtime is bundled.
+
+HDR static side data is now captured independently of the legacy input header, per sample, retaining the existing copy/lifetime/seek behaviour. The installed trial logs the resolved transfer and metadata byte counts without dumping compressed or subtitle headers. Its diagnostics report the output signal classification.
+
+Validation:
+- Actual captured 264-byte decoder media header: BT.2020 / PQ / limited matches independent ffprobe evidence.
+- New SPS parser tests: PQ, HLG, SDR, range, hvcC and Annex B, scaling lists/reference syntax, truncated/oversized/conflicting records and 4,000 bounded mutations.
+- New DirectShow fixtures: untagged legacy NV12/P010 HDR10 and HLG with compressed input signalling; explicitly tagged SDR remains SDR despite HDR source signalling. 23.976→119.88 output, metadata, timestamps, seek, EOS and dynamic type handling passed.
+- Existing explicit HDR10/HLG and untagged P010 SDR transport passed. CTest 11/11 passed. Installed runtime check passed without bundled FRUC/CUDA/driver libraries.
+- Actual PotPlayer replay: BT.2020 primaries 9, matrix 4, PQ transfer 15; P010 input/output; 80-byte mastering and 8-byte light metadata delivered. **The owner confirmed normal color after installation.**
+
+This verifies the supplied HDR10-compatible file with the owner's current decoder/renderer setup. Actual HLG media/display playback remains unverified. Physical monitor HDR activation is not inferred from the filter's signal label. GitHub publication remains on hold; only the local filter was updated, with settings and the previous 0.4.0 backed up.
 
 ## UI / standalone
 

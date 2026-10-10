@@ -1,10 +1,12 @@
 #include "nvof/video_format.hpp"
+#include "nvof/hevc_color.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <streams.h>
 #include <dvdmedia.h>
 #include <mfidl.h>
+#include <mfapi.h>
 #include <evr.h>
 #include <mferror.h>
 #include <d3d9.h>
@@ -50,7 +52,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.4.0";
+constexpr char kFilterBuild[]="0.4.0-hdr.1";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -277,9 +279,8 @@ DWORD native_output_color_flags(const CMediaType& media) noexcept {
     // Low eight bits are AMCONTROL flags, not DXVA SampleFormat.
     return (color.value & 0xffffff00u) | (controls & 0xffu) | AMCONTROL_USED | AMCONTROL_COLORINFO_PRESENT;
 }
-HRESULT tag_native_output_color(CMediaType& media,const Layout& layout) noexcept {
+HRESULT tag_native_output_color(CMediaType& media,const Layout& layout,DWORD controls) noexcept {
     try {
-        const DWORD controls=native_output_color_flags(media);
         if(media.formattype==FORMAT_VideoInfo) {
             if(!media.pbFormat || media.cbFormat<sizeof(VIDEOINFOHEADER))return VFW_E_TYPE_NOT_ACCEPTED;
             const std::vector<BYTE> original(media.pbFormat,media.pbFormat+media.cbFormat);
@@ -703,12 +704,62 @@ public:
         default:return "other";
         }
     }
+    DWORD resolved_output_color_flags(const CMediaType& input) const noexcept {
+        const DWORD fallback=native_output_color_flags(input);
+        // The raw decoder type is authoritative whenever it contains color.
+        // Never replace an explicitly tone-mapped SDR type with source HDR.
+        if(input.formattype==FORMAT_VideoInfo2 && input.pbFormat && input.cbFormat>=sizeof(VIDEOINFOHEADER2)) {
+            const DWORD flags=reinterpret_cast<const VIDEOINFOHEADER2*>(input.pbFormat)->dwControlFlags;
+            if(flags & AMCONTROL_COLORINFO_PRESENT) {
+                DXVA2_ExtendedFormat color{};color.value=flags;
+                if(color.VideoTransferFunction || color.VideoPrimaries || color.VideoTransferMatrix)return fallback;
+            }
+        }
+        // Some native HEVC decoders expose untagged legacy NV12 media types,
+        // while the samples contain P010 + HDR side data. Read only their
+        // connected compressed-video sequence header; no filename/GPU guesses.
+        try {
+            Microsoft::WRL::ComPtr<IPin> upstream;
+            if(!m_pInput || FAILED(m_pInput->ConnectedTo(&upstream)))return fallback;
+            PIN_INFO info{};if(FAILED(upstream->QueryPinInfo(&info)) || !info.pFilter)return fallback;
+            Microsoft::WRL::ComPtr<IBaseFilter> decoder;decoder.Attach(info.pFilter);
+            Microsoft::WRL::ComPtr<IEnumPins> pins;if(FAILED(decoder->EnumPins(&pins)))return fallback;
+            DWORD recovered=0;Microsoft::WRL::ComPtr<IPin> pin;
+            for(unsigned n=0;n<64 && pins->Next(1,&pin,nullptr)==S_OK;++n,pin.Reset()) {
+                PIN_DIRECTION dir{};CMediaType media;
+                if(FAILED(pin->QueryDirection(&dir)) || dir!=PINDIR_INPUT || FAILED(pin->ConnectionMediaType(&media)) ||
+                   media.majortype!=MEDIATYPE_Video || !media.pbFormat)continue;
+                const GUID hvc1={MAKEFOURCC('H','V','C','1'),0,0x10,{0x80,0,0,0xaa,0,0x38,0x9b,0x71}};
+                GUID hevc=hvc1;hevc.Data1=MAKEFOURCC('H','E','V','C');
+                GUID hev1=hvc1;hev1.Data1=MAKEFOURCC('H','E','V','1');
+                GUID lower=hvc1;lower.Data1=MAKEFOURCC('h','v','c','1');
+                if(media.subtype!=hvc1 && media.subtype!=hevc && media.subtype!=hev1 && media.subtype!=lower)continue;
+                const BYTE* sequence=nullptr;size_t length=0;
+                if(media.formattype==FORMAT_MPEG2Video && media.cbFormat>=offsetof(MPEG2VIDEOINFO,dwSequenceHeader)) {
+                    const auto* header=reinterpret_cast<const MPEG2VIDEOINFO*>(media.pbFormat);
+                    length=header->cbSequenceHeader;
+                    if(length>media.cbFormat-offsetof(MPEG2VIDEOINFO,dwSequenceHeader))continue;
+                    sequence=reinterpret_cast<const BYTE*>(header->dwSequenceHeader);
+                }
+                if(!sequence)continue;
+                auto color=nvof::hevc_color(sequence,length);
+                if(!color || color->full_range || color->primaries!=9 || color->matrix!=9 || (color->transfer!=16 && color->transfer!=18))continue;
+                DXVA2_ExtendedFormat hdr{};hdr.NominalRange=DXVA2_NominalRange_16_235;
+                hdr.VideoPrimaries=MFVideoPrimaries_BT2020;hdr.VideoTransferMatrix=MFVideoTransferMatrix_BT2020_10;
+                hdr.VideoTransferFunction=color->transfer==16?MFVideoTransFunc_2084:MFVideoTransFunc_HLG;
+                const DWORD value=(hdr.value & 0xffffff00u) | (fallback & 0xffu);
+                if(recovered && recovered!=value)return fallback; // Conflicting active video inputs.
+                recovered=value;
+            }
+            return recovered?recovered:fallback;
+        }catch(...){return fallback;}
+    }
     bool connected_output_color_matches(const CMediaType& input) const noexcept {
         if(!native_feature_enabled_)return true;
         if(!m_pOutput)return false;
         const auto& output=m_pOutput->CurrentMediaType();
         return output.formattype==FORMAT_VideoInfo2 && output.pbFormat && output.cbFormat>=sizeof(VIDEOINFOHEADER2) &&
-            reinterpret_cast<const VIDEOINFOHEADER2*>(output.pbFormat)->dwControlFlags==native_output_color_flags(input);
+            reinterpret_cast<const VIDEOINFOHEADER2*>(output.pbFormat)->dwControlFlags==resolved_output_color_flags(input);
     }
     HRESULT CheckInputType(const CMediaType* type) override {
         if (!type) return E_POINTER;
@@ -725,7 +776,7 @@ public:
         if(native_feature_enabled_) {
             if(output->formattype!=FORMAT_VideoInfo2)return VFW_E_TYPE_NOT_ACCEPTED;
             const auto* header=reinterpret_cast<const VIDEOINFOHEADER2*>(output->pbFormat);
-            if(header->dwControlFlags!=native_output_color_flags(*input))return VFW_E_TYPE_NOT_ACCEPTED;
+            if(header->dwControlFlags!=resolved_output_color_flags(*input))return VFW_E_TYPE_NOT_ACCEPTED;
         }
         const auto duration = negotiated_duration(in.duration);
         if ((duration>0 && out.duration<=0) || std::llabs(out.duration - duration) > 1)
@@ -754,7 +805,7 @@ public:
         HRESULT hr = media->Set(m_pInput->CurrentMediaType());
         if (FAILED(hr)) return hr;
         if(native_feature_enabled_) {
-            hr=tag_native_output_color(*media,input_);
+            hr=tag_native_output_color(*media,input_,resolved_output_color_flags(*media));
             if(FAILED(hr))return hr;
         }
         BITMAPINFOHEADER* bitmap = nullptr;
@@ -1052,14 +1103,18 @@ private:
         auto input=nvof::extract_gpu_frame(sample,input_.width,input_.height,start,input_.native_color_supported);
         D3D11_TEXTURE2D_DESC surface{};input.texture->GetDesc(&surface);
         const bool p010=surface.Format==DXGI_FORMAT_P010;
-        if(input_.hdr_transfer && !p010)return report_error("Native HDR requires a 10-bit P010 decoder surface",VFW_E_TYPE_NOT_ACCEPTED);
-        if(input_.hdr_transfer)input.hdr=nvof::capture_hdr(sample);
+        if(output_.hdr_transfer && !p010)return report_error("Native HDR requires a 10-bit P010 decoder surface",VFW_E_TYPE_NOT_ACCEPTED);
+        // Metadata is a sample contract, not conditional on a possibly untagged
+        // decoder media type. Capture every sample without stale-frame caching.
+        input.hdr=nvof::capture_hdr(sample);
         const HRESULT agreed=ensure_native_output_format(p010);if(FAILED(agreed))return agreed;
         const std::string format=p010?"P010":"NV12";
         if(input_surface_format_!=format) {
             input_surface_format_=format;
             input_conversion_="none";
-            write_log("GPU input surface="+format+" output="+format+" conversion="+input_conversion_);
+            write_log("GPU input surface="+format+" output="+format+" conversion="+input_conversion_+
+                " transfer="+std::to_string(output_.hdr_transfer)+" hdrMasteringBytes="+std::to_string(input.hdr?input.hdr->data[0].size():0)+
+                " hdrLightBytes="+std::to_string(input.hdr?input.hdr->data[1].size():0));
         }
         if(!gpu_engine_)gpu_engine_=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",
             native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,gpu_correction_,appearance_protection_,nvof::GpuInterpolationBackend::native_experimental);
@@ -1290,7 +1345,7 @@ private:
                     << ",\"inputSurfaceFormat\":" << json_string(input_surface_format_)
                     << ",\"inputConversion\":" << json_string(input_conversion_)
                     << ",\"outputSurfaceFormat\":" << json_string(gpu_delivery_verified_?(output_.ten_bit?"P010":"NV12"):"")
-                    << ",\"colorMode\":" << json_string(gpu_delivery_verified_?(input_.hdr_transfer==MFVideoTransFunc_2084?"HDR10":input_.hdr_transfer==MFVideoTransFunc_HLG?"HLG":"SDR"):"")
+                    << ",\"colorMode\":" << json_string(gpu_delivery_verified_?(output_.hdr_transfer==MFVideoTransFunc_2084?"HDR10":output_.hdr_transfer==MFVideoTransFunc_HLG?"HLG":"SDR"):"")
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
                     << ",\"doubleRate\":" << (nvof::output_multiple(input_.duration,output_limit_)==2?"true":"false")
                     << ",\"outputFpsLimit\":" << output_limit_

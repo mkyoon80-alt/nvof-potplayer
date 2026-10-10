@@ -1,4 +1,5 @@
 #include "nvof/video_format.hpp"
+#include "hevc_color_fixture.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -36,6 +37,7 @@ bool require_services=false;
 bool p010_fixture=false;
 bool p010_media=false;
 unsigned hdr_transfer=0;
+unsigned recover_transfer=0;
 int color_fixture=0; // 0 default, 1 legacy VideoInfo, 2 explicitly tagged VideoInfo2.
 constexpr DWORD kMetadataTail=0x4e564f46;
 DWORD explicit_color_flags() {
@@ -82,7 +84,7 @@ CMediaType input_type() {
     video->bmiHeader.biBitCount = p010_media?24:12;
     video->bmiHeader.biCompression = p010_media?MAKEFOURCC('P','0','1','0'):MAKEFOURCC('N','V','1','2');
     video->bmiHeader.biSizeImage = kWidth*kHeight*3/(p010_media?1:2);
-    if(hdr_transfer)video->dwControlFlags=explicit_color_flags();
+    if(hdr_transfer && !recover_transfer)video->dwControlFlags=explicit_color_flags();
     type.SetSampleSize(video->bmiHeader.biSizeImage);
     if(color_fixture) {
         std::memcpy(type.pbFormat+sizeof(VIDEOINFOHEADER2),&kMetadataTail,sizeof(kMetadataTail));
@@ -252,15 +254,34 @@ public:
 private:
     CMediaType type_;
 };
+// Models the public input pin on a native HEVC decoder: the raw output
+// type is legacy/untagged but the connected compressed pin retains hvcC.
+class EncodedInfoPin final : public CBaseInputPin {
+public:
+    EncodedInfoPin(CBaseFilter* owner,CCritSec* lock,HRESULT* hr):CBaseInputPin(NAME("Compressed header"),owner,lock,hr,L"Encoded"){}
+    HRESULT CheckMediaType(const CMediaType*) override {return S_OK;}
+    STDMETHODIMP ConnectionMediaType(AM_MEDIA_TYPE* media) override {
+        if(!media)return E_POINTER;if(!recover_transfer)return VFW_E_NOT_CONNECTED;
+        auto seq=hevc_fixture::hvcc(recover_transfer);
+        CMediaType type;type.SetType(&MEDIATYPE_Video);
+        const GUID hvc1={MAKEFOURCC('H','V','C','1'),0,0x10,{0x80,0,0,0xaa,0,0x38,0x9b,0x71}};
+        type.SetSubtype(&hvc1);type.SetFormatType(&FORMAT_MPEG2Video);
+        const size_t size=offsetof(MPEG2VIDEOINFO,dwSequenceHeader)+seq.size();
+        auto* m=reinterpret_cast<MPEG2VIDEOINFO*>(type.AllocFormatBuffer(ULONG(size)));if(!m)return E_OUTOFMEMORY;
+        std::memset(m,0,size);m->cbSequenceHeader=DWORD(seq.size());std::memcpy(m->dwSequenceHeader,seq.data(),seq.size());
+        return CopyMediaType(media,&type);
+    }
+};
 class Source final : public CBaseFilter {
 public:
-    Source(HRESULT* hr) : CBaseFilter(NAME("Synthetic source"),nullptr,&lock_,CLSID_NULL), pin_(this,&lock_,hr) {}
-    int GetPinCount() override { return 1; }
-    CBasePin* GetPin(int n) override { return n==0 ? &pin_ : nullptr; }
+    Source(HRESULT* hr) : CBaseFilter(NAME("Synthetic source"),nullptr,&lock_,CLSID_NULL), pin_(this,&lock_,hr), encoded_(this,&lock_,hr) {}
+    int GetPinCount() override { return recover_transfer?2:1; }
+    CBasePin* GetPin(int n) override { return n==0 ? static_cast<CBasePin*>(&pin_) : n==1 && recover_transfer ? &encoded_ : nullptr; }
     SourcePin& pin() { return pin_; }
 private:
     CCritSec lock_;
     SourcePin pin_;
+    EncodedInfoPin encoded_;
 };
 class SinkPin final : public CBaseInputPin, public nvof::transport::DecoderConfiguration {
 public:
@@ -766,6 +787,11 @@ int wmain(int argc,wchar_t** argv) {
     p010_fixture=(argc>9 && wcscmp(argv[9],L"p010")==0) || (argc>2 && (wcscmp(argv[2],L"--p010-input")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0));
     p010_media=argc>9 && wcscmp(argv[9],L"p010-media")==0;
     if(argc>9 && (wcscmp(argv[9],L"hdr10")==0 || wcscmp(argv[9],L"hlg")==0)) {p010_media=true;hdr_transfer=wcscmp(argv[9],L"hdr10")==0?MFVideoTransFunc_2084:MFVideoTransFunc_HLG;}
+    if(argc>9 && (wcscmp(argv[9],L"hdr10-legacy")==0 || wcscmp(argv[9],L"hlg-legacy")==0)) {
+        recover_transfer=wcscmp(argv[9],L"hdr10-legacy")==0?16:18;
+        hdr_transfer=recover_transfer==16?MFVideoTransFunc_2084:MFVideoTransFunc_HLG;p010_fixture=true;color_fixture=1;
+    }
+    if(argc>9 && wcscmp(argv[9],L"sdr-override")==0){recover_transfer=16;p010_fixture=true;color_fixture=2;}
     if(p010_media)p010_fixture=true;
     require_services=argc>2 && wcscmp(argv[2],L"--probe-services")==0;
     check(CoInitializeEx(nullptr,COINIT_MULTITHREADED),"CoInitialize");
@@ -784,8 +810,8 @@ int wmain(int argc,wchar_t** argv) {
             run_rate_policy_case(factory.Get(),24000,1001,1000,21,true,"selected",420000);
             std::cout<<"PASS 42ms header with 23.976 PTS through MF GPU transport; P010="<<p010_fixture<<std::endl;
         } else if(argc>=9 && (wcscmp(argv[2],L"--rate-policy")==0 || wcscmp(argv[2],L"--metadata-legacy")==0 || wcscmp(argv[2],L"--metadata-tagged")==0)) {
-            color_fixture=wcscmp(argv[2],L"--metadata-legacy")==0?1:wcscmp(argv[2],L"--metadata-tagged")==0?2:0;
-            if(color_fixture){check_malformed_media(factory.Get());check_explicit_metadata_preservation(factory.Get());}
+            if(!recover_transfer)color_fixture=wcscmp(argv[2],L"--metadata-legacy")==0?1:wcscmp(argv[2],L"--metadata-tagged")==0?2:0;
+            if(color_fixture && !recover_transfer){check_malformed_media(factory.Get());check_explicit_metadata_preservation(factory.Get());}
             const std::wstring wide_reason=argv[8];
             run_rate_policy_case(factory.Get(),_wtoi64(argv[3]),_wtoi64(argv[4]),_wtoi64(argv[5]),_wtoi64(argv[6]),
                 wcscmp(argv[7],L"mf")==0,std::string(wide_reason.begin(),wide_reason.end()));
