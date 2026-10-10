@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="NVIDIA Optical Flow · PotPlayer" Width="520" Height="500" MinWidth="480" MinHeight="500"
+        Title="NVIDIA Optical Flow · Newton Cost 시험판" Width="520" Height="500" MinWidth="480" MinHeight="500"
         WindowStartupLocation="CenterScreen" Background="#F6F7F5" Foreground="#222925"
         FontFamily="Segoe UI, Malgun Gothic" FontSize="13" UseLayoutRounding="True" SnapsToDevicePixels="True">
   <Window.Resources>

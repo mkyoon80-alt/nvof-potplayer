@@ -24,13 +24,15 @@ struct MotionSynthesizer::Impl {
     HMODULE module=nullptr;
     NV_OF_D3D11_API_FUNCTION_LIST api{};
     NvOFHandle handle=nullptr;
-    std::array<ComPtr<ID3D11Texture2D>,2> sources,inputs,flows;
-    std::array<ComPtr<ID3D11ShaderResourceView>,2> ys,uvs,fvs;
+    std::array<ComPtr<ID3D11Texture2D>,2> sources,inputs,flows,costs;
+    std::array<ComPtr<ID3D11ShaderResourceView>,2> ys,uvs,fvs,costViews;
     std::array<std::array<ComPtr<ID3D11RenderTargetView>,2>,2> inputTargets;
-    std::array<NvOFGPUBufferHandle,2> ih{},fh{};
+    std::array<NvOFGPUBufferHandle,2> ih{},fh{},ch{};
     ComPtr<ID3D11VertexShader> vertex;
     ComPtr<ID3D11PixelShader> synth,reduce,invert,stationary,expandStationary,repair;
-    std::array<ComPtr<ID3D11Texture2D>,2> repairedTextures;
+    std::array<ComPtr<ID3D11Texture2D>,2> repairScratch,repairedTextures;
+    std::array<ComPtr<ID3D11RenderTargetView>,2> repairScratchTargets;
+    std::array<ComPtr<ID3D11ShaderResourceView>,2> repairScratchViews;
     std::array<ComPtr<ID3D11RenderTargetView>,2> repairedTargets;
     std::array<ComPtr<ID3D11ShaderResourceView>,2> repairedViews;
     std::array<ComPtr<ID3D11Texture2D>,2> layerTextures;
@@ -47,6 +49,7 @@ struct MotionSynthesizer::Impl {
     ComPtr<ID3D11RasterizerState> raster;
     ComPtr<ID3D11Buffer> constants;
     unsigned maxDimension,grid=0;
+    DXGI_FORMAT costFormat=DXGI_FORMAT_UNKNOWN;
     int w=0,h=0,aw=0,ah=0;
     bool prepared=false,history=false;
 
@@ -63,7 +66,7 @@ struct MotionSynthesizer::Impl {
             if(!create)throw std::runtime_error("NVOFA D3D11 entry point unavailable");
             of(create(NV_OF_API_VERSION,&api),"Create NVOFA API");
             if(!api.nvCreateOpticalFlowD3D11||!api.nvOFInit||!api.nvOFExecute||!api.nvOFDestroy||
-               !api.nvOFGetCaps||!api.nvOFRegisterResourceD3D11||!api.nvOFUnregisterResourceD3D11)
+               !api.nvOFGetCaps||!api.nvOFGetSurfaceFormatCountD3D11||!api.nvOFGetSurfaceFormatD3D11||!api.nvOFRegisterResourceD3D11||!api.nvOFUnregisterResourceD3D11)
                 throw std::runtime_error("Incomplete NVOFA API");
             check(d->CreateVertexShader(shaders::motion::vs,sizeof(shaders::motion::vs),nullptr,&vertex),"Motion vs");
             check(d->CreatePixelShader(shaders::motion::midpoint,sizeof(shaders::motion::midpoint),nullptr,&synth),"Motion midpoint");
@@ -96,6 +99,7 @@ struct MotionSynthesizer::Impl {
     void reset() noexcept {
         prepared=history=trustworthy=false;
         if(handle){
+            for(auto& p:ch)if(p){api.nvOFUnregisterResourceD3D11(p);p=nullptr;}
             for(auto& p:fh)if(p){api.nvOFUnregisterResourceD3D11(p);p=nullptr;}
             for(auto& p:ih)if(p){api.nvOFUnregisterResourceD3D11(p);p=nullptr;}
             api.nvOFDestroy(handle);handle=nullptr;
@@ -106,7 +110,9 @@ struct MotionSynthesizer::Impl {
         for(auto& p:warpViews)p.Reset();for(auto& p:warpTargets)p.Reset();for(auto& p:warpMaps)p.Reset();
         for(auto& p:layerViews)p.Reset();for(auto& p:layerTargets)p.Reset();for(auto& p:layerTextures)p.Reset();
         for(auto& p:repairedViews)p.Reset();for(auto& p:repairedTargets)p.Reset();for(auto& p:repairedTextures)p.Reset();
-        w=h=aw=ah=0;grid=0;
+        for(auto& p:costViews)p.Reset();for(auto& p:costs)p.Reset();
+        for(auto& p:repairScratchViews)p.Reset();for(auto& p:repairScratchTargets)p.Reset();for(auto& p:repairScratch)p.Reset();
+        w=h=aw=ah=0;grid=0;costFormat=DXGI_FORMAT_UNKNOWN;
     }
     ComPtr<ID3D11ShaderResourceView> srv(ID3D11Texture2D* t,DXGI_FORMAT format) {
         D3D11_SHADER_RESOURCE_VIEW_DESC d{};d.Format=format;d.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;d.Texture2D.MipLevels=1;
@@ -121,7 +127,7 @@ struct MotionSynthesizer::Impl {
             aw=(std::max)(2,int(w*scale)&~1);ah=(std::max)(2,int(h*scale)&~1);
             for(unsigned i=0;i<2;++i) {
                 D3D11_TEXTURE2D_DESC d{};d.Width=aw;d.Height=ah;d.MipLevels=d.ArraySize=1;
-                d.Format=i?DXGI_FORMAT_R32G32_FLOAT:DXGI_FORMAT_R32G32B32A32_FLOAT;d.SampleDesc.Count=1;
+                d.Format=DXGI_FORMAT_R32G32B32A32_FLOAT;d.SampleDesc.Count=1;
                 d.Usage=D3D11_USAGE_DEFAULT;d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;
                 check(device->CreateTexture2D(&d,nullptr,&warpMaps[i]),"Inverse map texture");
                 check(device->CreateRenderTargetView(warpMaps[i].Get(),nullptr,&warpTargets[i]),"Inverse map RTV");
@@ -143,7 +149,18 @@ struct MotionSynthesizer::Impl {
             of(api.nvOFGetCaps(handle,NV_OF_CAPS_SUPPORTED_OUTPUT_GRID_SIZES,grids.data(),&count),"Flow grids");
             for(unsigned g:{4u,2u,1u})if(std::find(grids.begin(),grids.end(),g)!=grids.end()){grid=g;break;}
             if(!grid)throw std::runtime_error("No supported flow grid");
+            // Query rather than assuming that every driver supports 8-bit cost.
+            uint32_t costCount=0;
+            of(api.nvOFGetSurfaceFormatCountD3D11(handle,NV_OF_BUFFER_USAGE_COST,NV_OF_MODE_OPTICALFLOW,&costCount),"Cost format count");
+            if(costCount>32)throw std::runtime_error("Invalid NVOFA cost format count");
+            if(costCount) {
+                std::vector<DXGI_FORMAT> formats(costCount);
+                of(api.nvOFGetSurfaceFormatD3D11(handle,NV_OF_BUFFER_USAGE_COST,NV_OF_MODE_OPTICALFLOW,formats.data()),"Cost formats");
+                // Unknown cost formats are ignored: keep baseline synthesis available.
+                if(std::find(formats.begin(),formats.end(),DXGI_FORMAT_R8_UINT)!=formats.end())costFormat=DXGI_FORMAT_R8_UINT;
+            }
             NV_OF_INIT_PARAMS init{};init.width=aw;init.height=ah;
+            init.enableOutputCost=costFormat==DXGI_FORMAT_R8_UINT?NV_OF_TRUE:NV_OF_FALSE;
             init.outGridSize=static_cast<NV_OF_OUTPUT_VECTOR_GRID_SIZE>(grid);
             init.mode=NV_OF_MODE_OPTICALFLOW;init.perfLevel=NV_OF_PERF_LEVEL_MEDIUM;
             init.predDirection=NV_OF_PRED_DIRECTION_BOTH;init.inputBufferFormat=NV_OF_BUFFER_FORMAT_NV12;
@@ -165,6 +182,15 @@ struct MotionSynthesizer::Impl {
                 check(device->CreateTexture2D(&d,nullptr,&repairedTextures[i]),"Repaired flow texture");
                 check(device->CreateRenderTargetView(repairedTextures[i].Get(),nullptr,&repairedTargets[i]),"Repaired flow RTV");
                 repairedViews[i]=srv(repairedTextures[i].Get(),d.Format);
+                check(device->CreateTexture2D(&d,nullptr,&repairScratch[i]),"Repair scratch texture");
+                check(device->CreateRenderTargetView(repairScratch[i].Get(),nullptr,&repairScratchTargets[i]),"Repair scratch RTV");
+                repairScratchViews[i]=srv(repairScratch[i].Get(),d.Format);
+                if(costFormat!=DXGI_FORMAT_UNKNOWN) {
+                    d.Format=costFormat;d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
+                    check(device->CreateTexture2D(&d,nullptr,&costs[i]),"Cost texture");
+                    costViews[i]=srv(costs[i].Get(),d.Format);
+                    of(api.nvOFRegisterResourceD3D11(handle,costs[i].Get(),&ch[i]),"Register cost");
+                }
                 of(api.nvOFRegisterResourceD3D11(handle,inputs[i].Get(),&ih[i]),"Register analysis");
                 of(api.nvOFRegisterResourceD3D11(handle,flows[i].Get(),&fh[i]),"Register flow");
             }
@@ -188,7 +214,7 @@ struct MotionSynthesizer::Impl {
     void draw(ID3D11RenderTargetView* target,unsigned plane,bool down,unsigned source=0,float fraction=0.5f,bool mapping=false,unsigned stationaryStage=0,bool repairing=false) {
         float data[8]={float(w),float(h),float(aw),float(ah),float(grid),float(plane),float(source),fraction};
         context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
-        ID3D11ShaderResourceView* views[]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),down?nullptr:(repairing?fvs[0].Get():repairedViews[0].Get()),down?nullptr:(repairing?fvs[1].Get():repairedViews[1].Get()),down||mapping||stationaryStage||repairing?nullptr:warpViews[0].Get(),down||mapping||stationaryStage||repairing?nullptr:warpViews[1].Get(),stationaryStage>1?layerViews[stationaryStage-2].Get():(down||mapping||stationaryStage||repairing?nullptr:layerViews[0].Get())};
+        ID3D11ShaderResourceView* views[]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),down?nullptr:(repairing?(fraction>0?fvs[0].Get():repairScratchViews[0].Get()):repairedViews[0].Get()),down?nullptr:(repairing?(fraction>0?fvs[1].Get():repairScratchViews[1].Get()):repairedViews[1].Get()),down||mapping||stationaryStage||repairing?nullptr:warpViews[0].Get(),down||mapping||stationaryStage||repairing?nullptr:warpViews[1].Get(),stationaryStage>1?layerViews[stationaryStage-2].Get():(down||mapping||stationaryStage||repairing?nullptr:layerViews[0].Get()),mapping?costViews[0].Get():nullptr,mapping?costViews[1].Get():nullptr,mapping?fvs[0].Get():nullptr,mapping?fvs[1].Get():nullptr};
         auto cb=constants.Get();auto sp=sampler.Get();
         context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->VSSetShader(vertex.Get(),nullptr,0);context->HSSetShader(nullptr,nullptr,0);
@@ -201,8 +227,8 @@ struct MotionSynthesizer::Impl {
         context->RSSetViewports(1,&vp);
         if(mapping){ID3D11RenderTargetView* targets[]={warpTargets[0].Get(),warpTargets[1].Get()};context->OMSetRenderTargets(2,targets,nullptr);}
         else context->OMSetRenderTargets(1,&target,nullptr);
-        context->PSSetShaderResources(0,9,views);context->Draw(3,0);
-        ID3D11ShaderResourceView* empty[9]{};context->PSSetShaderResources(0,9,empty);context->OMSetRenderTargets(0,nullptr,nullptr);
+        context->PSSetShaderResources(0,13,views);context->Draw(3,0);
+        ID3D11ShaderResourceView* empty[13]{};context->PSSetShaderResources(0,13,empty);context->OMSetRenderTargets(0,nullptr,nullptr);
     }
     void validate(ID3D11Texture2D* t,int width,int height) {
         if(!t||width<4||height<4||width>8192||height>8192||(width&1)||(height&1))
@@ -226,6 +252,7 @@ struct MotionSynthesizer::Impl {
 
 MotionSynthesizer::MotionSynthesizer(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit):impl_(std::make_unique<Impl>(d,c,limit)){}
 MotionSynthesizer::~MotionSynthesizer()=default;
+bool MotionSynthesizer::cost_map_active() const noexcept {return impl_->prepared&&impl_->costFormat==DXGI_FORMAT_R8_UINT;}
 bool MotionSynthesizer::reliable() const noexcept {return impl_->prepared&&impl_->trustworthy;}
 void MotionSynthesizer::reset() noexcept {impl_->reset();}
 // Merely toggling disableTemporalHints retained wrong-direction motion in
@@ -265,19 +292,21 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
     NV_OF_EXECUTE_INPUT_PARAMS in{};in.inputFrame=impl_->ih[0];in.referenceFrame=impl_->ih[1];
     in.disableTemporalHints=impl_->history?NV_OF_FALSE:NV_OF_TRUE;
     NV_OF_EXECUTE_OUTPUT_PARAMS out{};out.outputBuffer=impl_->fh[0];out.bwdOutputBuffer=impl_->fh[1];
+    out.outputCostBuffer=impl_->ch[0];out.bwdOutputCostBuffer=impl_->ch[1];
     try{
         impl_->of(impl_->api.nvOFExecute(impl_->handle,&in,&out),"Estimate motion");
     }
     catch(...){impl_->reset();throw;}
     impl_->assess_motion();
     if(impl_->trustworthy) {
-        impl_->draw(impl_->repairedTargets[0].Get(),0,false,0,0.5f,false,0,true);
-        impl_->draw(impl_->repairedTargets[1].Get(),0,false,1,0.5f,false,0,true);
+        impl_->draw(impl_->repairScratchTargets[0].Get(),0,false,0,0.5f,false,0,true);
+        impl_->draw(impl_->repairScratchTargets[1].Get(),0,false,1,0.5f,false,0,true);
         // A bounded second pass can use matches recovered by the first pass.
         // Require repeated source detail to avoid propagating through ordinary
         // occlusions. Both directions read the same completed pass; resources
         // are unbound by draw(), and no NVOFA execute follows on this pair.
-        for(unsigned i=0;i<2;++i)impl_->context->CopyResource(impl_->flows[i].Get(),impl_->repairedTextures[i].Get());
+        // Preserve hardware vectors: their Cost Map must never be attributed
+        // to a different vector produced by our repair passes.
         impl_->draw(impl_->repairedTargets[0].Get(),0,false,0,0.0f,false,0,true);
         impl_->draw(impl_->repairedTargets[1].Get(),0,false,1,0.0f,false,0,true);
         impl_->draw(impl_->layerTargets[0].Get(),0,false,0,0.5f,false,1);

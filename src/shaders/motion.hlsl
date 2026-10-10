@@ -6,8 +6,12 @@ Texture2D<float2> buv:register(t3);
 Texture2D<int2> fw:register(t4);
 Texture2D<int2> bw:register(t5);
 Texture2D<float4> inverseOffsets:register(t6);
-Texture2D<float2> inverseWeights:register(t7);
+Texture2D<float4> inverseWeights:register(t7);
 Texture2D<float> layerMask:register(t8);
+Texture2D<uint> forwardCost:register(t9);
+Texture2D<uint> backwardCost:register(t10);
+Texture2D<int2> rawForward:register(t11);
+Texture2D<int2> rawBackward:register(t12);
 RWStructuredBuffer<uint> riskStatistics:register(u0);
 SamplerState linearClamp:register(s0);
 cbuffer Parameters:register(b0) {
@@ -209,19 +213,39 @@ float2 inversePosition(float2 p,bool next,float fraction) {
     }
     return best;
 }
+// Cost belongs to the hardware vector at the same source-grid coordinate.
+// A repaired vector has no hardware cost; leave its existing evidence intact.
+// An unbound cost SRV reads zero, preserving baseline weights on unsupported GPUs.
+float hardwareWeightAt(int2 cell,bool next) {
+    int2 original=next?rawBackward.Load(int3(cell,0)):rawForward.Load(int3(cell,0));
+    int2 repaired=next?bw.Load(int3(cell,0)):fw.Load(int3(cell,0));
+    if(any(original!=repaired))return 1.0;
+    float cost=next?backwardCost.Load(int3(cell,0)):forwardCost.Load(int3(cell,0));
+    // Bounded influence: cost cannot select a source with zero geometric evidence,
+    // stop motion, or turn a pair into a repeated frame.
+    return max(0.25,1.0/(1.0+cost/64.0));
+}
+float hardwareWeight(float2 p,bool next) {
+    float2 q=p*size.zw/size.xy/mode.x-0.5;
+    int2 i=int2(floor(q)),hi=int2(ceil(size.zw/mode.x))-1;
+    float2 t=frac(q);
+    return lerp(lerp(hardwareWeightAt(clamp(i,0,hi),next),hardwareWeightAt(clamp(i+int2(1,0),0,hi),next),t.x),
+                lerp(hardwareWeightAt(clamp(i+int2(0,1),0,hi),next),hardwareWeightAt(clamp(i+1,0,hi),next),t.x),t.y);
+}
 // Compute one continuous inverse field and its visibility weights per output
 // time. Both full-resolution planes sample it, avoiding independent per-pixel
 // branch choices and Y/UV disagreement. Only the map is at analysis resolution.
-struct InverseOutput { float4 offsets:SV_Target0;float2 weights:SV_Target1; };
+struct InverseOutput { float4 offsets:SV_Target0;float4 weights:SV_Target1; };
 InverseOutput inverseMap(float4 screen:SV_Position) {
     float2 p=screen.xy*size.xy/size.zw;
     float2 a=inversePosition(p,false,mode.w),b=inversePosition(p,true,1.0-mode.w);
     float wa=evidence(a,p,false),wb=evidence(b,p,true);
     InverseOutput result;
     result.offsets=float4(a-p,b-p);
-    result.weights=float2(
+    result.weights=float4(
         inside(a)?(1.0-mode.w)*(0.05+wa)*warpReliability(a,p,false,mode.w):0.0,
-        inside(b)?mode.w*(0.05+wb)*warpReliability(b,p,true,1.0-mode.w):0.0);
+        inside(b)?mode.w*(0.05+wb)*warpReliability(b,p,true,1.0-mode.w):0.0,
+        hardwareWeight(a,false),hardwareWeight(b,true));
     return result;
 }
 // Seed a stationary layer from matching high-contrast source detail. Expand
@@ -291,9 +315,11 @@ float4 expandStationaryMask(float4 screen:SV_Position):SV_Target {
 float4 midpoint(float4 screen:SV_Position):SV_Target {
     float2 p=screen.xy*(mode.y!=0?2.0:1.0);
     float4 offsets=inverseOffsets.SampleLevel(linearClamp,p/size.xy,0);
-    float2 weights=inverseWeights.SampleLevel(linearClamp,p/size.xy,0);
+    float4 weights=inverseWeights.SampleLevel(linearClamp,p/size.xy,0);
     float2 a=p+offsets.xy,b=p+offsets.zw;
-    float ta=weights.x,tb=weights.y;
+    // Retain baseline evidence in xy for stationary-background protection.
+    // Hardware cost in zw changes only the moving-source blend.
+    float ta=weights.x*weights.z,tb=weights.y*weights.w;
     float2 ca=color(a,false),cb=color(b,true);
     float2 warped=ta+tb>0.0?(ca*ta+cb*tb)/(ta+tb):lerp(ca,cb,mode.w);
     float still=layerMask.SampleLevel(linearClamp,p/size.xy,0);
@@ -304,8 +330,8 @@ float4 midpoint(float4 screen:SV_Position):SV_Target {
     // The dilated mask also covers a narrow moving-background margin. Only
     // replace the conservative fallback with the other warped direction when
     // that direction has positive matching evidence, not merely a tiny prior.
-    float validA=smoothstep(0.08,0.30,ta/max(1.0-mode.w,0.0001));
-    float validB=smoothstep(0.08,0.30,tb/max(mode.w,0.0001));
+    float validA=smoothstep(0.08,0.30,weights.x/max(1.0-mode.w,0.0001));
+    float validB=smoothstep(0.08,0.30,weights.y/max(mode.w,0.0001));
     float useA=sb*(1.0-sa)*validA,useB=sa*(1.0-sb)*validB;
     float2 protectedBackground=fixed*(1.0-useA-useB)+ca*useA+cb*useB;
     float2 result=lerp(warped,protectedBackground,sourceStatic);

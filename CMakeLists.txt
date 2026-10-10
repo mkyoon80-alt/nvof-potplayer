@@ -262,3 +262,9 @@ endforeach()
 
 add_executable(native_startup tests/native_startup.cpp)
 target_link_libraries(native_startup PRIVATE nvof_gpu_engine nvof_gpu_pipeline)
+
+# Explicit NVIDIA hardware integration and deterministic cost-map shader oracle.
+add_executable(native_cost_map tests/native_cost_map.cpp)
+target_link_libraries(native_cost_map PRIVATE nvof_gpu_engine nvof_gpu_pipeline)
+add_dependencies(native_cost_map nvof_shader_headers)
+target_include_directories(native_cost_map PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")

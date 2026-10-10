@@ -49,7 +49,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.2.0-beta.1";
+constexpr char kFilterBuild[]="0.3.0-cost.1";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -1252,7 +1252,7 @@ private:
                     << ",\"inputConversion\":" << json_string(input_conversion_)
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
                     << ",\"doubleRate\":" << (double_rate_?"true":"false")
-                    << ",\"requestedInterpolationBackend\":\"" << (native_synthesis_?"native-newton":"fruc") << "\""
+                    << ",\"requestedInterpolationBackend\":\"" << (native_synthesis_?"native-newton-cost":"fruc") << "\""
                     << ",\"nativeSynthesisRevision\":" << (native_synthesis_?11:0)
                     << ",\"gpuMidpointCorrection\":" << (gpu_correction_?"true":"false")
                     << ",\"appearanceProtection\":" << (appearance_protection_?"true":"false")
@@ -1279,7 +1279,7 @@ private:
                     << ",\"qualityState\":" << json_string(quality_state_)
                     << ",\"buildVersion\":" << json_string(kFilterBuild)
                     << ",\"gpuCompletion\":" << json_string(gpu_engine_&&gpu_engine_->queued_completion()?"context-ordered":"blocking")
-                    << ",\"algorithm\":" << json_string(native_synthesis_&&native_gpu_active_?"x2-native-newton-0.3.0":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
+                    << ",\"algorithm\":" << json_string(native_synthesis_&&native_gpu_active_?"x2-native-newton-cost-0.3.0-cost.1":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
                     << ",\"message\":" << json_string(message) << "}\n";
                 stream.flush();
                 if (!stream) return;
