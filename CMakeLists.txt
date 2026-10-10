@@ -110,3 +110,9 @@ target_link_libraries(native_stationary_plate PRIVATE nvof_engine nvof_gpu_engin
 add_dependencies(native_stationary_plate nvof_shader_headers)
 target_include_directories(native_stationary_plate PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 add_test(NAME stationary_plate COMMAND native_stationary_plate)
+
+add_executable(native_credit_scroll tests/native_credit_scroll.cpp)
+target_link_libraries(native_credit_scroll PRIVATE nvof_engine nvof_gpu_engine nvof_gpu_pipeline nvof_gpu_phase_pipeline nvof_mf_bridge)
+add_dependencies(native_credit_scroll nvof_shader_headers)
+target_include_directories(native_credit_scroll PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_test(NAME credit_scroll COMMAND native_credit_scroll)

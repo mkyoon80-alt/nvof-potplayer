@@ -68,6 +68,50 @@ bool repeatedPatch(float2 p,float2 period,bool next) {
     }
     return hi-lo>32.0 && error<9.0*12.0;
 }
+// A compact white-on-black glyph patch provides a stronger match than the
+// sparse nine-tap motion cost when neighboring credit rows look alike.
+float glyphPatchCost(float2 p,float2 v,bool next,out bool glyph) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    float error=0,ink=0,dark=0,bright=0,neutral=0,black=0;
+    [unroll]for(int y=-3;y<=3;++y)[unroll]for(int x=-4;x<=4;++x) {
+        float2 q=p+float2(x,y)*2.0*scale;
+        if(!inside(q)||!inside(q+v)){glyph=false;return 255.0;}
+        float a=yAt(q,next)*255.0,b=yAt(q+v,!next)*255.0;
+        float active=max(a,b)>40.0?1.0:0.0;
+        error+=abs(a-b)*active;ink+=active;
+        dark+=a<28.0?1.0:0.0;bright+=a>120.0?1.0:0.0;
+        // Limited-range video black, allowing small compression variation.
+        black+=abs(a-16.0)<3.0?1.0:0.0;
+        float2 uv=abs(uvAt(q,next)*255.0-128.0);neutral=max(neutral,max(uv.x,uv.y));
+    }
+    glyph=dark>=32.0&&black>=dark*0.7&&bright>=3.0&&neutral<3.0;
+    return error/max(ink,1.0);
+}
+float2 repairGlyphAlias(float2 p,float2 original,bool next) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    // Preserve small motions and large-displacement repair. This path addresses
+    // one-row aliases below that repair's old 32-analysis-pixel threshold.
+    if(length(original)<=8.0*scale||length(original)>32.0*scale)return original;
+    bool glyph;float oldCost=glyphPatchCost(p,original,next,glyph);
+    if(!glyph||oldCost<12.0)return original;
+    float2 best=original;float bestCost=oldCost;
+    [loop]for(int k=0;k<16;++k) {
+        int d=k%4;float radius=16.0*exp2(float(k/4))*scale;
+        float2 delta=d==0?float2(radius,0):d==1?float2(-radius,0):d==2?float2(0,radius):float2(0,-radius);
+        float2 anchor=p+delta;
+        if(!inside(anchor))continue;
+        float2 v=flow(anchor,next);
+        // Fixed graphics retain the established stationary-layer path.
+        if(length(v)<1.0*scale||length(v)>=8.0*scale||length(original-v)<8.0*scale||!inside(p+v))continue;
+        float support=length(v+flow(anchor+v,!next))/scale;
+        if(support>1.0)continue;
+        // Validate both the neighboring trajectory and the actual glyph. A
+        // smaller flow is not preferred merely because it is smaller.
+        bool ignored;float cost=glyphPatchCost(p,v,next,ignored);
+        if(cost<10.0&&cost<oldCost*0.4&&cost<bestCost) {best=v;bestCost=cost;}
+    }
+    return best;
+}
 int2 repairMotion(float4 screen:SV_Position):SV_Target {
     bool next=mode.z!=0;
     float scale=max(size.x/size.z,size.y/size.w);
@@ -101,6 +145,7 @@ int2 repairMotion(float4 screen:SV_Position):SV_Target {
             }
         }
     }
+    if(mode.w>0.0)best=repairGlyphAlias(p,best,next);
     return int2(round(best*size.zw/size.xy*32.0));
 }
 // Reject frame-wide correspondence failure, not isolated occlusion boundaries.
