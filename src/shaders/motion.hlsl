@@ -511,13 +511,24 @@ float2 mappedColor(float2 p,float4 offsets,float4 weights) {
     return lerp(result,fixed,still);
 }
 
-// Fit a rigid translation to a whole monochrome glyph group. This is a
+// Fit a rigid translation to a neutral glyph group. This is a
 // separate, image-verified layer: unreliable per-letter flow must not bend
 // letters that demonstrably translate together. No screen location is assumed.
 // One workgroup per overlapping patch. Cache source samples once and score
 // candidate translations in parallel; no readback or per-frame allocation.
 RWTexture2D<float4> glyphOutput:register(u1);
+// Match opaque neutral ink independently of the surrounding background.
+// The narrow-stroke classifier and multi-patch agreement reject isolated highlights.
+float whiteFeature(float y,float2 uv) {
+    float2 c=abs(uv*255.0-128.0);
+    return saturate((y*255.0-160.0)/55.0)*(1.0-smoothstep(3.0,10.0,max(c.x,c.y)));
+}
+float glyphFeature(float2 p,bool next){return whiteFeature(yAt(p,next),uvAt(p,next));}
 groupshared float glyphSource[289];
+groupshared float glyphForeground[289];
+groupshared float4 glyphShape[32];
+groupshared float2 glyphFeatureErrors[32];
+groupshared uint glyphKind;
 groupshared float4 glyphStats[32];
 groupshared float2 glyphErrors[32];
 groupshared float4 glyphFits[32];
@@ -529,7 +540,8 @@ float cachedGroupCost(float2 p,float2 v) {
     float error=0,ink=0;
     [loop]for(int i=0;i<289;++i) {
         float2 q=p+float2(i%17-8,i/17-8)*3.0*scale;
-        float a=glyphSource[i],b=yAt(q+v,true)*255.0;
+        float a=glyphKind==1?glyphSource[i]:glyphForeground[i]*255.0;
+        float b=glyphKind==1?yAt(q+v,true)*255.0:glyphFeature(q+v,true)*255.0;
         float active=max(a,b)>40.0?1.0:0.0;
         error+=abs(a-b)*active;ink+=active;
     }
@@ -540,24 +552,39 @@ float cachedGroupCost(float2 p,float2 v) {
     float2 p=(float2(group.xy)+0.5)*32.0*scale;
     if(lane==0)glyphOutput[group.xy]=0;
     if(!inside(p-24.0*scale)||!inside(p+24.0*scale))return;
-    float4 stats=0;float2 errors=0;
+    float4 stats=0,shape=0;float2 errors=0,featureErrors=0;
     [loop]for(int i=int(lane);i<289;i+=32) {
         float2 q=p+float2(i%17-8,i/17-8)*3.0*scale;
         float a=yAt(q,false)*255.0,b=yAt(q,true)*255.0;glyphSource[i]=a;
+        float fa=glyphFeature(q,false),fb=glyphFeature(q,true);glyphForeground[i]=fa;
+        float activeFeature=max(fa,fb)>0.10?1.0:0.0;featureErrors+=float2(abs(fa-fb)*255.0,1)*activeFeature;
+        shape.x+=a<150.0?1.0:0.0;shape.y+=fa>0.6?1.0:0.0;
+        if(fa>0.6) {
+            float d=4.0*scale;
+            bool narrowX=max(glyphFeature(q+float2(d,0),false),glyphFeature(q-float2(d,0),false))<0.2;
+            bool narrowY=max(glyphFeature(q+float2(0,d),false),glyphFeature(q-float2(0,d),false))<0.2;
+            shape.z+=(narrowX||narrowY)?1.0:0.0;
+        }
         float active=max(a,b)>40.0?1.0:0.0;errors+=float2(abs(a-b),1)*active;
         stats.x+=a<28.0?1.0:0.0;stats.y+=abs(a-16.0)<3.0?1.0:0.0;stats.z+=a>160.0?1.0:0.0;
         float2 uv=max(abs(uvAt(q,false)*255.0-128.0),abs(uvAt(q,true)*255.0-128.0));
         stats.w=max(stats.w,max(uv.x,uv.y));
     }
-    glyphStats[lane]=stats;glyphErrors[lane]=errors;
+    glyphStats[lane]=stats;glyphErrors[lane]=errors;glyphShape[lane]=shape;glyphFeatureErrors[lane]=featureErrors;
     GroupMemoryBarrierWithGroupSync();
     [unroll]for(uint step=16;step>0;step/=2) {
-        if(lane<step){glyphStats[lane].xyz+=glyphStats[lane+step].xyz;glyphStats[lane].w=max(glyphStats[lane].w,glyphStats[lane+step].w);glyphErrors[lane]+=glyphErrors[lane+step];}
+        if(lane<step){glyphStats[lane].xyz+=glyphStats[lane+step].xyz;glyphStats[lane].w=max(glyphStats[lane].w,glyphStats[lane+step].w);glyphErrors[lane]+=glyphErrors[lane+step];glyphShape[lane]+=glyphShape[lane+step];glyphFeatureErrors[lane]+=glyphFeatureErrors[lane+step];}
         GroupMemoryBarrierWithGroupSync();
     }
     if(lane==0) {
         float4 st=glyphStats[0];float zero=glyphErrors[0].x/max(glyphErrors[0].y,1.0);
-        glyphAccepted=st.x>=160.0&&st.y>=st.x*0.85&&st.z>=8.0&&st.w<3.0&&zero>=12.0;
+        bool legacy=st.x>=160.0&&st.y>=st.x*0.85&&st.z>=8.0&&st.w<3.0;
+        // Sparse thin strokes are enough to propose a model, but final synthesis
+        // requires three nearby independently fitted groups to agree.
+        float4 sh=glyphShape[0];bool foreground=sh.x>=180.0&&sh.y>=3.0&&sh.y<90.0&&sh.z>=2.0&&sh.z>=sh.y*0.4;
+        glyphKind=legacy?1:2;
+        if(!legacy)zero=glyphFeatureErrors[0].x/max(glyphFeatureErrors[0].y,1.0);
+        glyphAccepted=(legacy||foreground)&&zero>=12.0;
         glyphBest=float4(0,0,zero,zero);
     }
     GroupMemoryBarrierWithGroupSync();
@@ -601,27 +628,62 @@ float cachedGroupCost(float2 p,float2 v) {
         if(lane<step)glyphStats[lane].w=max(glyphStats[lane].w,glyphStats[lane+step].w);
         GroupMemoryBarrierWithGroupSync();
     }
-    if(lane==0&&glyphStats[0].w<3.0&&glyphBest.z<=10.0&&glyphBest.z<=glyphBest.w*0.35&&length(glyphBest.xy)>=scale)
-        glyphOutput[group.xy]=float4(glyphBest.xyz,1);
+    if(lane==0&&(glyphKind==2||glyphStats[0].w<3.0)&&glyphBest.z<=(glyphKind==1?10.0:20.0)&&glyphBest.z<=glyphBest.w*0.35&&length(glyphBest.xy)>=scale)
+        glyphOutput[group.xy]=float4(glyphBest.xyz,float(glyphKind));
 }
 bool glyphGroupColor(float2 p,out float2 value) {
     float scale=max(size.x/size.z,size.y/size.w);
     float2 cell=p/(32.0*scale)-0.5;
     int2 base=int2(floor(cell)),hi=int2(ceil(size.xy/(32.0*scale)))-1;
-    float2 velocity=0;float total=0;float2 lo=1e5,high=-1e5;
-    [unroll]for(int y=0;y<2;++y)[unroll]for(int x=0;x<2;++x) {
-        int2 index=clamp(base+int2(x,y),0,hi);
+    float2 velocity=0;float total=0,kind=0;float2 lo=1e5,high=-1e5;
+    float2 foregroundVelocity=0;float foregroundTotal=0;int support=0;
+    float2 foregroundLo=1e5,foregroundHi=-1e5;
+    [unroll]for(int y=-1;y<3;++y)[unroll]for(int x=-1;x<3;++x) {
+        int2 index=base+int2(x,y);
+        if(any(index<0)||any(index>hi))continue;
         float4 model=glyphMotion.Load(int3(index,0));
         float2 center=(float2(index)+0.5)*32.0*scale+mode.w*model.xy;
-        float2 weight=saturate(1.0-abs(p-center)/(24.0*scale));
-        float a=weight.x*weight.y*model.w;
-        if(a>0){velocity+=model.xy*a;total+=a;lo=min(lo,model.xy);high=max(high,model.xy);}
+        if(model.w>1.5) {
+            float2 weight=saturate(1.0-abs(p-center)/(48.0*scale));
+            float a=weight.x*weight.y;
+            if(a>0.02){foregroundVelocity+=model.xy*a;foregroundTotal+=a;++support;
+                foregroundLo=min(foregroundLo,model.xy);foregroundHi=max(foregroundHi,model.xy);}
+        }else if(x>=0&&x<2&&y>=0&&y<2) {
+            float2 weight=saturate(1.0-abs(p-center)/(24.0*scale));
+            float a=weight.x*weight.y*model.w;
+            if(a>0){kind=1;velocity+=model.xy*a;total+=a;lo=min(lo,model.xy);high=max(high,model.xy);}
+        }
     }
     value=0;
+    // Wider support bridges small holes between letters only with agreement.
+    // Preserve the original strict black-background path when this is unavailable.
+    if(support>=3&&length(foregroundHi-foregroundLo)<=1.5*scale) {
+        kind=2;velocity=foregroundVelocity;total=foregroundTotal;lo=foregroundLo;high=foregroundHi;
+    }
     if(total<0.02||length(high-lo)>1.5*scale)return false;
     velocity/=total;
     float2 a=p-mode.w*velocity,b=p+(1.0-mode.w)*velocity;
     if(!inside(a)||!inside(b))return false;
+    if(kind>1.5) {
+        // Composite only glyph footprints. Unrelated background keeps Newton.
+        float ink=max(glyphFeature(a,false),glyphFeature(b,true));
+        [unroll]for(int d=0;d<4;++d) {
+            float2 delta=d==0?float2(1.5,0):d==1?float2(-1.5,0):d==2?float2(0,1.5):float2(0,-1.5);
+            ink=max(ink,max(glyphFeature(a+delta,false),glyphFeature(b+delta,true)));
+        }
+        if(ink<0.05) {
+            float2 q=p*size.zw/size.xy-0.5;int2 cell=int2(floor(q)),hi=int2(size.zw)-1;
+            // Include unwarped fallback provenance as well as all four inverse
+            // branches, so rejected Newton samples cannot leave a second glyph.
+            float borrowed=max(glyphFeature(p,false),glyphFeature(p,true));
+            [unroll]for(int y=0;y<2;++y)[unroll]for(int x=0;x<2;++x) {
+                float4 offset=inverseOffsets.Load(int3(clamp(cell+int2(x,y),0,hi),0));
+                borrowed=max(borrowed,max(glyphFeature(p+offset.xy,false),glyphFeature(p+offset.zw,true)));
+            }
+            if(borrowed<0.05)return false;
+        }
+        value=lerp(color(a,false),color(b,true),mode.w);return true;
+    }
     float2 chroma=max(abs(uvAt(a,false)*255.0-128.0),abs(uvAt(b,true)*255.0-128.0));
     if(max(chroma.x,chroma.y)>3.0)return false;
     if(abs(yAt(a,false)-yAt(b,true))*255.0>80.0)return false;

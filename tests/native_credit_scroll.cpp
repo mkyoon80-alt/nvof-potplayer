@@ -120,5 +120,67 @@ int wmain(){try {
     auto mixed=source(8,true),opposite=source(-8,true);for(int y=0;y<h;++y)for(int x=w/2;x<w;++x)mixed[y*w+x]=opposite[y*w+x];
     context->UpdateSubresource(input[1].Get(),0,nullptr,mixed.data(),w*4,0);
     require(fit()[3]==0,"Opposing text layers incorrectly share one translation");
-    std::cout<<"PASS glyph row-alias correction in both directions, small/fast scroll, flat area, unsupported trajectory; rigid/subpixel group, fixed/colored/mixed rejection"<<std::endl;return 0;
+    // A nearly black picture need not be Y=16, and neutral ink can scroll
+    // over a changing colored picture. Background color is not glyph motion.
+    auto layered=[&](int shift,int frame,float background,bool colored) {
+        auto pixels=source(shift,true);std::vector<float> chroma(w*h*2,128.f/255.f);
+        for(int y=0;y<h;++y)for(int x=0;x<w;++x)if(pixels[y*w+x]<.5f) {
+            pixels[y*w+x]=(background+(colored?20.f*std::sin(y*.4f+x*.2f+frame*.6f):0.f))/255.f;
+            if(colored){chroma[(y*w+x)*2]=110.f/255.f;chroma[(y*w+x)*2+1]=143.f/255.f;}
+        }
+        context->UpdateSubresource(input[frame].Get(),0,nullptr,pixels.data(),w*4,0);
+        context->UpdateSubresource(input[frame+2].Get(),0,nullptr,chroma.data(),w*8,0);
+        return pixels;
+    };
+    for(float black:{20.f,45.f}) {
+        upload(8,true,true,true);layered(0,0,black,false);layered(8,1,black+2,false);model=fit();
+        require(model[3]==2&&std::abs(model[1]+8)<.26f,"Non-reference black/fading background lost glyph motion");
+    }
+    upload(8,true,true,true);auto aLayer=layered(0,0,100,true),bLayer=layered(8,1,100,true);model=fit();
+    require(model[3]==2&&std::abs(model[0])<.26f&&std::abs(model[1]+8)<.26f,"Colored moving background hid neutral glyphs");
+    layered(0,1,100,true);require(fit()[3]==0,"Background movement activated fixed white text");
+    bLayer=layered(8,1,100,true);
+    // Exercise final compositing: coherent neighboring models repair the glyph
+    // footprint; pixels away from ink retain the ordinary mapping byte-for-byte.
+    std::vector<float> offsets(aw*ah*4,0),weights(aw*ah*4,1),mask(w*h*2,0);
+    for(int i=0;i<aw*ah;++i)weights[i*4]=weights[i*4+1]=.5f;
+    auto ot=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,aw,ah,aw*16,offsets.data(),D3D11_BIND_SHADER_RESOURCE);
+    auto wt=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,aw,ah,aw*16,weights.data(),D3D11_BIND_SHADER_RESOURCE);
+    auto mt=texture(DXGI_FORMAT_R32G32_FLOAT,w,h,w*8,mask.data(),D3D11_BIND_SHADER_RESOURCE);
+    ComPtr<ID3D11ShaderResourceView> ov,wv,mv,gv;
+    check(device->CreateShaderResourceView(ot.Get(),nullptr,&ov),"Offsets view");check(device->CreateShaderResourceView(wt.Get(),nullptr,&wv),"Weights view");
+    check(device->CreateShaderResourceView(mt.Get(),nullptr,&mv),"Mask view");check(device->CreateShaderResourceView(models.Get(),nullptr,&gv),"Models view");
+    ComPtr<ID3D11PixelShader> compose;check(device->CreatePixelShader(shaders::motion::midpoint,sizeof(shaders::motion::midpoint),nullptr,&compose),"Compose");
+    auto composed=texture(DXGI_FORMAT_R32_FLOAT,w,h,0,nullptr,D3D11_BIND_RENDER_TARGET);
+    ComPtr<ID3D11RenderTargetView> composedRt;check(device->CreateRenderTargetView(composed.Get(),nullptr,&composedRt),"Compose RTV");
+    composed->GetDesc(&td);td.BindFlags=0;td.Usage=D3D11_USAGE_STAGING;td.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> composedStage;check(device->CreateTexture2D(&td,nullptr,&composedStage),"Compose staging");
+    auto composeModels=[&](const std::vector<float>& values) {
+        context->UpdateSubresource(models.Get(),0,nullptr,values.data(),3*16,0);
+        float constants[]={float(w),float(h),float(aw),float(ah),4,0,0,.5f};context->UpdateSubresource(cb.Get(),0,nullptr,constants,0,0);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);context->VSSetShader(vs.Get(),nullptr,0);context->PSSetShader(compose.Get(),nullptr,0);
+        auto c=cb.Get();auto sampler=sp.Get();context->PSSetConstantBuffers(0,1,&c);context->PSSetSamplers(0,1,&sampler);
+        ID3D11ShaderResourceView* raw[14]{};for(int i=0;i<6;++i)raw[i]=views[i].Get();raw[6]=ov.Get();raw[7]=wv.Get();raw[8]=mv.Get();raw[13]=gv.Get();context->PSSetShaderResources(0,14,raw);
+        D3D11_VIEWPORT vp{0,0,float(w),float(h),0,1};context->RSSetViewports(1,&vp);context->RSSetState(rs.Get());auto r=composedRt.Get();context->OMSetRenderTargets(1,&r,nullptr);context->Draw(3,0);
+        ID3D11ShaderResourceView* empty[14]{};context->PSSetShaderResources(0,14,empty);context->OMSetRenderTargets(0,nullptr,nullptr);
+        context->CopyResource(composedStage.Get(),composed.Get());D3D11_MAPPED_SUBRESOURCE mapped{};check(context->Map(composedStage.Get(),0,D3D11_MAP_READ,0,&mapped),"Compose map");
+        std::vector<float> out(w*h);for(int y=0;y<h;++y)memcpy(out.data()+y*w,static_cast<uint8_t*>(mapped.pData)+y*mapped.RowPitch,w*4);context->Unmap(composedStage.Get(),0);return out;
+    };
+    std::vector<float> modelValues(36,0);auto ordinary=composeModels(modelValues);
+    for(int i=0;i<9;++i){modelValues[i*4+1]=-8;modelValues[i*4+3]=2;}
+    auto corrected=composeModels(modelValues),middle=source(4,true);int repaired=0,backgroundPixels=0;
+    for(int y=48;y<144;++y)for(int x=48;x<144;++x) {
+        int i=y*w+x;
+        if(middle[i]>.8f){require(std::abs(corrected[i]-middle[i])<.001f,"Verified glyph was not placed at its true midpoint");if(ordinary[i]<.8f)++repaired;}
+        bool clear=true;
+        for(int yy=y-6;yy<=y+6;++yy)for(int xx=x-2;xx<=x+2;++xx)if(aLayer[yy*w+xx]>.63f||bLayer[yy*w+xx]>.63f)clear=false;
+        if(clear){require(corrected[i]==ordinary[i],"Unrelated background was moved at glyph speed");++backgroundPixels;}
+    }
+    require(repaired>100&&backgroundPixels>100,"Layer compositing test did not exercise glyph/background separation");
+    std::fill(modelValues.begin(),modelValues.end(),0);modelValues[4*4+1]=-8;modelValues[4*4+3]=2;
+    require(composeModels(modelValues)==ordinary,"An isolated foreground match bypassed spatial support");
+    for(int i=0;i<9;++i){modelValues[i*4+1]=i%3==1?8.f:-8.f;modelValues[i*4+3]=2;}
+    auto conflict=composeModels(modelValues);
+    for(int y=64;y<128;++y)for(int x=64;x<128;++x)require(conflict[y*w+x]==ordinary[y*w+x],"Conflicting neighboring text motions were blended");
+    std::cout<<"PASS glyph row-alias correction in both directions, small/fast scroll, flat area, unsupported trajectory; rigid/subpixel group, fixed/colored/mixed rejection; non-reference black, colored moving background, glyph-only composition, isolated/conflicting support rejection"<<std::endl;return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}
