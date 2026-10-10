@@ -2,7 +2,7 @@
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **최대 60fps / 최대 120fps** 안에서 원본의 정수배로 보간합니다. 예를 들어 23.976fps는 각각 47.952fps(×2) / 119.880fps(×5)로 출력합니다.
 
-현재 개발 브랜치는 **0.3.2-rate.1**입니다. 공개된 [v0.3.0](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.3.0)과 구분되는 로컬 시험판이며 아직 업로드하지 않았습니다.
+현재 개발 브랜치는 **0.3.2-rate.2**입니다. 공개된 [v0.3.0](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.3.0)과 구분되는 로컬 시험판이며 아직 업로드하지 않았습니다.
 
 ## 자체 포함 버전
 

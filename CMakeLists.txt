@@ -116,3 +116,9 @@ target_link_libraries(native_credit_scroll PRIVATE nvof_engine nvof_gpu_engine n
 add_dependencies(native_credit_scroll nvof_shader_headers)
 target_include_directories(native_credit_scroll PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 add_test(NAME credit_scroll COMMAND native_credit_scroll)
+
+add_executable(native_stroke_alias tests/native_stroke_alias.cpp)
+target_link_libraries(native_stroke_alias PRIVATE nvof_engine nvof_gpu_engine nvof_gpu_pipeline nvof_gpu_phase_pipeline nvof_mf_bridge)
+add_dependencies(native_stroke_alias nvof_shader_headers)
+target_include_directories(native_stroke_alias PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_test(NAME stroke_alias COMMAND native_stroke_alias)

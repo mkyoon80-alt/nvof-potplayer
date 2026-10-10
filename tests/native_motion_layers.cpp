@@ -39,6 +39,18 @@ int wmain(int argc,wchar_t** argv){try{
                 double bars=std::exp(-phase*phase/12.0);
                 v=uint8_t(std::lround(225-90*bars+7*std::sin(y*.05)));
                 if((x>200&&x<340&&y>130)||(x>600&&x<750&&y>100))v=70+uint8_t(20*color_field(x,y,765432));
+            } else if(scene==6) {
+                // A small foreground moves against the camera pan. Its leading
+                // occlusion edge must not pull dark pixels onto the road.
+                double qx=x+18*t,qy=y+2*t;
+                double body=std::hypot((qx-480)/2.8,qy-270);
+                double distance=body-13;
+                for(double px:{450.,510.})for(double py:{258.,282.})
+                    distance=(std::min)(distance,std::hypot(qx-px,qy-py)-7);
+                double alpha=std::clamp(.5-distance,0.0,1.0);
+                double road=100+8*std::sin((x-16*t)*.03+(y-10*t)*.11);
+                double car=25+8*std::sin(qx*.14)*std::cos(qy*.12);
+                v=uint8_t(std::lround(road*(1-alpha)+car*alpha));
             } else if(scene==5) {
                 // A curved foreground crosses a rapidly moving background.
                 // The exact fractional image tests occlusion inversion without
@@ -83,7 +95,7 @@ int wmain(int argc,wchar_t** argv){try{
         std::fill(image.begin()+size_t(w)*h,image.end(),128);return image;
     };
     bool qualityPassed=true;
-    for(int multiple : {2,4,5}) for(int scene=0;scene<6;++scene) {
+    for(int multiple : {2,4,5}) for(int scene=0;scene<7;++scene) {
         double sum=0,held=0;uint64_t ghosts=0,band=0;
         for(int i=0;i<8;++i) {
             double t=i*.125;auto a=fixture(t,scene),b=fixture(t+1,scene);
@@ -106,5 +118,5 @@ int wmain(int argc,wchar_t** argv){try{
         if(scene==0&&!(ghosts<double(band)*.0001)){qualityPassed=false;std::cout<<"REGRESSION stationary outline leaked into moving background"<<std::endl;}
     }
     require(qualityPassed,"One or more layer quality regressions");
-    std::cout<<"PASS curved stationary outline exterior, repeated bars, moving bright object, moving thin curves, repeated moving glyph strokes, curved moving occluder, x2/x4/x5 phases and intact sources"<<std::endl;return 0;
+    std::cout<<"PASS curved stationary outline exterior, repeated bars, moving bright object, moving thin curves, repeated moving glyph strokes, curved moving occluder, small moving foreground, x2/x4/x5 phases and intact sources"<<std::endl;return 0;
 }catch(const std::exception&e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

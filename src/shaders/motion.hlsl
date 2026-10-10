@@ -113,6 +113,95 @@ float2 repairGlyphAlias(float2 p,float2 original,bool next) {
     }
     return best;
 }
+// Repetitive straight strokes can match the neighboring bar in both directions.
+// A long image patch and agreeing donors on opposite ends of the stroke disambiguate
+// that alias. Do not select a shorter vector merely because it is shorter.
+float strokePatchCost(float2 p,float2 v,float2 normal,bool next) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    float2 tangent=normal.yx;float error=0,peak=0;
+    [unroll]for(int y=-3;y<=3;++y)[unroll]for(int x=-2;x<=2;++x) {
+        float2 q=p+(normal*float(x*4)+tangent*float(y*16))*scale;
+        if(!inside(q)||!inside(q+v))return 255.0;
+        float delta=abs(yAt(q,next)-yAt(q+v,!next))*255.0;
+        error+=delta;peak=max(peak,delta);
+    }
+    return error/35.0+0.15*peak;
+}
+float2 repairParallelStrokeAlias(float2 p,float2 original,bool next) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    float2 speed=abs(original)/scale;
+    if(length(original)/scale<=8.0||length(original)/scale>32.0)return original;
+    float2 normal=speed.x>speed.y?float2(1,0):float2(0,1),tangent=normal.yx;
+    if(max(speed.x,speed.y)<4.0*min(speed.x,speed.y)+4.0)return original;
+    float across=0,along=0,lo=255,hi=0;
+    [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-2;x<=2;++x) {
+        float2 q=p+(normal*float(x*4)+tangent*float(y*12))*scale;
+        if(!inside(q-normal*scale)||!inside(q+normal*scale)||!inside(q-tangent*scale)||!inside(q+tangent*scale))return original;
+        across+=abs(yAt(q+normal*scale,next)-yAt(q-normal*scale,next))*255.0;
+        along+=abs(yAt(q+tangent*scale,next)-yAt(q-tangent*scale,next))*255.0;
+        float value=yAt(q,next)*255.0;lo=min(lo,value);hi=max(hi,value);
+    }
+    if(across<8.0*along+8.0||hi-lo<24.0)return original;
+    float oldCost=strokePatchCost(p,original,normal,next);
+    if(oldCost<5.0)return original;
+    float2 best=original;float bestCost=oldCost;
+    [loop]for(int k=0;k<2;++k) {
+        float2 delta=tangent*(k==0?64.0:128.0)*scale;
+        float2 left=p-delta,right=p+delta;
+        if(!inside(left)||!inside(right))continue;
+        float2 a=flow(left,next),b=flow(right,next);
+        if(max(length(a),length(b))>4.0*scale||length(a-b)>0.75*scale)continue;
+        if(!inside(left+a)||!inside(right+b)||length(a+flow(left+a,!next))>scale||length(b+flow(right+b,!next))>scale)continue;
+        float2 candidate=0.5*(a+b);
+        if(length(original-candidate)<8.0*scale)continue;
+        float cost=strokePatchCost(p,candidate,normal,next);
+        if(cost<3.0&&cost<oldCost*0.4&&cost<bestCost){best=candidate;bestCost=cost;}
+    }
+    return best;
+}
+// Fine periodic texture can produce a large, self-consistent OF alias even
+// when the surrounding image barely moves. Independently fit a small local
+// translation to a wide patch, then require a decisive image-error improvement.
+// This is source-motion repair; all output phases still use Newton inversion.
+float2 repairNearStaticAlias(float2 p,float2 original,bool next) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    if(length(original)<8.0*scale||length(original)>32.0*scale)return original;
+    float radius=24.0*scale+4.0;
+    if(!inside(p-radius)||!inside(p+radius)||!inside(p+original-radius)||!inside(p+original+radius))return original;
+    float oldError=0,zeroError=0,lo=255,hi=0;
+    [loop]for(int y=-3;y<=3;++y)[loop]for(int x=-3;x<=3;++x) {
+        float2 q=p+float2(x,y)*8.0*scale;
+        float a=yAt(q,next)*255.0;
+        oldError+=abs(a-yAt(q+original,!next)*255.0);
+        zeroError+=abs(a-yAt(q,!next)*255.0);lo=min(lo,a);hi=max(hi,a);
+    }
+    if(hi-lo<48.0||oldError<49.0*8.0||zeroError>49.0*32.0||zeroError>oldError*1.5)return original;
+    float2 v=0;
+    [loop]for(int iteration=0;iteration<6;++iteration) {
+        float xx=0,xy=0,yy=0;float2 rhs=0;
+        [loop]for(int y=-3;y<=3;++y)[loop]for(int x=-3;x<=3;++x) {
+            float2 q=p+float2(x,y)*8.0*scale,r=q+v;
+            float difference=(yAt(r,!next)-yAt(q,next))*255.0;
+            float2 gradient=float2(yAt(r+float2(1,0),!next)-yAt(r-float2(1,0),!next),
+                yAt(r+float2(0,1),!next)-yAt(r-float2(0,1),!next))*127.5;
+            xx+=gradient.x*gradient.x;xy+=gradient.x*gradient.y;yy+=gradient.y*gradient.y;rhs+=gradient*difference;
+        }
+        float determinant=xx*yy-xy*xy;
+        if(determinant<1.0||determinant<0.005*(xx+yy)*(xx+yy))return original;
+        float2 step=float2(yy*rhs.x-xy*rhs.y,xx*rhs.y-xy*rhs.x)/determinant;
+        // Damping prevents a pixel-step edge from bouncing across the minimum.
+        v-=0.5*step*min(1.0,2.0/max(length(step),0.001));
+        if(length(v)>2.0*scale)return original;
+    }
+    float error=0,peak=0;
+    [loop]for(int y=-3;y<=3;++y)[loop]for(int x=-3;x<=3;++x) {
+        float2 q=p+float2(x,y)*8.0*scale;
+        float difference=abs(yAt(q,next)-yAt(q+v,!next))*255.0;
+        error+=difference;peak=max(peak,difference);
+    }
+    if(error<49.0*3.0&&error<oldError*0.35&&peak<16.0)return v;
+    return original;
+}
 int2 repairMotion(float4 screen:SV_Position):SV_Target {
     bool next=mode.z!=0;
     float scale=max(size.x/size.z,size.y/size.w);
@@ -146,7 +235,7 @@ int2 repairMotion(float4 screen:SV_Position):SV_Target {
             }
         }
     }
-    if(mode.w>0.0)best=repairGlyphAlias(p,best,next);
+    if(mode.w>0.0) {best=repairGlyphAlias(p,best,next);best=repairParallelStrokeAlias(p,best,next);best=repairNearStaticAlias(p,best,next);}
     return int2(round(best*size.zw/size.xy*32.0));
 }
 // Reject frame-wide correspondence failure, not isolated occlusion boundaries.
@@ -230,6 +319,11 @@ float warpReliability(float2 q,float2 p,bool next,float fraction) {
     float photo=matchCost(q,v,next);
     float patch=1.0-smoothstep(3.0,12.0,photo);
     float geometric=max(0.01+0.99*smoothstep(0.0,0.25,determinant),0.25*patch);
+    // A positive Jacobian can still stretch a mixed foreground/background
+    // vector into an occlusion streak. Penalize extreme expansion, retaining
+    // unit translations, image-verified mappings, and modest camera scaling.
+    float expansion=max(0.0,determinant-1.5)*(1.0-patch);
+    geometric/=1.0+expansion*expansion*expansion*expansion;
     float bad=photo/12.0;
     return geometric/(1.0+bad*bad*bad*bad)/
         (1.0+dot(residual,residual)/(0.25*scale*scale));

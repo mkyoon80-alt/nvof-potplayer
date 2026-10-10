@@ -1,5 +1,5 @@
 param(
-    [string]$Version='0.3.2-rate.1',
+    [string]$Version='0.3.2-rate.2',
     [string]$UiDirectory,
     [string]$NativeDirectory,
     [string]$RuntimeDirectory,
@@ -51,7 +51,7 @@ $manualOutput=Join-Path $destination 'docs/manual'
 New-Item -ItemType Directory -Path $manualOutput -Force | Out-Null
 Copy-Item -Path (Join-Path $project 'docs/manual/*') -Destination $manualOutput -Recurse
 Copy-Item -LiteralPath (Join-Path $project 'RELEASE.md') -Destination $destination
-foreach($note in @('STANDALONE.md','COST-MAP-FUSION.md','FLOW-PROFILE-TRIAL.md','SESSION-REUSE.md','QUALITY-TRIAL.md','STATIC-OVERLAY-TRIAL.md','CREDIT-SCROLL-TRIAL.md','INTEGER-RATE-TRIAL.md')){
+foreach($note in @('STANDALONE.md','COST-MAP-FUSION.md','FLOW-PROFILE-TRIAL.md','SESSION-REUSE.md','QUALITY-TRIAL.md','STATIC-OVERLAY-TRIAL.md','CREDIT-SCROLL-TRIAL.md','INTEGER-RATE-TRIAL.md','MOTION-BOUNDARY-TRIAL.md')){
     Copy-Item -LiteralPath (Join-Path $project ('docs/'+$note)) -Destination (Join-Path $destination 'docs')
 }
 $configOutput=Join-Path $destination 'config'
