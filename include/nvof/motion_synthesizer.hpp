@@ -6,11 +6,14 @@ namespace nvof {
 // Caller holds the shared immediate-context lock and restores pipeline state.
 // prepare retains sources until the next call; outputs must not alias inputs.
 enum class MotionCostMode { disabled, blend_only, confidence_fusion };
+enum class MotionSessionMode { fresh, persistent };
 enum class MotionFlowQuality { medium, slow };
 struct MotionFlowOptions {
     // 0 preserves capability-based 4/2/1 preference. Explicit grids must be supported.
     unsigned output_grid = 0;
     MotionFlowQuality quality = MotionFlowQuality::medium;
+    // Fresh retains the pre-optimization reference path for hardware comparisons.
+    MotionSessionMode session_mode = MotionSessionMode::persistent;
 };
 struct MotionAnalysisInfo {
     unsigned width = 0, height = 0, grid = 0, cost_buffers = 0;
@@ -32,6 +35,7 @@ public:
     void invalidate_history() noexcept;
     void reset() noexcept;
 private:
+    friend struct MotionSessionTestAccess;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

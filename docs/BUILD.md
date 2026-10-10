@@ -34,3 +34,5 @@ tools/build.ps1 runs six scheduling/policy tests. Explicit GPU tests include nat
 runtime_dependencies.exe audits a package for removed FRUC/CUDA/driver files and loads its filter. Import-table inspection verifies that product binaries do not depend on CUDA or FRUC.
 
 tools/test-release-installer.ps1 tests installation without NVIDIA assent parameters, same-folder upgrade cleanup, retained files/settings, COM registration, self-contained controller and removal/ownership safety. Run with the player and controller closed; it restores prior user registration.
+
+Session lifetime optimization and local regression commands: [SESSION-REUSE.md](SESSION-REUSE.md). The current local trial is `0.3.1-opt.1`.

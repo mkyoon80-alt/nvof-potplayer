@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#ifdef NVOF_SESSION_DIAGNOSTICS
+#include <chrono>
+#endif
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,10 +27,18 @@ struct MotionSynthesizer::Impl {
     HMODULE module=nullptr;
     NV_OF_D3D11_API_FUNCTION_LIST api{};
     NvOFHandle handle=nullptr;
-    std::array<ComPtr<ID3D11Texture2D>,2> sources,inputs,flows,costs;
+    std::array<ComPtr<ID3D11Texture2D>,2> sources,flows,costs;
+    std::array<ComPtr<ID3D11Texture2D>,6> inputs;
     std::array<ComPtr<ID3D11ShaderResourceView>,2> ys,uvs,fvs,costViews;
-    std::array<std::array<ComPtr<ID3D11RenderTargetView>,2>,2> inputTargets;
-    std::array<NvOFGPUBufferHandle,2> ih{},fh{},ch{};
+    std::array<std::array<ComPtr<ID3D11RenderTargetView>,2>,6> inputTargets;
+    std::array<NvOFGPUBufferHandle,6> ih{};
+    std::array<NvOFGPUBufferHandle,2> fh{},ch{};
+    unsigned inputSlot=0;
+    ComPtr<ID3D11Query> inputDone;
+#ifdef NVOF_SESSION_DIAGNOSTICS
+    uint64_t sessionCreations=0,surfaceSets=0;
+    std::array<double,6> timings{};
+#endif
     ComPtr<ID3D11VertexShader> vertex;
     ComPtr<ID3D11PixelShader> synth,reduce,invert,stationary,expandStationary,repair;
     std::array<ComPtr<ID3D11Texture2D>,2> repairScratch,repairedTextures;
@@ -53,11 +64,12 @@ struct MotionSynthesizer::Impl {
     MotionFlowOptions flowOptions;
     DXGI_FORMAT costFormat=DXGI_FORMAT_UNKNOWN;
     int w=0,h=0,aw=0,ah=0;
-    bool prepared=false,history=false;
+    bool prepared=false,hasPair=false;
 
     Impl(ID3D11Device* d,ID3D11DeviceContext* c,unsigned limit,MotionCostMode costMode,MotionFlowOptions options):device(d),context(c),maxDimension(limit),costMode(costMode),flowOptions(options) {
         if((options.output_grid!=0&&options.output_grid!=1&&options.output_grid!=2&&options.output_grid!=4)||
-           (options.quality!=MotionFlowQuality::medium&&options.quality!=MotionFlowQuality::slow))throw std::invalid_argument("Invalid flow grid or quality");
+           (options.quality!=MotionFlowQuality::medium&&options.quality!=MotionFlowQuality::slow)||
+           (options.session_mode!=MotionSessionMode::fresh&&options.session_mode!=MotionSessionMode::persistent))throw std::invalid_argument("Invalid flow grid, quality or session mode");
         if(!d||!c||limit<160||limit>8192)throw std::invalid_argument("Invalid motion synthesis configuration");
         ComPtr<ID3D11Device> owner;c->GetDevice(&owner);
         if(owner.Get()!=d||c->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)
@@ -106,7 +118,7 @@ struct MotionSynthesizer::Impl {
         if(status!=NV_OF_SUCCESS)throw std::runtime_error(std::string(action)+" NVOF="+std::to_string(status));
     }
     void reset() noexcept {
-        prepared=history=trustworthy=false;
+        prepared=hasPair=trustworthy=false;
         if(handle){
             for(auto& p:ch)if(p){api.nvOFUnregisterResourceD3D11(p);p=nullptr;}
             for(auto& p:fh)if(p){api.nvOFUnregisterResourceD3D11(p);p=nullptr;}
@@ -121,7 +133,7 @@ struct MotionSynthesizer::Impl {
         for(auto& p:repairedViews)p.Reset();for(auto& p:repairedTargets)p.Reset();for(auto& p:repairedTextures)p.Reset();
         for(auto& p:costViews)p.Reset();for(auto& p:costs)p.Reset();
         for(auto& p:repairScratchViews)p.Reset();for(auto& p:repairScratchTargets)p.Reset();for(auto& p:repairScratch)p.Reset();
-        w=h=aw=ah=0;grid=0;costFormat=DXGI_FORMAT_UNKNOWN;
+        w=h=aw=ah=0;grid=inputSlot=0;costFormat=DXGI_FORMAT_UNKNOWN;inputDone.Reset();
     }
     ComPtr<ID3D11ShaderResourceView> srv(ID3D11Texture2D* t,DXGI_FORMAT format) {
         D3D11_SHADER_RESOURCE_VIEW_DESC d{};d.Format=format;d.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;d.Texture2D.MipLevels=1;
@@ -131,6 +143,11 @@ struct MotionSynthesizer::Impl {
         if(handle&&w==width&&h==height)return;
         reset();
         try {
+#ifdef NVOF_SESSION_DIAGNOSTICS
+            ++sessionCreations;++surfaceSets;
+#endif
+            D3D11_QUERY_DESC queryDesc{D3D11_QUERY_EVENT,0};
+            check(device->CreateQuery(&queryDesc,&inputDone),"Analysis completion query");
             w=width;h=height;
             double scale=(std::min)(1.0,double(maxDimension)/(std::max)(w,h));
             aw=(std::max)(2,int(w*scale)&~1);ah=(std::max)(2,int(h*scale)&~1);
@@ -181,19 +198,30 @@ struct MotionSynthesizer::Impl {
             init.mode=NV_OF_MODE_OPTICALFLOW;init.perfLevel=flowOptions.quality==MotionFlowQuality::slow?NV_OF_PERF_LEVEL_SLOW:NV_OF_PERF_LEVEL_MEDIUM;
             init.predDirection=NV_OF_PRED_DIRECTION_BOTH;init.inputBufferFormat=NV_OF_BUFFER_FORMAT_NV12;
             of(api.nvOFInit(handle,&init),"Initialize NVOFA");
-            for(unsigned i=0;i<2;++i){
+            // Shared allocation is needed on BOTH sides of NVOFA interop.
+            // Plain reusable outputs failed the variable-speed raw-flow oracle;
+            // shared outputs with plain inputs still failed the opening pan.
+            // Shared input/output allocations match fresh-session pixels on
+            // RTX 5090 / 617.42. No handle is exported to another process.
+            const UINT interopFlags=flowOptions.session_mode==MotionSessionMode::fresh?0:D3D11_RESOURCE_MISC_SHARED;
+            const unsigned inputCount=flowOptions.session_mode==MotionSessionMode::persistent?6:2;
+            for(unsigned i=0;i<inputCount;++i){
                 D3D11_TEXTURE2D_DESC d{};d.Width=aw;d.Height=ah;d.MipLevels=d.ArraySize=1;
                 d.Format=DXGI_FORMAT_NV12;d.SampleDesc.Count=1;d.Usage=D3D11_USAGE_DEFAULT;
                 d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;
+                d.MiscFlags=interopFlags;
                 check(device->CreateTexture2D(&d,nullptr,&inputs[i]),"Analysis NV12");
                 for(unsigned p=0;p<2;++p){
                     D3D11_RENDER_TARGET_VIEW_DESC v{};v.Format=p?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM;v.ViewDimension=D3D11_RTV_DIMENSION_TEXTURE2D;
                     check(device->CreateRenderTargetView(inputs[i].Get(),&v,&inputTargets[i][p]),"Analysis RTV");
                 }
+                of(api.nvOFRegisterResourceD3D11(handle,inputs[i].Get(),&ih[i]),"Register analysis");
+                if(i>=flows.size())continue;
                 d.Width=(aw+grid-1)/grid;d.Height=(ah+grid-1)/grid;d.Format=DXGI_FORMAT_R16G16_SINT;
                 d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
                 check(device->CreateTexture2D(&d,nullptr,&flows[i]),"Flow texture");
                 fvs[i]=srv(flows[i].Get(),d.Format);
+                d.MiscFlags=0;
                 d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;
                 check(device->CreateTexture2D(&d,nullptr,&repairedTextures[i]),"Repaired flow texture");
                 check(device->CreateRenderTargetView(repairedTextures[i].Get(),nullptr,&repairedTargets[i]),"Repaired flow RTV");
@@ -202,12 +230,12 @@ struct MotionSynthesizer::Impl {
                 check(device->CreateRenderTargetView(repairScratch[i].Get(),nullptr,&repairScratchTargets[i]),"Repair scratch RTV");
                 repairScratchViews[i]=srv(repairScratch[i].Get(),d.Format);
                 if(costFormat!=DXGI_FORMAT_UNKNOWN) {
+                    d.MiscFlags=interopFlags;
                     d.Format=costFormat;d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
                     check(device->CreateTexture2D(&d,nullptr,&costs[i]),"Cost texture");
                     costViews[i]=srv(costs[i].Get(),d.Format);
                     of(api.nvOFRegisterResourceD3D11(handle,costs[i].Get(),&ch[i]),"Register cost");
                 }
-                of(api.nvOFRegisterResourceD3D11(handle,inputs[i].Get(),&ih[i]),"Register analysis");
                 of(api.nvOFRegisterResourceD3D11(handle,flows[i].Get(),&fh[i]),"Register flow");
             }
         }catch(...){reset();throw;}
@@ -274,49 +302,59 @@ MotionAnalysisInfo MotionSynthesizer::analysis_info() const noexcept {
 }
 bool MotionSynthesizer::reliable() const noexcept {return impl_->prepared&&impl_->trustworthy;}
 void MotionSynthesizer::reset() noexcept {impl_->reset();}
-// Merely toggling disableTemporalHints retained wrong-direction motion in
-// the seek/reversal regression on RTX 5090 / 617.42. Recreate the NVOFA session
-// on discontinuities until a resource-preserving reset is independently proven.
-// Shaders and the player's output surface pool stay alive.
+// Seek, cut, skipped/identical pair, source discontinuity, or recovery still
+// destroys the session. Normal playback alone takes the persistent path.
 void MotionSynthesizer::invalidate_history() noexcept {impl_->reset();}
 void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int h) {
-    // Reusing the NVOFA session produced stale/inconsistent motion on the
-    // opening-pan and variable-speed regressions (RTX 5090 / 617.42).
-    // Input rotation and completion waits alone were insufficient. Keep shader
-    // objects and the player's output pool, but isolate each analysis pair until
-    // session reuse passes these quality checks. This has a measured time cost.
-    impl_->reset();
-    impl_->prepared=false;impl_->validate(a,w,h);impl_->validate(b,w,h);impl_->configure(w,h);
+#ifdef NVOF_SESSION_DIAGNOSTICS
+    using Clock=std::chrono::steady_clock;
+    auto tick=Clock::now();
+    auto mark=[&](unsigned stage){auto now=Clock::now();impl_->timings[stage]=std::chrono::duration<double,std::milli>(now-tick).count();tick=now;};
+#else
+    auto mark=[](unsigned){};
+#endif
+    if(impl_->flowOptions.session_mode==MotionSessionMode::fresh)impl_->reset();
+    mark(0);
+    impl_->prepared=false;
+    try {
+    impl_->validate(a,w,h);impl_->validate(b,w,h);impl_->configure(w,h);
+    mark(1);
+    if(impl_->hasPair)impl_->inputSlot=(impl_->inputSlot+2)%impl_->inputs.size();
     ID3D11Texture2D* sources[]={a,b};
     for(unsigned i=0;i<2;++i){
         impl_->sources[i]=sources[i];impl_->ys[i]=impl_->srv(sources[i],DXGI_FORMAT_R8_UNORM);
         impl_->uvs[i]=impl_->srv(sources[i],DXGI_FORMAT_R8G8_UNORM);
-        if(w==impl_->aw&&h==impl_->ah)impl_->context->CopyResource(impl_->inputs[i].Get(),sources[i]);
-        else {impl_->draw(impl_->inputTargets[i][0].Get(),0,true,i);impl_->draw(impl_->inputTargets[i][1].Get(),1,true,i);}
+        const unsigned slot=impl_->inputSlot+i;
+        if(w==impl_->aw&&h==impl_->ah)impl_->context->CopyResource(impl_->inputs[slot].Get(),sources[i]);
+        else {impl_->draw(impl_->inputTargets[slot][0].Get(),0,true,i);impl_->draw(impl_->inputTargets[slot][1].Get(),1,true,i);}
     }
-    // Complete the new analysis inputs before the first execute of this session.
-    if(!impl_->history) {
-        D3D11_QUERY_DESC desc{D3D11_QUERY_EVENT,0};ComPtr<ID3D11Query> done;
-        check(impl_->device->CreateQuery(&desc,&done),"Cold analysis completion query");
+    // Complete prior synthesis reads of raw outputs AND current input writes
+    // before EVERY execute. Session reuse alone does not establish interop
+    // ordering. Rotate disjoint input pairs (0,1), (2,3), (4,5), and upload both
+    // sources: texture identity never implies unchanged content.
+    {
+        auto done=impl_->inputDone;
         impl_->context->End(done.Get());impl_->context->Flush();
         const ULONGLONG deadline=GetTickCount64()+1000;
         for(;;) {
             HRESULT hr=impl_->context->GetData(done.Get(),nullptr,0,0);
-            check(hr,"Cold analysis completion");
+            check(hr,"Analysis completion");
             if(hr==S_OK)break;
-            if(GetTickCount64()>=deadline)throw std::runtime_error("Cold analysis completion timed out");
+            if(GetTickCount64()>=deadline)throw std::runtime_error("Analysis completion timed out");
             SwitchToThread();
         }
     }
-    NV_OF_EXECUTE_INPUT_PARAMS in{};in.inputFrame=impl_->ih[0];in.referenceFrame=impl_->ih[1];
-    in.disableTemporalHints=impl_->history?NV_OF_FALSE:NV_OF_TRUE;
+    mark(2);
+    NV_OF_EXECUTE_INPUT_PARAMS in{};in.inputFrame=impl_->ih[impl_->inputSlot];in.referenceFrame=impl_->ih[impl_->inputSlot+1];
+    // Hints would change the vector solution; keep that separate from lifetime
+    // optimization. This path retains the fresh-pair quality baseline.
+    in.disableTemporalHints=NV_OF_TRUE;
     NV_OF_EXECUTE_OUTPUT_PARAMS out{};out.outputBuffer=impl_->fh[0];out.bwdOutputBuffer=impl_->fh[1];
     out.outputCostBuffer=impl_->ch[0];out.bwdOutputCostBuffer=impl_->ch[1];
-    try{
-        impl_->of(impl_->api.nvOFExecute(impl_->handle,&in,&out),"Estimate motion");
-    }
-    catch(...){impl_->reset();throw;}
+    impl_->of(impl_->api.nvOFExecute(impl_->handle,&in,&out),"Estimate motion");
+    mark(3);
     impl_->assess_motion();
+    mark(4);
     if(impl_->trustworthy) {
         impl_->draw(impl_->repairScratchTargets[0].Get(),0,false,0,0.5f,false,0,true);
         impl_->draw(impl_->repairScratchTargets[1].Get(),0,false,1,0.5f,false,0,true);
@@ -332,7 +370,9 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
         impl_->draw(impl_->layerTargets[1].Get(),0,false,0,0.5f,false,2);
         impl_->draw(impl_->layerTargets[0].Get(),0,false,1,0.5f,false,3);
     }
-    impl_->prepared=impl_->history=true;
+    mark(5);
+    impl_->prepared=impl_->hasPair=true;
+    }catch(...){impl_->reset();throw;}
 }
 void MotionSynthesizer::render_phase(ID3D11RenderTargetView* y,ID3D11RenderTargetView* uv,float fraction) {
     if(!impl_->prepared)throw std::logic_error("Prepare a pair before synthesis");

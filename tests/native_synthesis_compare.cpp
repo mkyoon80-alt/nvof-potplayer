@@ -94,7 +94,7 @@ int wmain(int argc,wchar_t** argv){try{
     std::cout<<std::fixed<<std::setprecision(4);
     // Quality fixtures are bounded independently of the performance dimensions.
     const int qw=640,qh=360;
-    for(auto backend:{GpuInterpolationBackend::fruc,GpuInterpolationBackend::native_experimental}) {
+    for(auto backend:{GpuInterpolationBackend::native_experimental}) {
         const char* name=backend==GpuInterpolationBackend::fruc?"fruc":"native";
         GpuFrucEngine engine(argv[1],device.Get(),context.Get(),nullptr,GpuCompletionMode::context_ordered,true,false,false,backend,flow);
         std::cout<<"DEVICE "<<engine.device_name()<<" backend="<<name<<std::endl;

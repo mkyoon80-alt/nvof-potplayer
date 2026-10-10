@@ -6,7 +6,7 @@
 #include <d3d10_1.h>
 #include <fstream>
 int wmain(int argc,wchar_t** argv){try{
- require(argc>=5,"video_x2_repro <runtime> <raw nv12> <timestamps> <output folder> [baseline|native] [nominal-duration-100ns] [nv12|p010] [width height] [flow-dimension] [cost-mode: 0=off 1=blend 2=fusion] [grid: 0=auto 4 2 1] [medium|slow]");
+ require(argc>=5,"video_x2_repro <runtime> <raw nv12> <timestamps> <output folder> [baseline|native] [nominal-duration-100ns] [nv12|p010] [width height] [flow-dimension] [cost-mode: 0=off 1=blend 2=fusion] [grid: 0=auto 4 2 1] [medium|slow] [fresh|reuse]");
  const int w=argc>8?std::stoi(argv[8]):1920,h=argc>9?std::stoi(argv[9]):1080;
  require(w>=4&&h>=4&&w<=8192&&h<=8192&&!(w&1)&&!(h&1),"Invalid raw dimensions");
  const unsigned flowDimension=argc>10?std::stoul(argv[10]):1920;
@@ -15,7 +15,9 @@ int wmain(int argc,wchar_t** argv){try{
  const unsigned grid=argc>12?std::stoul(argv[12]):0;
  const std::wstring quality=argc>13?argv[13]:L"medium";
  require(quality==L"medium"||quality==L"slow","Invalid flow quality");
- const MotionFlowOptions options{grid,quality==L"slow"?MotionFlowQuality::slow:MotionFlowQuality::medium};
+ const std::wstring session=argc>14?argv[14]:L"reuse";
+ require(session==L"reuse"||session==L"fresh","Invalid session mode");
+ const MotionFlowOptions options{grid,quality==L"slow"?MotionFlowQuality::slow:MotionFlowQuality::medium,session==L"fresh"?MotionSessionMode::fresh:MotionSessionMode::persistent};
  const int64_t duration=argc>6?std::stoll(argv[6]):417083;
  const bool p010=argc>7&&std::wstring(argv[7])==L"p010";
  const size_t bytes=size_t(w)*h*3/2*(p010?2:1);

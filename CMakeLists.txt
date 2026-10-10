@@ -52,7 +52,7 @@ foreach(test directshow_smoke directshow_gpu_smoke)
   add_executable(${test} tests/${test}.cpp)
   target_link_libraries(${test} PRIVATE nvof_mf_bridge strmbase strmiids ole32 oleaut32 uuid winmm advapi32 d3d11 dxgi)
 endforeach()
-foreach(test native_motion_guard native_motion_layers native_startup native_cost_map
+foreach(test native_synthesis_compare native_motion_guard native_motion_layers native_startup native_cost_map
              gpu_interop_stress gpu_p010_conversion p010_video_stress video_x2_repro native_cpu_transport)
   add_executable(${test} tests/${test}.cpp)
   target_link_libraries(${test} PRIVATE nvof_engine nvof_gpu_engine nvof_gpu_pipeline nvof_gpu_phase_pipeline nvof_mf_bridge)
@@ -88,3 +88,8 @@ endforeach()
 
 add_dependencies(native_cost_map nvof_shader_headers)
 target_include_directories(native_cost_map PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+add_executable(native_session_reuse tests/native_session_reuse.cpp)
+target_link_libraries(native_session_reuse PRIVATE nvof_engine nvof_gpu_engine nvof_gpu_pipeline nvof_gpu_phase_pipeline nvof_mf_bridge)
+add_dependencies(native_session_reuse nvof_shader_headers)
+target_include_directories(native_session_reuse PRIVATE "${NVOF_API_INCLUDE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/generated")
