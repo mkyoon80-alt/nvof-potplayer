@@ -250,18 +250,70 @@ float2 inversePosition(float2 p,bool next,float fraction,int policy) {
     }
     return best;
 }
-// Compute one continuous inverse field and its visibility weights per output
-// time. Both full-resolution planes sample it, avoiding independent per-pixel
-// branch choices and Y/UV disagreement. Only the map is at analysis resolution.
+// Compute inverse branches and visibility at analysis resolution. Both full-
+// resolution planes share these decisions; discontinuities are resolved when
+// sampling colors, rather than by averaging incompatible source coordinates.
 struct InverseOutput { float4 offsets:SV_Target0;float4 weights:SV_Target1; };
+// A small patch plus its worst luma sample prevents a thin mismatched stroke
+// from disappearing in an otherwise flat patch. Chroma also constrains matches.
+float alignedPatchError(float2 a,float2 b) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    float error=0,peak=0;
+    [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-1;x<=1;++x) {
+        float2 d=float2(x,y)*3.0*scale;
+        float delta=abs(yAt(a+d,false)-yAt(b+d,true))*255.0;
+        error+=delta;peak=max(peak,delta);
+    }
+    float2 chroma=abs(uvAt(a,false)-uvAt(b,true))*255.0;
+    return max(error/9.0,peak/2.0)+max(chroma.x,chroma.y);
+}
+// Only recover a pair of weak, disagreeing inverse candidates. A nearby flow
+// proposes one shared trajectory through both originals; its donor must have
+// reverse consistency and at least one proposed endpoint must support it too.
+// Stationary overlays and candidates without a clear patch improvement stay on
+// the established Newton path. This never changes a pair into a frame hold.
+bool coherentTrajectory(float2 p,inout float2 a,inout float2 b,inout float qa,inout float qb) {
+    if(max(qa,qb)>=0.35||abs(yAt(a,false)-yAt(b,true))*255.0<8.0||layerMask.SampleLevel(linearClamp,p/size.xy,0)>0.1)return false;
+    float error=alignedPatchError(a,b);
+    if(error<6.0)return false;
+    float scale=max(size.x/size.z,size.y/size.w),bestError=error;
+    float2 bestA=a,bestB=b;
+    [loop]for(int k=0;k<18;++k) {
+        bool next=k>=9;int index=k%9;
+        int d=(index-1)%4;
+        float2 direction=d==0?float2(1,0):d==1?float2(-1,0):d==2?float2(0,1):float2(0,-1);
+        float2 anchor=index==0?(next?b:a):p+direction*(index<=4?8.0:32.0)*scale;
+        float2 local=flow(anchor,next),end=anchor+local;
+        if(!inside(anchor)||!inside(end)||length(local+flow(end,!next))>1.5*scale)continue;
+        float2 v=next?-local:local;
+        float2 ca=p-mode.w*v,cb=p+(1.0-mode.w)*v;
+        if(!inside(ca)||!inside(cb))continue;
+        if(max(layerMask.SampleLevel(linearClamp,ca/size.xy,0),layerMask.SampleLevel(linearClamp,cb/size.xy,0))>0.1)continue;
+        float candidate=alignedPatchError(ca,cb);
+        if(candidate<6.0&&candidate<bestError*0.75&&candidate<error*0.5) {
+            // At least one endpoint must directly support this trajectory;
+            // a similar-colored donor alone is not correspondence evidence.
+            float support=min(length(v-flow(ca,false)),length(v+flow(cb,true)));
+            if(support>max(1.5,0.5*mode.x+1.0)*scale)continue;
+            bestError=candidate;bestA=ca;bestB=cb;
+        }
+    }
+    if(bestError>=error*0.5)return false;
+    a=bestA;b=bestB;
+    // Keep recovered evidence below the stationary-background acceptance gate.
+    // Matching colors alone do not establish strong visibility in an occlusion.
+    qa=qb=0.05*(1.0-bestError/12.0);
+    return true;
+}
 InverseOutput inverseMapPolicy(float4 screen,int policy) {
     float2 p=screen.xy*size.xy/size.zw;
     bool fusion=policy>=2;
     float2 a=inversePosition(p,false,mode.w,policy),b=inversePosition(p,true,1.0-mode.w,policy);
     float qa=(0.05+evidence(a,p,false))*warpReliability(a,p,false,mode.w);
     float qb=(0.05+evidence(b,p,true))*warpReliability(b,p,true,1.0-mode.w);
-    float ca=policy==0?1.0:(fusion?fusedHardwareWeight(a,false,qa):hardwareWeight(a,false));
-    float cb=policy==0?1.0:(fusion?fusedHardwareWeight(b,true,qb):hardwareWeight(b,true));
+    bool recovered=coherentTrajectory(p,a,b,qa,qb);
+    float ca=policy==0||recovered?1.0:(fusion?fusedHardwareWeight(a,false,qa):hardwareWeight(a,false));
+    float cb=policy==0||recovered?1.0:(fusion?fusedHardwareWeight(b,true,qb):hardwareWeight(b,true));
     InverseOutput result;
     result.offsets=float4(a-p,b-p);
     result.weights=float4(inside(a)?(1.0-mode.w)*qa:0.0,inside(b)?mode.w*qb:0.0,ca,cb);
@@ -303,7 +355,9 @@ float stationaryLayer(float2 p) {
                 positionError=max(positionError,abs(na-nb));
             }
             float consistent=1.0-smoothstep(0.06,0.16,positionError);
-            detail=max(detail,consistent*sameEdge*(1.0-smoothstep(0.35,0.75,abs(da-db)/sameEdge)));
+            // A changing background can change contrast without moving the edge.
+            // The normalized profile above checks its position independently.
+            detail=max(detail,consistent*sameEdge);
         }
     }
     // Flat, similarly colored areas are not evidence of a stationary object.
@@ -334,10 +388,7 @@ float4 expandStationaryMask(float4 screen:SV_Position):SV_Target {
     }
     return float4(mask,0,0,1);
 }
-float4 midpoint(float4 screen:SV_Position):SV_Target {
-    float2 p=screen.xy*(mode.y!=0?2.0:1.0);
-    float4 offsets=inverseOffsets.SampleLevel(linearClamp,p/size.xy,0);
-    float4 weights=inverseWeights.SampleLevel(linearClamp,p/size.xy,0);
+float2 mappedColor(float2 p,float4 offsets,float4 weights) {
     float2 a=p+offsets.xy,b=p+offsets.zw;
     // Retain baseline evidence in xy for stationary-background protection.
     // Hardware cost in zw changes only the moving-source blend.
@@ -357,5 +408,30 @@ float4 midpoint(float4 screen:SV_Position):SV_Target {
     float useA=sb*(1.0-sa)*validA,useB=sa*(1.0-sb)*validB;
     float2 protectedBackground=fixed*(1.0-useA-useB)+ca*useA+cb*useB;
     float2 result=lerp(warped,protectedBackground,sourceStatic);
-    return float4(lerp(result,fixed,still),0,1);
+    return lerp(result,fixed,still);
+}
+
+float4 midpoint(float4 screen:SV_Position):SV_Target {
+    float2 p=screen.xy*(mode.y!=0?2.0:1.0);
+    float2 q=p*size.zw/size.xy-0.5;
+    int2 cell=int2(floor(q)),hi=int2(size.zw)-1;
+    float2 f=frac(q);
+    int2 ia=clamp(cell,0,hi),ib=clamp(cell+int2(1,0),0,hi);
+    int2 ic=clamp(cell+int2(0,1),0,hi),id=clamp(cell+1,0,hi);
+    float4 oa=inverseOffsets.Load(int3(ia,0)),ob=inverseOffsets.Load(int3(ib,0));
+    float4 oc=inverseOffsets.Load(int3(ic,0)),od=inverseOffsets.Load(int3(id,0));
+    float4 wa=inverseWeights.Load(int3(ia,0)),wb=inverseWeights.Load(int3(ib,0));
+    float4 wc=inverseWeights.Load(int3(ic,0)),wd=inverseWeights.Load(int3(id,0));
+    float4 spread=max(max(oa,ob),max(oc,od))-min(min(oa,ob),min(oc,od));
+    float discontinuity=max(max(spread.x,spread.y),max(spread.z,spread.w));
+    // Opposite sides of a fold can refer to different motion layers. Sampling
+    // their averaged coordinate invents an unrelated third position. Blend
+    // independently validated source colors only across such discontinuities.
+    if(discontinuity>2.0&&any(f>0.001)) {
+        float2 ca=mappedColor(p,oa,wa),cb=mappedColor(p,ob,wb);
+        float2 cc=mappedColor(p,oc,wc),cd=mappedColor(p,od,wd);
+        return float4(lerp(lerp(ca,cb,f.x),lerp(cc,cd,f.x),f.y),0,1);
+    }
+    return float4(mappedColor(p,lerp(lerp(oa,ob,f.x),lerp(oc,od,f.x),f.y),
+        lerp(lerp(wa,wb,f.x),lerp(wc,wd,f.x),f.y)),0,1);
 }

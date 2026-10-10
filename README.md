@@ -2,7 +2,7 @@
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. 원본 시점의 프레임 사이에 중간 프레임을 추가해 **×2**로 출력합니다.
 
-현재 개발 브랜치는 **0.3.1-opt.1**입니다. 공개된 [v0.3.0](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.3.0)과 구분되는 로컬 시험판이며 아직 업로드하지 않았습니다.
+현재 개발 브랜치는 **0.3.1-quality.1**입니다. 공개된 [v0.3.0](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.3.0)과 구분되는 로컬 시험판이며 아직 업로드하지 않았습니다.
 
 ## 자체 포함 버전
 
@@ -27,7 +27,7 @@ FRUC/CUDA 바이너리를 배포하지 않으므로 이전의 해당 구성요�
 
 프로그레시브 SDR, NV12 입력과 GPU P010 입력을 대상으로 합니다. P010은 GPU에서 8비트 NV12로 변환하므로 10비트 출력이나 HDR 톤매핑을 제공하지 않습니다. 고정 목표 60/120fps 모드는 아직 없습니다.
 
-머리카락, 겹친 물체, 글자 경계, 연기에는 잔여 아티팩트가 있습니다. 이번 변경은 세션·GPU 버퍼 재사용 최적화입니다. 기본 Grid 4·Medium·최대 1920 분석과 Newton 합성은 유지합니다. RTX 5070의 4K60 → 120 실시간 성능이나 플루이드 모션 이상의 품질을 보장하지 않습니다. 실행 파일은 코드 서명되지 않았습니다.
+머리카락, 겹친 물체, 글자 경계, 연기에는 잔여 아티팩트가 있습니다. 이번 변경은 움직임 경계의 원본 좌표 혼합과 고정 글자 보호를 보완합니다. 세션·GPU 버퍼 재사용 최적화는 유지합니다. 기본 Grid 4·Medium·최대 1920 분석과 Newton 합성은 유지합니다. RTX 5070의 4K60 → 120 실시간 성능이나 플루이드 모션 이상의 품질을 보장하지 않습니다. 실행 파일은 코드 서명되지 않았습니다.
 
 ## 문서
 
@@ -42,3 +42,5 @@ Original project source is under [MIT](LICENSE). Microsoft DirectShow baseclasse
 Grid·Preset·분석 해상도 결과는 [실험 기록](docs/FLOW-PROFILE-TRIAL.md)에 있습니다. 이전 [Cost Map 결합 시험](docs/COST-MAP-FUSION.md)은 개발 이력으로 보존합니다.
 
 세션 재사용의 검증·성능 측정과 남은 동기화 비용은 [최적화 기록](docs/SESSION-REUSE.md)에 있습니다.
+
+경계 보완의 검증과 남은 문제는 [품질 시험 기록](docs/QUALITY-TRIAL.md)에 있습니다.

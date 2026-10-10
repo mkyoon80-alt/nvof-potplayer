@@ -17,8 +17,8 @@
     <RootNamespace>NvofControl</RootNamespace>
     <StartupObject>NvofControl.Program</StartupObject>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.3.1-opt.1</Version>
-    <ApplicationVersion>0.3.1-opt.1</ApplicationVersion>
+    <Version>0.3.1-quality.1</Version>
+    <ApplicationVersion>0.3.1-quality.1</ApplicationVersion>
     <AssemblyVersion>0.3.1.2</AssemblyVersion>
     <FileVersion>0.3.1.2</FileVersion>
     <DebugType>none</DebugType>
