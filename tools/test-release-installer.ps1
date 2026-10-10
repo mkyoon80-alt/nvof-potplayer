@@ -9,6 +9,13 @@ $declined=Join-Path $root '미동의 검증'
 $key='Software\Classes\CLSID\{EDECA044-78CD-40EB-8F37-63D947C501A0}\InprocServer32'
 function Registered { $k=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($key);if($k){try{$k.GetValue('')}finally{$k.Dispose()}} }
 function MachineRegistered { $k=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($key);if($k){try{$k.GetValue('')}finally{$k.Dispose()}} }
+function InstalledUninstaller {
+ $registry='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{4932901D-91E6-4FE4-A79E-D63258D637F2}_is1'
+ $path=(Get-ItemPropertyValue -LiteralPath $registry -Name UninstallString).Trim('"')
+ $resolved=[IO.Path]::GetFullPath($path)
+ if((Split-Path $resolved -Parent) -ne $destination -or -not (Test-Path -LiteralPath $resolved)){throw 'Unexpected installed uninstaller'}
+ return $resolved
+}
 function Assert($condition,$message){if(-not $condition){throw $message}}
 function Run($exe,$arguments,$label){
  $p=Start-Process -FilePath $exe -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -58,7 +65,7 @@ try {
  Assert (Test-Path -LiteralPath (Join-Path $oldRuntime 'keep-user-file.txt')) 'Upgrade removed unrelated runtime file.'
  $results.upgradeRemovesKnownOldRuntimeOnly=$true
  $results.upgradePreservesINI=$true
- $code=Run (Join-Path $destination 'unins000.exe') @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="'+(Join-Path $root 'uninstall.log')+'"')) 'uninstall'
+ $code=Run (InstalledUninstaller) @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="'+(Join-Path $root 'uninstall.log')+'"')) 'uninstall'
  Assert ($code[-1] -eq 0) 'Uninstall failed.'
  Assert (-not (Registered)) 'Uninstall reactivated an older filter.'
  Assert (Test-Path (Join-Path $destination 'NvofPotPlayer.ini')) 'Uninstall removed settings.'
@@ -68,7 +75,7 @@ try {
  & $helper --register | Out-Null;Assert ($LASTEXITCODE -eq 0) 'Cannot restore original registration before ownership test.'
  & (Join-Path $destination 'NvofRegister.exe') --unregister | Out-Null;Assert ($LASTEXITCODE -eq 14) 'Foreign registration ownership guard did not refuse.'
  Assert ((Registered) -eq $original) 'Helper removed another folder registration.'
- $code=Run (Join-Path $destination 'unins000.exe') @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') 'uninstall-other-registration';Assert ($code[-1] -eq 0) 'Ownership uninstall failed.'
+ $code=Run (InstalledUninstaller) @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') 'uninstall-other-registration';Assert ($code[-1] -eq 0) 'Ownership uninstall failed.'
  Assert ((Registered) -eq $original) 'Uninstaller removed another folder registration.'
  $results.uninstallDoesNotRemoveOtherRegistration=$true
 } finally {
@@ -81,4 +88,6 @@ try {
  $results|ConvertTo-Json|Set-Content (Join-Path $root 'installer-qa.json')
  $results|ConvertTo-Json
 }
-\n# Expected ownership refusal above is a passing check, not the script exit code.\n$global:LASTEXITCODE=0\n
+
+# Expected ownership refusal above is a passing check, not the script exit code.
+$global:LASTEXITCODE=0

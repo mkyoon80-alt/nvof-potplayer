@@ -309,7 +309,7 @@ namespace NvofControl
             };
             Find<Button>("UninstallButton").Click += delegate {
                 if (preview) return;
-                string uninstaller = Path.Combine(baseDirectory, "unins000.exe");
+                string uninstaller = FindUninstaller(baseDirectory);
                 if (!File.Exists(uninstaller)) { Notify("설치 프로그램으로 설치한 버전에서 제거할 수 있습니다.", true); return; }
                 try { Process.Start(new ProcessStartInfo(uninstaller) { UseShellExecute=true, WorkingDirectory=baseDirectory }); window.Close(); }
                 catch (Exception ex) { Notify("제거 프로그램을 열지 못했습니다.", true, ex.Message); }
@@ -337,6 +337,50 @@ namespace NvofControl
             timer.Tick += delegate { RefreshStatus(); };
             if (!preview) timer.Start();
             window.Closed += delegate { timer.Stop(); };
+        }
+        internal static string FindUninstaller(string directory)
+        {
+            // Inno may allocate unins001.exe after an immediate reinstall.
+            // Prefer this product's registry entry, but never launch another folder.
+            string expected = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar);
+            const string key = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{4932901D-91E6-4FE4-A79E-D63258D637F2}_is1";
+            foreach (RegistryHive hive in new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine })
+            {
+                try
+                {
+                    using (RegistryKey root = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64))
+                    using (RegistryKey installed = root.OpenSubKey(key))
+                    {
+                        string command = installed == null ? null : installed.GetValue("UninstallString") as string;
+                        if (!String.IsNullOrWhiteSpace(command))
+                        {
+                            string path = command.Trim().Trim('"');
+                            if (ValidLocalUninstaller(expected, path)) return Path.GetFullPath(path);
+                        }
+                    }
+                }
+                catch (Exception ex) when (ex is System.Security.SecurityException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is IOException) { }
+            }
+            if (!Directory.Exists(expected)) return null;
+            string[] candidates = Directory.GetFiles(expected, "unins???.exe", SearchOption.TopDirectoryOnly);
+            Array.Sort(candidates, StringComparer.OrdinalIgnoreCase);
+            for (int i=candidates.Length-1; i>=0; --i)
+                if (ValidLocalUninstaller(expected, candidates[i])) return candidates[i];
+            return null;
+        }
+        internal static bool ValidLocalUninstaller(string directory, string path)
+        {
+            try
+            {
+                string full = Path.GetFullPath(path);
+                string name = Path.GetFileName(full);
+                return String.Equals(Path.GetDirectoryName(full), Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase)
+                    && name.Length==12 && name.StartsWith("unins",StringComparison.OrdinalIgnoreCase)
+                    && name.EndsWith(".exe",StringComparison.OrdinalIgnoreCase)
+                    && Char.IsDigit(name[5]) && Char.IsDigit(name[6]) && Char.IsDigit(name[7])
+                    && File.Exists(full) && File.Exists(Path.ChangeExtension(full,".dat"));
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException) { return false; }
         }
         private T Find<T>(string name) where T : class { return (T)window.FindName(name); }
         private Brush Color(string hex) { return (Brush)new BrushConverter().ConvertFromString(hex); }
@@ -811,6 +855,16 @@ namespace NvofControl
                 if (store.InputRateMask != 0) throw new Exception("Selecting no source rates must persist.");
                 store.SetInputRateMask(63); store.SetEnabled(true);
                 if (!store.Enabled || store.InputRateMask != 63) throw new Exception("Settings round-trip failed.");
+                string uninstallFixture=Path.Combine(folder,"uninstaller");
+                Directory.CreateDirectory(uninstallFixture);
+                File.WriteAllText(Path.Combine(uninstallFixture,"unins000.exe"),"old");
+                File.WriteAllText(Path.Combine(uninstallFixture,"unins000.dat"),"old");
+                File.WriteAllText(Path.Combine(uninstallFixture,"unins001.exe"),"new");
+                File.WriteAllText(Path.Combine(uninstallFixture,"unins001.dat"),"new");
+                File.WriteAllText(Path.Combine(uninstallFixture,"unins999.exe"),"orphan");
+                if(Controller.FindUninstaller(uninstallFixture)!=Path.Combine(uninstallFixture,"unins001.exe")) throw new Exception("Reinstall uninstaller selection failed.");
+                if(Controller.ValidLocalUninstaller(folder,Path.Combine(uninstallFixture,"unins001.exe"))) throw new Exception("Foreign-folder uninstaller accepted.");
+                if(Controller.ValidLocalUninstaller(uninstallFixture,Path.Combine(uninstallFixture,"unins001.exe")+" /silent")) throw new Exception("Uninstall command arguments accepted as a local executable.");
                 string statusPath = Path.Combine(folder, "status.json");
                 if (RuntimeStatus.Read(statusPath).Exists) throw new Exception("Missing status must be inactive.");
                 File.WriteAllText(statusPath, "{\"processId\":" + Process.GetCurrentProcess().Id + ",\"state\":\"active\",\"inputFps\":23.976,\"outputFps\":59.94,\"outputFrames\":12,\"message\":\"OK\"}");

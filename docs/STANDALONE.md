@@ -25,3 +25,5 @@ The controller carries .NET/WPF. The installer omits the old FRUC/CUDA-specific 
 Build evidence: build/standalone1 (ignored). Package/installer verification results are recorded there separately after packaging.
 
 No quality improvement is claimed for this dependency-only checkpoint. CPU input performance changes because its former FRUC path is replaced.
+
+A reinstall may allocate unins001.exe. The controller now resolves the registered local uninstaller and validates its folder; paired local uninsNNN.exe/.dat files provide a fallback. The controller self-test covers numbered files, orphan executables and foreign paths.
