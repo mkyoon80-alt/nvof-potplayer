@@ -1,3 +1,5 @@
+> Historical checkpoint. Current CPU NV12 GPU delivery and switching behavior is documented in [SW-DECODING.md](SW-DECODING.md); the readback path below describes the earlier build.
+
 # Native standalone checkpoint — 0.3.1-standalone.1
 
 Local trial based on Newton + Cost.1. No GitHub publication.

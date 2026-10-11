@@ -1,3 +1,43 @@
+# 0.4.5 — SW 디코딩 전환 멈춤 수정
+
+A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
+
+**[Download v0.4.5](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.5)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+
+## What's new
+
+- Fixed playback freezing when switching from hardware decoding to software-decoded NV12 while retaining the D3D11 renderer. Output format is refreshed when switching between NV12 and P010.
+- Software-decoded NV12 now uploads to the GPU and delivers GPU surfaces to a compatible D3D11 renderer, without full-frame CPU readback on that path. Existing CPU 10-bit support remains available.
+- Added optional playback timing logs, disabled by default, to distinguish filter processing from allocator and renderer waits. These do not measure frames actually displayed.
+- Updated Korean and English manuals with software decoding, bit-depth checks, and fullscreen HDR troubleshooting.
+
+## 변경 사항
+
+- **HW → SW 전환 시 멈춤 수정:** 하드웨어 가속을 끈 뒤 NV12 입력과 기존 P010 출력 연결이 맞지 않아 멈추던 문제를 수정했습니다. HW/SW 전환 시 실제 GPU 출력 형식에 맞게 연결 정보를 갱신합니다.
+- **CPU NV12 → GPU 전달:** 소프트웨어로 디코딩한 8bit SDR 프레임도 GPU에 올려 보간하고, 호환 D3D11 렌더러에 GPU 프레임으로 전달합니다. 이 경로에서 보간 결과를 CPU로 다시 읽어오지 않습니다. 실제 팟플레이어에서 멈춤 없이 재생되는 것을 확인했습니다.
+- **선택형 성능 진단:** 처리·버퍼 대기·렌더러 전달 시간을 기록할 수 있습니다. 기본값은 꺼짐이며, 기록된 전달 FPS는 화면의 실제 표시 FPS와 다릅니다.
+- **한·영 매뉴얼:** 네이티브 DXVA가 필수는 아니라는 점, CPU 디코딩 경로와 10bit 유지 조건, 인터레이스 설정, 전체화면 HDR 색상 문제의 비교 방법을 정리했습니다.
+
+## 업데이트
+
+팟플레이어와 설정창을 완전히 닫고 기존 폴더를 백업한 뒤 파일을 교체하세요. **기존 `NvofPotPlayer.ini`는 보존합니다.** 같은 폴더에서 업데이트하면 기존 등록을 사용할 수 있습니다. ZIP에는 자체 .NET/WPF 런타임과 한국어·영어 오프라인 매뉴얼이 포함됩니다.
+
+Close PotPlayer and the controller before replacing files. Back up the folder and **keep your existing `NvofPotPlayer.ini`**. Both offline manuals and the self-contained .NET/WPF runtime are included.
+
+## 지원 범위와 확인 사항
+
+네이티브 DXVA는 권장 경로이며 필수는 아닙니다. 지원되는 CPU 입력은 NV12 SDR 및 P010/P016/P210/Y210입니다. **원본 파일이 10bit라도 디코더가 NV12로 넘기면 보간 경로는 8bit입니다.** 10bit 유지는 P010 등의 실제 입력으로 확인하세요. CPU 10bit 인터레이스 영상은 팟플레이어 **영상 → 디인터레이스 → 사용하지 않음**으로 두고 다시 엽니다.
+
+The tested setup uses an RTX 5090 and PotPlayer's built-in decoder/D3D11 renderer. A 10-bit source decoded to NV12 reaches the filter as 8-bit; the filter cannot restore precision lost upstream. Use a supported 10-bit decoder output to preserve 10-bit samples.
+
+이번 버전은 모든 4K 프레임 저하를 해결한 성능 수정본이 아닙니다. 일부 환경의 전체화면 HDR 과포화 제보는 아직 재현·원인이 확인되지 않았으며, 해당 문제의 해결을 주장하지 않습니다. Dolby Vision은 디코더가 제공한 메타데이터 전달을 지원하며 모든 프로파일·화면 출력을 보장하지 않습니다.
+
+This release does not claim to fix every 4K frame-rate drop or the unconfirmed fullscreen HDR oversaturation report. Dolby Vision support forwards decoder-supplied metadata; it is not certification of every profile or display mode.
+
+[SW decoding and verification](docs/SW-DECODING.md) · [CPU 10-bit/interlaced input](docs/CPU-10BIT.md)
+
+---
+
 # 0.4.4 — CPU 10bit GPU 보간 · VP9 HDR · 인터레이스 처리
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with native 10-bit HDR processing and GPU interpolation of supported software-decoded 10-bit video. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**

@@ -6,6 +6,7 @@
 #include "nvof/av1_color.hpp"
 #include "nvof/vp9_color.hpp"
 #include "nvof/input_height_policy.hpp"
+#include "nvof/playback_timing.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -60,7 +61,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.4.4";
+constexpr char kFilterBuild[]="0.4.5";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -470,6 +471,7 @@ public:
             directory_ = module_directory();
             const auto ini = directory_ / L"NvofPotPlayer.ini";
             probe_services_ = GetPrivateProfileIntW(L"Nvof", L"ProbeServices", 0, ini.c_str()) != 0;
+            performance_.enabled = GetPrivateProfileIntW(L"Nvof", L"TracePerformance", 0, ini.c_str()) != 0;
             native_feature_enabled_ = GetPrivateProfileIntW(L"Nvof", L"NativeD3D11", 0, ini.c_str()) != 0;
             enabled_ = GetPrivateProfileIntW(L"Nvof", L"Enabled", 1, ini.c_str()) != 0;
             // Historical INI keys cannot re-enable the removed FRUC backend.
@@ -609,7 +611,7 @@ public:
                 write_log("native activation rejected by renderer HRESULT="+std::to_string(static_cast<unsigned long>(result)));
                 return result;
             }
-            if(renderer)renderer_mutex_lifetime_=duplicate_owner;
+            if(renderer) {renderer_mutex_lifetime_=duplicate_owner;renderer_gpu_committed_=true;}
             release_native_activation(false);
             native_device_=device;native_context_=context;native_mutex_=duplicate;
             native_mutex_lifetime_=std::move(duplicate_owner);
@@ -628,16 +630,24 @@ public:
         }
     }
 
-    HRESULT activate_cpu_upload() {
-        if(native_feature_enabled_ && input_.ten_bit && !native_input_committed() && !cpu_upload_active_) {
+    HRESULT activate_cpu_upload(bool include_nv12=false) {
+        if(native_feature_enabled_ && (input_.ten_bit || (include_nv12 && input_.native_color_supported)) && !native_input_committed() && !cpu_upload_active_) {
             try {
                 auto bridge=std::make_shared<nvof::MfD3d11Bridge>(native_adapter());
                 starting_cpu_upload_=true;
                 const HRESULT hr=activate_native(bridge->device(),bridge->context(),bridge->mutex(),0);
                 starting_cpu_upload_=false;
-                if(FAILED(hr))return hr;
+                if(FAILED(hr)) {
+                    // Preserve the legacy CPU path for a renderer that never
+                    // accepted GPU transport. A retained native renderer must
+                    // not receive host buffers after a failed reactivation.
+                    if(!input_.ten_bit && !renderer_gpu_committed_)return S_OK;
+                    return hr;
+                }
                 cpu_bridge_=std::move(bridge);cpu_upload_active_=true;
-                write_log("CPU 10-bit upload activated; progressive P010 GPU output, fields="+std::to_string(input_.interlaced?2:1));
+                write_log(std::string("CPU ")+(input_.ten_bit?"10-bit":"NV12")+
+                    " upload activated; progressive "+(input_.ten_bit?"P010":"NV12")+
+                    " GPU output, fields="+std::to_string(input_.interlaced?2:1));
             }catch(const std::exception& e) {starting_cpu_upload_=false;write_log(std::string("CPU upload activation failed: ")+e.what());return E_FAIL;}
         }
         return S_OK;
@@ -667,6 +677,7 @@ public:
                     return activated;
                 }
                 renderer_mutex_lifetime_=native_mutex_lifetime_;
+                renderer_gpu_committed_=true;
                 native_pending_=false;
                 native_gpu_active_=true;
                 write_log("pending native activation completed by compatible renderer");
@@ -697,6 +708,7 @@ public:
                 native_gpu_active_=false;
                 native_pending_=!!native_device_;
                 renderer_mutex_lifetime_.reset();
+                renderer_gpu_committed_=false;
             }
         }
         if (direction==PINDIR_OUTPUT) native_renderer_supported_.store(false,std::memory_order_release);
@@ -1018,7 +1030,11 @@ public:
     }
 
     HRESULT StartStreaming() override {
-        const HRESULT uploaded=activate_cpu_upload();if(FAILED(uploaded))return uploaded;
+        performance_.reset();
+        // Wait until upstream has had its opportunity to activate native decode.
+        // A software NV12 decoder must still feed GPU surfaces to a renderer
+        // retained from an earlier hardware session (which may retain P010).
+        const HRESULT uploaded=activate_cpu_upload(true);if(FAILED(uploaded))return uploaded;
         for(int index=0;index<2;++index) {
             auto* pin=index==0?static_cast<CBasePin*>(m_pInput):static_cast<CBasePin*>(m_pOutput);
             Microsoft::WRL::ComPtr<IPin> connected;
@@ -1053,6 +1069,7 @@ public:
     }
 
     HRESULT StopStreaming() override {
+        performance_.flush(true,write_log);
         // CTransformFilter::Stop holds m_csReceive after input decommit.
         cancelled_.store(true, std::memory_order_release);
         release_engine();
@@ -1136,6 +1153,15 @@ public:
         if(native_pending_)return VFW_E_NOT_CONNECTED;
         const auto* properties = m_pInput->SampleProps();
         if (properties->dwStreamId != AM_STREAM_MEDIA) return m_pOutput->Deliver(sample);
+        struct ReceiveTiming {
+            nvof::PlaybackTiming& trace;
+            nvof::PlaybackTimer timer;
+            ReceiveTiming(nvof::PlaybackTiming& t):trace(t),timer(t.enabled,t.receive) {
+                if(t.enabled && t.last_exit!=nvof::PlaybackTiming::Clock::time_point{})
+                    t.upstream_gap.add(std::chrono::duration<double,std::milli>(nvof::PlaybackTiming::Clock::now()-t.last_exit).count());
+            }
+            ~ReceiveTiming(){timer.finish();trace.flush(false,write_log);if(trace.enabled)trace.last_exit=nvof::PlaybackTiming::Clock::now();}
+        } receive_timing(performance_);
         try {
             if (!sample_probed_) probe_sample(sample);
             if (properties->dwSampleFlags & AM_SAMPLE_TYPECHANGED) {
@@ -1164,6 +1190,7 @@ public:
                 last_pts_.reset();
                 return report_error("input sample has no presentation timestamp", VFW_E_SAMPLE_TIME_NOT_SET);
             }
+            if(performance_.enabled)performance_.pts=start;
             // Decoder preroll belongs before the new visible segment. FRUC
             // accepts only nonnegative timestamps; retaining a preroll frame
             // would poison the first post-seek pair. Discard it without GPU
@@ -1186,13 +1213,16 @@ public:
             ++source_frames_;
             if(cpu_upload_active_) {
                 last_pts_=start;
-                return receive_cpu10(sample,start,end,discontinuity);
+                return input_.ten_bit?receive_cpu10(sample,start,end,discontinuity):
+                    receive_cpu8(sample,start,end,discontinuity);
             }
             if(native_gpu_active_) {
                 last_pts_=start;
                 return receive_gpu(sample,start,end,discontinuity);
             }
             if(input_.ten_bit || input_.hdr_transfer)return report_error("CPU 10-bit upload requires a compatible D3D11 renderer",VFW_E_TYPE_NOT_ACCEPTED);
+            if(renderer_gpu_committed_ || output_.ten_bit)
+                return report_error("CPU input cannot use the retained native output; reopen the video",VFW_E_TYPE_NOT_ACCEPTED);
             if (interpolation_requested()) ensure_pipeline();
             BYTE* data = nullptr;
             HRESULT hr = sample->GetPointer(&data);
@@ -1298,7 +1328,9 @@ private:
         // Submit capture while the upstream sample is held. Decoder reuse and
         // renderer reads are ordered on this device's shared immediate context;
         // keep an owned output lease without a per-frame CPU completion wait.
+        nvof::PlaybackTimer capture_timer(performance_.enabled,performance_.capture);
         auto owned=gpu_engine_->copy(input);
+        capture_timer.finish();
         sample_transport_="d3d11-texture";
         return push_gpu_frame(std::move(owned),stop,discontinuity);
     }
@@ -1307,6 +1339,7 @@ private:
         if(!interpolation_requested())return deliver_gpu({std::move(owned),stop,discontinuity});
         if(!gpu_pipeline_)gpu_pipeline_=std::make_unique<nvof::GpuPhasePipeline>(target_,
             [this](const nvof::GpuFrame& a,const nvof::GpuFrame& b,const std::vector<int64_t>& times) {
+                nvof::PlaybackTimer synthesis_timer(performance_.enabled,performance_.synthesis);
                 auto batch=gpu_engine_->interpolate_pair(a,b,times);record_quality(batch.quality,times.size());record_endpoints(a.pts,b.pts,times);return batch;
             },nvof::canonical_source_rate(input_.duration));
         HRESULT delivery=S_OK;
@@ -1314,6 +1347,40 @@ private:
             delivery=deliver_gpu(output);return delivery==S_OK;
         });
         return delivery;
+    }
+
+    HRESULT receive_cpu8(IMediaSample* sample,int64_t start,int64_t stop,bool discontinuity) {
+        if(input_.hdr_transfer)return report_error("CPU HDR requires a 10-bit decoder output",VFW_E_TYPE_NOT_ACCEPTED);
+        BYTE* data=nullptr;
+        HRESULT hr=sample->GetPointer(&data);
+        if(FAILED(hr) || !data)return report_error("CPU NV12 input has no host buffer",FAILED(hr)?hr:E_POINTER);
+        if(sample->GetActualDataLength()<input_.size || sample->GetSize()<input_.size)
+            return report_error("CPU NV12 input buffer is truncated",VFW_E_BUFFER_OVERFLOW);
+        // Input-only reconnects do not renegotiate the output pin. Announce the
+        // real surface format on the first delivered sample, before any pixels.
+        hr=ensure_native_output_format(false);if(FAILED(hr))return hr;
+        if(!gpu_engine_)gpu_engine_=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",
+            native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,
+            gpu_correction_,appearance_protection_,nvof::GpuInterpolationBackend::native_experimental);
+        nvof::PlaybackTimer capture_timer(performance_.enabled,performance_.capture);
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width=input_.width;desc.Height=input_.height;desc.MipLevels=1;desc.ArraySize=1;
+        desc.Format=DXGI_FORMAT_NV12;desc.SampleDesc.Count=1;
+        desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA initial{};initial.pSysMem=data;initial.SysMemPitch=input_.pitch;
+        nvof::GpuFrame uploaded;uploaded.width=input_.width;uploaded.height=input_.height;uploaded.pts=start;
+        // The driver consumes the host buffer during CreateTexture2D. Decoder
+        // buffers may be recycled immediately after Receive returns. Only owned
+        // GPU snapshots reach the pipeline/renderer; there is no CPU readback.
+        hr=native_device_->CreateTexture2D(&desc,&initial,&uploaded.texture);
+        if(FAILED(hr))return report_error("CPU NV12 texture upload failed",hr);
+        auto owned=gpu_engine_->copy(uploaded);
+        capture_timer.finish();
+        cpu_last_frame_duration_=stop-start;
+        sample_transport_="cpu-upload-d3d11";
+        if(input_surface_format_!="NV12")write_log("CPU input surface=NV12 output=NV12 conversion=8-bit-upload");
+        input_surface_format_="NV12";input_conversion_="8-bit-upload";
+        return push_gpu_frame(std::move(owned),stop,discontinuity);
     }
 
     HRESULT receive_cpu10(IMediaSample* sample,int64_t start,int64_t stop,bool discontinuity) {
@@ -1328,6 +1395,7 @@ private:
         if(FAILED(hr) || !data)return report_error("CPU 10-bit input has no host buffer",FAILED(hr)?hr:E_POINTER);
         if(sample->GetActualDataLength()<input_.size || sample->GetSize()<input_.size)
             return report_error("CPU 10-bit input buffer is truncated",VFW_E_BUFFER_OVERFLOW);
+        hr=ensure_native_output_format(true);if(FAILED(hr))return hr;
         if(!cpu_upload_)cpu_upload_=std::make_unique<nvof::CpuUpload>(native_device_.Get(),native_context_.Get(),native_mutex_);
         cpu_upload_->begin(data,size_t(sample->GetActualDataLength()),
             {input_.width,input_.height,input_.pitch,input_.cpu_format},discontinuity);
@@ -1384,7 +1452,9 @@ private:
             output.stop<=output.frame.pts)return report_error("invalid native GPU output",E_UNEXPECTED);
         IMediaSample* raw=nullptr;
         REFERENCE_TIME start=output.frame.pts,stop=output.stop;
+        nvof::PlaybackTimer allocator_timer(performance_.enabled,performance_.allocator);
         HRESULT result=m_pOutput->GetDeliveryBuffer(&raw,&start,&stop,0);
+        allocator_timer.finish();
         SamplePtr sample(raw);
         if(result!=S_OK)return result;
         if(cancelled_.load(std::memory_order_acquire))return S_FALSE;
@@ -1399,11 +1469,14 @@ private:
         sample->SetDiscontinuity(output.discontinuity);
         sample->SetPreroll(FALSE);
         if(cancelled_.load(std::memory_order_acquire))return S_FALSE;
+        nvof::PlaybackTimer delivery_timer(performance_.enabled,performance_.delivery);
         result=m_pOutput->Deliver(sample.get());
+        delivery_timer.finish();
         if(result==S_OK) {
             pending_gpu_media_type_=false;
             gpu_delivery_verified_=true;
             ++output_frames_;
+            if(performance_.enabled)++performance_.output;
             write_status(!interpolation_requested()?"bypass":engine_active_?"active":"waiting",
                 !interpolation_requested()?bypass_message():engine_active_?"NVIDIA Optical Flow / Motion phases (D3D11 GPU)":
                     "Waiting for the next adjacent GPU frame");
@@ -1569,6 +1642,7 @@ private:
         try {
             const ULONGLONG now=GetTickCount64();
             if (state==last_status_state_ && now-last_status_time_<1000) return;
+            nvof::PlaybackTimer status_timer(performance_.enabled,performance_.status);
             last_status_time_=now;
             last_status_state_=state;
             wchar_t local[32768]{};
@@ -1645,6 +1719,7 @@ private:
     DiagnosticServiceProbe service_probe_;
     bool cpu_field_override_logged_=false;
     bool probe_services_=false;
+    nvof::PlaybackTiming performance_;
     std::filesystem::path directory_;
     Layout input_, output_;
     bool native_feature_enabled_=false;
@@ -1655,6 +1730,7 @@ private:
     std::shared_ptr<nvof::MfD3d11Bridge> cpu_bridge_;
     std::unique_ptr<nvof::CpuUpload> cpu_upload_;
     bool native_gpu_active_=false;
+    bool renderer_gpu_committed_=false; // Survives input-only reconnects.
     bool gpu_delivery_verified_=false;
     bool native_pending_=false;
     bool pending_gpu_media_type_=false;

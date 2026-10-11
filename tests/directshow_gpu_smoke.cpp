@@ -22,6 +22,7 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <mutex>
 #include <stdexcept>
@@ -38,10 +39,12 @@ std::wstring vp9_case;
 REFERENCE_TIME kDuration = 417083;
 REFERENCE_TIME declared_duration=-1;
 bool require_services=false;
+bool cpu_gpu_output=false;
 bool p010_fixture=false;
 bool p010_media=false;
 unsigned hdr_transfer=0;
 bool dovi_fixture=false;
+std::function<void(IMediaSample*,ID3D11Device*,ID3D11DeviceContext*)> inspect_gpu_output;
 unsigned recover_transfer=0;
 int color_fixture=0; // 0 default, 1 legacy VideoInfo, 2 explicitly tagged VideoInfo2.
 constexpr DWORD kMetadataTail=0x4e564f46;
@@ -411,6 +414,7 @@ public:
                        !std::all_of(metadata->data[i].begin(),metadata->data[i].end(),[&](BYTE b){return b==expected;}))return E_UNEXPECTED;
                 }
             }
+            if(inspect_gpu_output)inspect_gpu_output(sample,native_device_.Get(),native_context_.Get());
             ++gpu_count_;
         } else {
             BYTE* data=nullptr;
@@ -587,7 +591,8 @@ void run_case(IClassFactory* factory,ID3D11Device* device,ID3D11DeviceContext* c
     if(std::chrono::steady_clock::now()-pool_stop_start>std::chrono::seconds(2))
         throw std::runtime_error("exhausted allocator Stop did not cancel promptly");
     check(control->Stop(),"final graph Stop");
-    if(!sink->pin().valid || (use_gpu ? sink->pin().cpu_count()!=0 || sink->pin().gpu_count()==0 : sink->pin().gpu_count()!=0 || sink->pin().cpu_count()==0))
+    const bool gpu_output=use_gpu || !reject_renderer;
+    if(!sink->pin().valid || (gpu_output ? sink->pin().cpu_count()!=0 || sink->pin().gpu_count()==0 : sink->pin().gpu_count()!=0 || sink->pin().cpu_count()==0))
         throw std::runtime_error("mixed or invalid transport");
     std::cout<<"mode="<<(use_gpu?(mf_route?"MF-DXGI-GPU":"D3D11-GPU"):"CPU")<<" early="<<activate_early<<" reject="<<reject_renderer
         <<" samples="<<sink->pin().count()<<" timestamps=OK native-pointer-no-readback=OK pool-flush=OK blocked-stop=OK pool-stop=OK shutdown=OK\n";
@@ -605,7 +610,7 @@ void run_case(IClassFactory* factory,ID3D11Device* device,ID3D11DeviceContext* c
         check(source->pin().set_gpu_mode(false),"CPU reconnect source mode");check(control->Run(),"CPU reconnect run");
         check(source->pin().push(0,true),"CPU reconnect first");check(source->pin().push(1),"CPU reconnect interpolation");
         check(control->Stop(),"CPU reconnect Stop");
-        if(cpu_sink->pin().cpu_count()==0 || cpu_sink->pin().gpu_count()!=0)throw std::runtime_error("native-to-CPU reconnect transport remained native");
+        if(cpu_sink->pin().cpu_count()!=0 || cpu_sink->pin().gpu_count()==0)throw std::runtime_error("software decoder failed to upload to GPU renderer");
         std::cout<<"same-instance native-to-CPU full graph reconnect=OK\n";
     }
 }
@@ -740,7 +745,7 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
         if(SUCCEEDED(push(101,false,&changed)))throw std::runtime_error("x2 rational clock changed without renegotiation");
     }
     check(control->Stop(),"policy Stop");
-    if(gpu ? sink->pin().cpu_count()!=0 : sink->pin().gpu_count()!=0)throw std::runtime_error("rate policy changed frame transport");
+    if((gpu || cpu_gpu_output) ? sink->pin().cpu_count()!=0 : sink->pin().gpu_count()!=0)throw std::runtime_error("rate policy changed frame transport");
     std::cout<<"PASS rate="<<source_num<<'/'<<source_den<<" output="<<expected_num<<'/'<<expected_den
         <<" mode="<<(gpu?"MF-DXGI-GPU":"CPU")<<" reason="<<reason
         <<" metadata="<<color_fixture<<" negotiated-FPS/timestamps/no-stop/EOS/seek/transport=OK\n";
@@ -872,6 +877,8 @@ int wmain(int argc,wchar_t** argv) {
     require_services=argc>2 && wcscmp(argv[2],L"--probe-services")==0;
     check(CoInitializeEx(nullptr,COINIT_MULTITHREADED),"CoInitialize");
     HMODULE module=LoadLibraryExW(argv[1],nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
+    cpu_gpu_output=GetPrivateProfileIntW(L"Nvof",L"NativeD3D11",0,
+        (std::filesystem::path(argv[1]).parent_path()/L"NvofPotPlayer.ini").c_str())!=0;
     if(!module){std::cerr<<"load failed "<<GetLastError()<<'\n';return 3;}
     int result=0;
     try {

@@ -36,9 +36,13 @@
 
 [설정 화면과 영문 안내](https://mkyoon80-alt.github.io/nvof-potplayer/#deinterlace)
 
-## CPU로 디코딩되는 10bit 영상
+## CPU로 디코딩되는 영상
+
+네이티브 DXVA는 필수가 아닙니다. NV12 SDR 입력도 CPU에서 디코딩한 뒤 GPU에 올려 보간하고 호환 D3D11 렌더러에 GPU 프레임으로 전달합니다. v0.4.5에서는 HW/SW 전환 시 입력·출력 형식이 어긋나 멈추던 문제를 수정했습니다.
 
 H.264 10bit처럼 하드웨어 디코딩이 어려운 영상도 지원되는 P010/P016/P210/Y210으로 전달되면 GPU에서 변환·보간합니다. 팟플레이어의 **S/W**는 CPU 디코딩 표시이며 GPU 보간 여부와는 별개입니다. 내장 D3D11 렌더러를 사용하고 진단에서 **P010 출력과 보간 FPS**를 확인하세요. 출력은 10bit 4:2:0이며 P016은 상위 10bit를 사용합니다.
+
+원본 파일이 10bit라도 디코더가 NV12로 전달하면 8bit 경로입니다. 파일명이나 S/W 표시만으로 판단하지 말고 실제 입력·출력을 확인하세요.
 
 ## 보간 설정
 
@@ -86,4 +90,4 @@ Windows 10 x64, RTX 5090, 팟플레이어 내장 디코더·D3D11 렌더러에�
 
 Dolby Vision은 디코더가 제공하는 메타데이터를 전달합니다. Profile 8.1에서 확인했으며 모든 프로파일·화면 출력을 보장하지 않습니다. HDR10+ 동적 메타데이터, 일반 텔레시네·단일 필드·반복 필드, 다중 GPU 구성은 검증 범위 밖입니다. 최근 탐색 직후 빗살 수정은 재현 검사로 확인했으며 실제 재생 확인은 추가로 필요합니다.
 
-[CPU 10bit·인터레이스 검증](CPU-10BIT.md) · [VP9 HDR 검증](VP9-HDR.md) · [Dolby Vision·HLG 검증](DOLBY-VISION-HLG.md)
+[SW 디코딩·전환 검증](SW-DECODING.md) · [CPU 10bit·인터레이스 검증](CPU-10BIT.md) · [VP9 HDR 검증](VP9-HDR.md) · [Dolby Vision·HLG 검증](DOLBY-VISION-HLG.md)

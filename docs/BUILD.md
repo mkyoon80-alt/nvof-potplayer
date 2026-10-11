@@ -44,3 +44,13 @@ Session lifetime optimization and local regression commands: [SESSION-REUSE.md](
 Use the normal Release build, with precompiled shaders. Run `gpu_p010_conversion.exe <runtime> native` for code-value/phase tests. `directshow_gpu_smoke.exe <filter.ax> --rate-policy 24000 1001 120000 1001 mf selected <format>` accepts `p010`, `p010-media`, `hdr10`, `hlg`, `av1-pq`, `av1-hlg`, `hdr10-legacy`, `hlg-legacy`, and `sdr-override` fixtures. The first uses an NV12 media header with real P010 textures, the second a P010 media subtype. The HDR fixtures verify exact extended color flags and sample side data, including pool lifetime. Legacy fixtures exercise missing raw color flags with connected HEVC source signalling; sdr-override verifies that explicit SDR stays SDR. Run hevc_color_tests.exe for bounded SPS parsing, optionally passing a locally captured header file. Keep test LOCALAPPDATA separate from the real player's status directory.
 
 For explicitly supplied local media, `p010_video_stress.exe <runtime> <1920x1080-p010.raw> queued basic p010 concurrent` exercises shared D3D state/lifetime. It expects at least eleven tightly packed P010 frames; it is not a color-management or real-player display test. Do not package media or test logs. See HDR-NATIVE-TRIAL.md for results, confirmed HDR10 playback ; newer VP9, Dolby metadata and HLG evidence is in VP9-HDR.md and DOLBY-VISION-HLG.md.
+
+## CPU NV12 / HW-SW switching checks (0.4.5)
+
+Run `directshow_cpu8.exe <filter.ax>` against a separate test folder configured
+with `NativeD3D11=1`, `Enabled=1`, `InputRateMask=63` and `OutputFpsLimit=120`.
+It checks repeated P010 HW → NV12 SW → HW reconnection with the same renderer,
+cold start, padded upload, exact originals, retained-frame lifetime, malformed
+input, seek, pause, restart and EOS. An optional `<raw.nv12> <width> <height>`
+replays 48 tightly packed decoded NV12 frames. Keep test `LOCALAPPDATA` isolated
+from the real player's logs. See [SW-DECODING.md](SW-DECODING.md).

@@ -7,6 +7,7 @@ on:
       - 'docs/manual/**'
       - 'docs/HDR-NATIVE-TRIAL.md'
       - 'docs/CPU-10BIT.md'
+      - 'docs/SW-DECODING.md'
       - 'docs/VP9-HDR.md'
       - 'docs/DOLBY-VISION-HLG.md'
       - 'licenses/**'
