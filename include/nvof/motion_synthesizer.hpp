@@ -17,6 +17,7 @@ struct MotionFlowOptions {
 };
 struct MotionAnalysisInfo {
     unsigned width = 0, height = 0, grid = 0, cost_buffers = 0;
+    unsigned inconsistent_samples = 0;
 };
 class MotionSynthesizer {
 public:

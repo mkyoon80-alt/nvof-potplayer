@@ -57,6 +57,7 @@ struct MotionSynthesizer::Impl {
     ComPtr<ID3D11Buffer> riskBuffer,riskReadback;
     ComPtr<ID3D11UnorderedAccessView> riskUav;
     bool trustworthy=false;
+    unsigned inconsistentSamples=0;
     std::array<ComPtr<ID3D11Texture2D>,2> warpMaps;
     std::array<ComPtr<ID3D11RenderTargetView>,2> warpTargets;
     std::array<ComPtr<ID3D11ShaderResourceView>,2> warpViews;
@@ -125,7 +126,7 @@ struct MotionSynthesizer::Impl {
         if(status!=NV_OF_SUCCESS)throw std::runtime_error(std::string(action)+" NVOF="+std::to_string(status));
     }
     void reset() noexcept {
-        prepared=hasPair=trustworthy=false;
+        prepared=hasPair=trustworthy=false;inconsistentSamples=0;
         if(handle){
             for(auto& p:ch)if(p){api.nvOFUnregisterResourceD3D11(p);p=nullptr;}
             for(auto& p:fh)if(p){api.nvOFUnregisterResourceD3D11(p);p=nullptr;}
@@ -271,7 +272,7 @@ struct MotionSynthesizer::Impl {
         context->CopyResource(riskReadback.Get(),riskBuffer.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
         check(context->Map(riskReadback.Get(),0,D3D11_MAP_READ,0,&mapped),"Read motion assessment");
         const uint32_t bad=*static_cast<const uint32_t*>(mapped.pData);context->Unmap(riskReadback.Get(),0);
-        trustworthy=bad<=uint32_t(128*72*2*0.08);
+        inconsistentSamples=bad;trustworthy=bad<=uint32_t(128*72*2*0.08);
     }
     void draw(ID3D11RenderTargetView* target,unsigned plane,bool down,unsigned source=0,float fraction=0.5f,bool mapping=false,unsigned stationaryStage=0,bool repairing=false) {
         float data[8]={float(w),float(h),float(aw),float(ah),float(grid),float(plane),float(source),fraction};
@@ -332,7 +333,7 @@ MotionSynthesizer::MotionSynthesizer(ID3D11Device* d,ID3D11DeviceContext* c,unsi
 MotionSynthesizer::~MotionSynthesizer()=default;
 bool MotionSynthesizer::cost_map_active() const noexcept {return impl_->prepared&&impl_->costFormat==DXGI_FORMAT_R8_UINT;}
 MotionAnalysisInfo MotionSynthesizer::analysis_info() const noexcept {
-    return {unsigned(impl_->aw),unsigned(impl_->ah),impl_->grid,unsigned(impl_->ch[0]!=nullptr)+unsigned(impl_->ch[1]!=nullptr)};
+    return {unsigned(impl_->aw),unsigned(impl_->ah),impl_->grid,unsigned(impl_->ch[0]!=nullptr)+unsigned(impl_->ch[1]!=nullptr),impl_->inconsistentSamples};
 }
 bool MotionSynthesizer::reliable() const noexcept {return impl_->prepared&&impl_->trustworthy;}
 void MotionSynthesizer::reset() noexcept {impl_->reset();}

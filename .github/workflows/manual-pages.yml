@@ -6,6 +6,9 @@ on:
     paths:
       - 'docs/manual/**'
       - 'docs/HDR-NATIVE-TRIAL.md'
+      - 'docs/CPU-10BIT.md'
+      - 'docs/VP9-HDR.md'
+      - 'docs/DOLBY-VISION-HLG.md'
       - 'licenses/**'
       - 'THIRD_PARTY_NOTICES.md'
       - 'tools/build-manual-site.py'

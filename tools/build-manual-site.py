@@ -6,6 +6,7 @@ import shutil
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+NOTES = ("HDR-NATIVE-TRIAL.md", "CPU-10BIT.md", "VP9-HDR.md", "DOLBY-VISION-HLG.md")
 
 class Links(HTMLParser):
     def __init__(self):
@@ -34,13 +35,15 @@ def main():
     shutil.copytree(ROOT / "docs" / "manual", output, dirs_exist_ok=True)
     shutil.copytree(ROOT / "licenses", output / "licenses")
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", output)
-    shutil.copy2(ROOT / "docs" / "HDR-NATIVE-TRIAL.md", output)
+    for note in NOTES:
+        shutil.copy2(ROOT / "docs" / note, output)
     count = 0
     for html_path in output.glob("*.html"):
         html = html_path.read_text(encoding="utf-8-sig")
         html = html.replace('href="../../THIRD_PARTY_NOTICES.md"', 'href="THIRD_PARTY_NOTICES.md"')
         html = html.replace('href="../../licenses/', 'href="licenses/')
-        html = html.replace('href="../HDR-NATIVE-TRIAL.md"', 'href="HDR-NATIVE-TRIAL.md"')
+        for note in NOTES:
+            html = html.replace(f'href="../{note}"', f'href="{note}"')
         html_path.write_text(html, encoding="utf-8")
         links = Links()
         links.feed(html)

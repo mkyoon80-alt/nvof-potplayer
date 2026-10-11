@@ -51,14 +51,16 @@ public:
     STDMETHODIMP GetSideData(GUID id,const BYTE** data,size_t* size) override {
         if(!data || !size)return E_POINTER;
         *data=nullptr;*size=0;const int slot=hdr_slot(id);
+        if(trace_ && slot>=0)trace_->requested_mask.fetch_or(1u<<slot,std::memory_order_relaxed);
         if(slot<0 || !frame_.hdr || frame_.hdr->data[slot].empty())return E_FAIL;
+        if(trace_)trace_->returned_mask.fetch_or(1u<<slot,std::memory_order_relaxed);
         *data=frame_.hdr->data[slot].data();*size=frame_.hdr->data[slot].size();return S_OK;
     }
     STDMETHODIMP SetSideData(GUID id,const BYTE* data,size_t size) override {
         const int slot=hdr_slot(id);
         if(slot<0)return E_INVALIDARG;
         if(!data)return E_POINTER;
-        if(size!=hdr_size(slot))return E_INVALIDARG;
+        if(!valid_hdr_size(slot,size))return E_INVALIDARG;
         if(hdr_history_.size()>=16)return E_OUTOFMEMORY;
         try {
             auto next=frame_.hdr?std::make_shared<HdrMetadata>(*frame_.hdr):std::make_shared<HdrMetadata>();
@@ -81,9 +83,9 @@ public:
             return S_OK;
         } catch (...) {return E_OUTOFMEMORY;}
     }
-    void assign(nvof::GpuFrame frame) {frame_=std::move(frame);m_pBuffer=nullptr;}
+    void assign(nvof::GpuFrame frame,std::shared_ptr<HdrDeliveryTrace> trace={}) {frame_=std::move(frame);trace_=std::move(trace);m_pBuffer=nullptr;}
     void clear_surface() noexcept {
-        frame_={};hdr_history_.clear();
+        frame_={};hdr_history_.clear();trace_.reset();
         if(!host_.empty()) {
             const uintptr_t first=reinterpret_cast<uintptr_t>(host_.data())+size_t(prefix_);
             m_pBuffer=reinterpret_cast<BYTE*>((first+alignment_-1)&~(uintptr_t(alignment_)-1));
@@ -91,6 +93,7 @@ public:
     }
 private:
     nvof::GpuFrame frame_;
+    std::shared_ptr<HdrDeliveryTrace> trace_;
     std::vector<std::shared_ptr<const HdrMetadata>> hdr_history_;
     LONG alignment_=1,prefix_=0;
     const bool gpu_;

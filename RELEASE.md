@@ -1,3 +1,38 @@
+# 0.4.4 — CPU 10bit GPU 보간 · VP9 HDR · 인터레이스 처리
+
+A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with native 10-bit HDR processing and GPU interpolation of supported software-decoded 10-bit video. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
+
+**[Download v0.4.4](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.4)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+
+## What's new
+
+- GPU interpolation of supported software-decoded 10-bit video (P010/P016/P210/Y210), including H.264 10-bit sources. This does not add hardware decoding support.
+- GPU deinterlacing for CPU 10-bit interlaced input; fixes for progressive cadence detection, pause-related green flashes, restart, and post-seek field handling.
+- VP9 HDR color-signaling recovery and forwarding of decoder-supplied Dolby Vision metadata. Profile 8.1 metadata transport was verified; this is not universal Dolby Vision display certification.
+- Updated Korean and English guides, including why PotPlayer deinterlacing must be disabled for the supported interlaced path.
+
+## 변경 사항
+
+- **CPU → GPU 10bit 경로:** CPU는 디코딩한 프레임을 전달하고 GPU가 변환·디인터레이스·보간합니다. 지원 입력은 P010/P016/P210/Y210, 출력은 P010 10bit 4:2:0입니다. P016의 상위 10bit를 사용하며 4:2:2 출력 보존을 뜻하지 않습니다.
+- **인터레이스와 재생 안정성:** 실제 원본 필드는 시간 순서에 따라 GPU에서 처리합니다. 프로그레시브 H.264 10bit를 인터레이스로 오인하던 문제, 일시정지의 녹색 화면과 정지 후 재시작을 수정했습니다. 같은 영상 내 탐색에서는 이전 픽셀을 지우되 판별 힌트를 유지하고 새 화면의 빗살을 재확인합니다.
+- **VP9 HDR:** 디코더가 출력 연결에서 생략한 HDR 색 정보를 연결된 VP9 원본 설정에서 복구합니다. 명시적인 SDR 정보는 존중합니다. 실제 YouTube VP9 HDR의 정상 색상을 확인했습니다.
+- **Dolby Vision·HLG:** 디코더가 제공한 Dolby Vision RPU·해석된 메타데이터를 프레임 수명에 맞춰 전달합니다. 중간 프레임은 앞선 원본의 정보를 사용합니다. Profile 8.1 전달과 HEVC HLG 재생·신호 전달을 확인했습니다. 해석·톤매핑·화면 출력은 플레이어와 렌더러가 담당합니다.
+- **한·영 매뉴얼:** CPU 디코딩과 GPU 보간의 차이, 디인터레이스 설정과 이유, 10bit·HDR·돌비 비전 지원 범위를 정리했습니다. 기존 FPS 상한·배수 선택과 설정 UI는 유지합니다.
+
+## 인터레이스 영상 설정
+
+CPU로 디코딩되는 인터레이스 영상은 **재생 화면 우클릭 → 영상 → 디인터레이스 → 사용하지 않음**으로 설정한 뒤 다시 여세요. 팟플레이어가 서로 다른 시점의 필드를 먼저 섞으면 움직임 정보가 줄어 보간이 불규칙해질 수 있어, NVOF가 원본 필드부터 디인터레이스·보간하도록 맡깁니다. NVOF를 사용하지 않을 때는 **자동 판단**으로 되돌립니다.
+
+For supported CPU-decoded interlaced input: **Video → Deinterlacing → Do not use**, then reopen the video. NVOF deinterlaces the original fields before interpolation. Restore Automatic when playing interlaced video without NVOF.
+
+## 업데이트와 검증 범위
+
+팟플레이어와 설정창을 닫고 기존 폴더를 백업한 뒤 교체합니다. **기존 NvofPotPlayer.ini를 보존하세요.** 폴더를 옮기면 이전 위치에서 등록을 해제하고 새 위치에서 등록합니다. ZIP에 한·영 오프라인 매뉴얼과 .NET/WPF 런타임이 들어 있습니다.
+
+검증 장비는 RTX 5090입니다. CPU 10bit 정밀도·필드 처리, DirectShow 연결, 탐색·일시정지·재시작, 기존 네이티브 HDR 전달을 검사했습니다. 최신 탐색 직후 빗살 수정은 재현 검사로 확인했으며 추가 실제 재생 확인은 남아 있습니다. HLG의 별도 화면 색상 비교, 모든 Dolby Vision 프로파일·출력 모드, HDR10+ 동적 메타데이터, 일반 텔레시네·반복/단일 필드 및 다중 GPU는 확인된 범위가 아닙니다. 모든 GPU에서 4K 고주사율 실시간 성능을 보장하지 않습니다.
+
+---
+
 # 0.4.2 — 출력 선택 확장 · AV1 HDR 색상 수정 · 움직임 경계 개선
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Supports selectable FPS caps or ×2–×5 output, GPU-resident D3D11 processing, and native 10-bit HDR10/HLG signal passthrough. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**

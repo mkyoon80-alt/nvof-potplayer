@@ -89,7 +89,9 @@ void moving_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int 
  };
  auto previous=upload(0,0),current=upload(20,400000);
  auto hdr=std::make_shared<HdrMetadata>();hdr->data[0].assign(80,0x42);previous.hdr=hdr;
+ hdr->data[2].assign(128,0x42);hdr->data[4].assign(9353,0x42);
  auto nextHdr=std::make_shared<HdrMetadata>();nextHdr->data[0].assign(80,0x24);current.hdr=nextHdr;
+ nextHdr->data[2].assign(128,0x24);nextHdr->data[4].assign(9353,0x24);
  auto batch=engine.interpolate_pair(previous,current,{80000,160000,240000,320000});
  require(!batch.quality.scene_cut && batch.frames.size()==4 && batch.quality.native_synthesized_mask==15,"Moving P010 phases were not synthesized");
  std::vector<std::vector<uint16_t>> retained;

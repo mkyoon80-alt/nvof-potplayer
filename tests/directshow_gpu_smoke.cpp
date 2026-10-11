@@ -34,12 +34,14 @@ const CLSID kFilter = {0xedeca044, 0x78cd, 0x40eb, {0x8f, 0x37, 0x63, 0xd9, 0x47
 int kWidth = 640, kHeight = 360;
 bool av1_fixture_header=false;
 int av1_format=0;
+std::wstring vp9_case;
 REFERENCE_TIME kDuration = 417083;
 REFERENCE_TIME declared_duration=-1;
 bool require_services=false;
 bool p010_fixture=false;
 bool p010_media=false;
 unsigned hdr_transfer=0;
+bool dovi_fixture=false;
 unsigned recover_transfer=0;
 int color_fixture=0; // 0 default, 1 legacy VideoInfo, 2 explicitly tagged VideoInfo2.
 constexpr DWORD kMetadataTail=0x4e564f46;
@@ -220,6 +222,10 @@ public:
             check(surface->SetSideData(nvof::hdr_mastering_id,reinterpret_cast<const BYTE*>(mastering),sizeof(mastering)),"source HDR mastering");
             check(surface->SetSideData(nvof::hdr_light_id,reinterpret_cast<const BYTE*>(light),sizeof(light)),"source HDR light");
         }
+        if(dovi_fixture)for(int i=2;i<5;++i) {
+            std::vector<BYTE> payload(i==2?128:i==3?5225:9353,BYTE(index));
+            check(surface->SetSideData(nvof::hdr_ids[i],payload.data(),payload.size()),"source DV side data");
+        }
         sample->SetTime(&start,no_stop?nullptr:&stop);sample->SetMediaType(changed);sample->SetActualDataLength(kWidth*kHeight*3/2);
         sample->SetDiscontinuity(discontinuity);sample->SetPreroll(FALSE);sample->SetSyncPoint(TRUE);
         if(mf) {
@@ -257,8 +263,8 @@ public:
 private:
     CMediaType type_;
 };
-// Models the public input pin on a native HEVC decoder: the raw output
-// type is legacy/untagged but the connected compressed pin retains hvcC.
+// Models a decoder whose raw output is untagged but its compressed input
+// retains codec/container colour information.
 class EncodedInfoPin final : public CBaseInputPin {
 public:
     EncodedInfoPin(CBaseFilter* owner,CCritSec* lock,HRESULT* hr):CBaseInputPin(NAME("Compressed header"),owner,lock,hr,L"Encoded"){}
@@ -269,11 +275,28 @@ public:
         CMediaType type;type.SetType(&MEDIATYPE_Video);
         const GUID hvc1={MAKEFOURCC('H','V','C','1'),0,0x10,{0x80,0,0,0xaa,0,0x38,0x9b,0x71}};
         GUID codec=hvc1;if(av1_fixture_header)codec.Data1=MAKEFOURCC('A','V','0','1');
+        if(!vp9_case.empty()) {
+            codec.Data1=MAKEFOURCC('V','P','9','0');
+            seq={'v','p','c','C',1,0,0,0,2,51,0xa2,9,uint8_t(recover_transfer),9,0,0};
+            if(vp9_case.find(L"truncated")!=std::wstring::npos)seq.resize(15);
+            if(vp9_case.find(L"full-range")!=std::wstring::npos)seq[10]|=1;
+            if(vp9_case.find(L"unspecified")!=std::wstring::npos)seq[12]=2;
+            if(vp9_case.find(L"10bit-sdr")!=std::wstring::npos)seq[11]=seq[12]=seq[13]=1;
+            if(vp9_case.find(L"missing")!=std::wstring::npos || vp9_case.find(L"flags-only")!=std::wstring::npos)seq.clear();
+            if(vp9_case.find(L"box")!=std::wstring::npos)seq.insert(seq.begin(),{0,0,0,20});
+            if(vp9_case.find(L"payload")!=std::wstring::npos)seq.erase(seq.begin(),seq.begin()+4);
+        }
         type.SetSubtype(&codec);
-        if(av1_fixture_header && av1_format) {
+        if((av1_fixture_header || !vp9_case.empty()) && av1_format) {
             const size_t header=av1_format==1?sizeof(VIDEOINFOHEADER):sizeof(VIDEOINFOHEADER2);
             auto* data=type.AllocFormatBuffer(ULONG(header+seq.size()));std::memset(data,0,header);
-            std::memcpy(data+header,seq.data(),seq.size());
+            if(!seq.empty())std::memcpy(data+header,seq.data(),seq.size());
+            if(av1_format==2 && (vp9_case.find(L"flags-only")!=std::wstring::npos || vp9_case.find(L"conflict")!=std::wstring::npos)) {
+                DXVA2_ExtendedFormat flags{};flags.NominalRange=DXVA2_NominalRange_16_235;
+                flags.VideoPrimaries=MFVideoPrimaries_BT2020;flags.VideoTransferMatrix=MFVideoTransferMatrix_BT2020_10;
+                flags.VideoTransferFunction=vp9_case.find(L"conflict")!=std::wstring::npos?MFVideoTransFunc_HLG:hdr_transfer;
+                reinterpret_cast<VIDEOINFOHEADER2*>(data)->dwControlFlags=flags.value|AMCONTROL_USED|AMCONTROL_COLORINFO_PRESENT;
+            }
             type.SetFormatType(av1_format==1?&FORMAT_VideoInfo:&FORMAT_VideoInfo2);return CopyMediaType(media,&type);
         }
         type.SetFormatType(&FORMAT_MPEG2Video);
@@ -377,6 +400,17 @@ public:
                 if(!metadata || metadata->data[0].size()!=sizeof(mastering) || metadata->data[1].size()!=sizeof(light) ||
                    memcmp(metadata->data[0].data(),mastering,sizeof(mastering)) || memcmp(metadata->data[1].data(),light,sizeof(light)))return E_UNEXPECTED;
             } else if(metadata)return E_UNEXPECTED;
+            if(dovi_fixture) {
+                REFERENCE_TIME pts=0,end=0;check(sample->GetTime(&pts,&end),"DV output time");
+                // A generated frame uses the preceding original's metadata,
+                // never a blend of RPU bytes or a stale global cached payload.
+                const BYTE expected=BYTE((pts+10000)/kDuration);
+                for(int i=2;i<5;++i) {
+                    const size_t length=i==2?128:i==3?5225:9353;
+                    if(!metadata || metadata->data[i].size()!=length ||
+                       !std::all_of(metadata->data[i].begin(),metadata->data[i].end(),[&](BYTE b){return b==expected;}))return E_UNEXPECTED;
+                }
+            }
             ++gpu_count_;
         } else {
             BYTE* data=nullptr;
@@ -787,6 +821,17 @@ void check_hdr_storage() {
     check(side->SetSideData(nvof::hdr_light_id,reinterpret_cast<BYTE*>(light),8),"metadata light");
     if(size!=80 || retained[0]!=41 || snapshot->data[0][0]!=41 || nvof::capture_hdr(sample.Get())->data[0][0]!=72)throw std::runtime_error("HDR snapshot/pointer lifetime failure");
     if(side->SetSideData(nvof::hdr_mastering_id,mastering,79)!=E_INVALIDARG || side->SetSideData(nvof::hdr_mastering_id,nullptr,80)!=E_POINTER)throw std::runtime_error("Malformed HDR accepted");
+    for(int i=2;i<5;++i) {
+        const size_t length=i==2?128:i==3?5225:9353;
+        std::vector<BYTE> payload(length,37);
+        check(side->SetSideData(nvof::hdr_ids[i],payload.data(),length),"DV metadata set");
+        auto copy=nvof::capture_hdr(sample.Get());payload.assign(length,81);
+        check(side->GetSideData(nvof::hdr_ids[i],&retained,&size),"DV metadata get");
+        check(side->SetSideData(nvof::hdr_ids[i],payload.data(),length),"DV metadata replace");
+        if(retained[0]!=37 || copy->data[i][0]!=37 || nvof::capture_hdr(sample.Get())->data[i][0]!=81)throw std::runtime_error("DV snapshot or pointer lifetime failure");
+        if(side->SetSideData(nvof::hdr_ids[i],payload.data(),65537)!=E_INVALIDARG ||
+           side->SetSideData(nvof::hdr_ids[i],payload.data(),0)!=E_INVALIDARG)throw std::runtime_error("Invalid DV size accepted");
+    }
     side.Reset();sample.Reset();check(allocator->GetBuffer(&sample,nullptr,nullptr,0),"recycled metadata sample");
     if(nvof::capture_hdr(sample.Get()))throw std::runtime_error("Recycled sample leaked previous HDR metadata");
     if(snapshot->data[0][0]!=41)throw std::runtime_error("Released source corrupted HDR snapshot");
@@ -797,6 +842,7 @@ int wmain(int argc,wchar_t** argv) {
     check_hdr_storage();
     p010_fixture=(argc>9 && wcscmp(argv[9],L"p010")==0) || (argc>2 && (wcscmp(argv[2],L"--p010-input")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0));
     p010_media=argc>9 && wcscmp(argv[9],L"p010-media")==0;
+    if(argc>9 && wcscmp(argv[9],L"dovi")==0){dovi_fixture=true;p010_fixture=true;p010_media=true;hdr_transfer=MFVideoTransFunc_2084;}
     if(argc>9 && (wcscmp(argv[9],L"hdr10")==0 || wcscmp(argv[9],L"hlg")==0)) {p010_media=true;hdr_transfer=wcscmp(argv[9],L"hdr10")==0?MFVideoTransFunc_2084:MFVideoTransFunc_HLG;}
     if(argc>9 && (wcscmp(argv[9],L"hdr10-legacy")==0 || wcscmp(argv[9],L"hlg-legacy")==0)) {
         recover_transfer=wcscmp(argv[9],L"hdr10-legacy")==0?16:18;
@@ -809,6 +855,16 @@ int wmain(int argc,wchar_t** argv) {
         if(std::wstring(argv[9]).find(L"sdr")!=std::wstring::npos){hdr_transfer=0;color_fixture=2;}
         if(std::wstring(argv[9]).find(L"vi1")!=std::wstring::npos)av1_format=1;
         if(std::wstring(argv[9]).find(L"vi2")!=std::wstring::npos)av1_format=2;
+    }
+    if(argc>9 && std::wstring(argv[9]).find(L"vp9-")==0) {
+        vp9_case=argv[9];recover_transfer=vp9_case.find(L"hlg")!=std::wstring::npos?18:16;
+        hdr_transfer=recover_transfer==16?MFVideoTransFunc_2084:MFVideoTransFunc_HLG;
+        p010_fixture=true;color_fixture=1;
+        if(vp9_case.find(L"override")!=std::wstring::npos){hdr_transfer=0;color_fixture=2;}
+        for(const auto* negative:{L"truncated",L"full-range",L"unspecified",L"10bit-sdr",L"missing",L"conflict"})
+            if(vp9_case.find(negative)!=std::wstring::npos)hdr_transfer=0;
+        if(vp9_case.find(L"vi1")!=std::wstring::npos)av1_format=1;
+        if(vp9_case.find(L"vi2")!=std::wstring::npos)av1_format=2;
     }
     if(argc>11){kWidth=std::stoi(argv[10]);kHeight=std::stoi(argv[11]);}
     if(argc>9 && wcscmp(argv[9],L"sdr-override")==0){recover_transfer=16;p010_fixture=true;color_fixture=2;}

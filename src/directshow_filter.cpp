@@ -1,6 +1,10 @@
 #include "nvof/video_format.hpp"
+#include "nvof/cpu_video.hpp"
+#include "nvof/cpu_upload.hpp"
+#include "nvof/avc_depth.hpp"
 #include "nvof/hevc_color.hpp"
 #include "nvof/av1_color.hpp"
+#include "nvof/vp9_color.hpp"
 #include "nvof/input_height_policy.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -19,6 +23,8 @@
 #include <cstdlib>
 #include <algorithm>
 #include <atomic>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -54,7 +60,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.4.2";
+constexpr char kFilterBuild[]="0.4.4";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -186,12 +192,21 @@ struct Layout {
     bool native_color_supported = true;
     bool ten_bit = false;
     unsigned hdr_transfer = 0;
+    nvof::CpuVideoFormat cpu_format=nvof::CpuVideoFormat::p010;
+    bool interlaced=false,top_first=false;
+    REFERENCE_TIME sample_duration=0;
 };
 
 bool parse_layout(const CMediaType& media, Layout& layout) noexcept {
-    if (media.majortype != MEDIATYPE_Video || (media.subtype != MEDIASUBTYPE_NV12 && media.subtype != nvof::p010_subtype))
-        return false;
-    const bool ten_bit=media.subtype==nvof::p010_subtype;
+    const bool nv12=media.subtype==MEDIASUBTYPE_NV12;
+    const bool packed=media.subtype==nvof::y210_subtype;
+    const bool full_chroma=packed || media.subtype==nvof::p210_subtype;
+    if (media.majortype != MEDIATYPE_Video || (!nv12 && media.subtype!=nvof::p010_subtype &&
+        media.subtype!=nvof::p016_subtype && !full_chroma))return false;
+    const bool ten_bit=!nv12;
+    const auto cpu_format=packed?nvof::CpuVideoFormat::y210:full_chroma?nvof::CpuVideoFormat::p210:
+        media.subtype==nvof::p016_subtype?nvof::CpuVideoFormat::p016:nvof::CpuVideoFormat::p010;
+    bool interlaced=false,top_first=false;
     const BITMAPINFOHEADER* bitmap = nullptr;
     size_t bitmap_offset=0;
     RECT source{};
@@ -207,7 +222,11 @@ bool parse_layout(const CMediaType& media, Layout& layout) noexcept {
         duration = video->AvgTimePerFrame;
     } else if (media.formattype == FORMAT_VideoInfo2 && media.cbFormat >= sizeof(VIDEOINFOHEADER2)) {
         const auto* video = reinterpret_cast<const VIDEOINFOHEADER2*>(media.pbFormat);
-        if (!video || (video->dwInterlaceFlags & AMINTERLACE_IsInterlaced)) return false;
+        if (!video)return false;
+        interlaced=(video->dwInterlaceFlags & AMINTERLACE_IsInterlaced)!=0;
+        top_first=(video->dwInterlaceFlags & AMINTERLACE_Field1First)!=0;
+        // Two fields per sample only. Single-field samples need their own cadence.
+        if(interlaced && (nv12 || (video->dwInterlaceFlags & AMINTERLACE_1FieldPerSample)))return false;
         if(video->dwControlFlags & AMCONTROL_COLORINFO_PRESENT) {
             DXVA2_ExtendedFormat color{};color.value=video->dwControlFlags;
             native_color_supported=(color.NominalRange==DXVA2_NominalRange_Unknown || color.NominalRange==DXVA2_NominalRange_16_235) &&
@@ -229,8 +248,8 @@ bool parse_layout(const CMediaType& media, Layout& layout) noexcept {
     } else return false;
     if (bitmap->biSize < sizeof(BITMAPINFOHEADER) || bitmap->biSize>media.cbFormat-bitmap_offset || bitmap->biWidth <= 0 ||
         bitmap->biHeight == std::numeric_limits<LONG>::min() ||
-        bitmap->biCompression != (ten_bit?MAKEFOURCC('P','0','1','0'):MAKEFOURCC('N','V','1','2')) ||
-        bitmap->biPlanes != 1 || bitmap->biBitCount != (ten_bit?24:12)) return false;
+        bitmap->biCompression != media.subtype.Data1 ||
+        bitmap->biPlanes != 1 || bitmap->biBitCount != (full_chroma?32:ten_bit?24:12)) return false;
     const int storage_height = std::abs(bitmap->biHeight);
     if (storage_height <= 0 || storage_height > 8192 || bitmap->biWidth > 32768)
         return false;
@@ -246,22 +265,24 @@ bool parse_layout(const CMediaType& media, Layout& layout) noexcept {
         height = source.bottom;
     }
     if (width <= 0 || width > 8192 || (width & 1) || (height & 1)) return false;
-    int pitch = bitmap->biWidth*(ten_bit?2:1);
-    const int64_t rows = int64_t(storage_height) * 3 / 2;
+    if(interlaced && ((!full_chroma && (height%4)) || duration<=1))return false;
+    int pitch = bitmap->biWidth*(packed?4:ten_bit?2:1);
+    const int64_t rows = packed?storage_height:full_chroma?int64_t(storage_height)*2:int64_t(storage_height)*3/2;
     if (bitmap->biSizeImage) {
         if (bitmap->biSizeImage < rows * pitch) return false;
         // A larger integral row size is a padded surface; do not infer pitch
         // from allocator capacity, which may include unrelated spare bytes.
         if (bitmap->biSizeImage % rows == 0) {
             const int64_t advertised_pitch = bitmap->biSizeImage / rows;
-            if (advertised_pitch < pitch || advertised_pitch > 32768) return false;
+            if (advertised_pitch < pitch || advertised_pitch > 65536) return false;
             pitch = static_cast<int>(advertised_pitch);
         }
     }
     if ((pitch & 1) || pitch < width) return false;
     const int64_t size = rows * pitch;
     if (size > std::numeric_limits<long>::max()) return false;
-    layout = {width, height, pitch, static_cast<long>(size), duration, native_color_supported, ten_bit, hdr_transfer};
+    layout = {width, height, pitch, static_cast<long>(size), interlaced?duration/2:duration, native_color_supported,
+        ten_bit, hdr_transfer,cpu_format,interlaced,top_first,duration};
     return true;
 }
 
@@ -326,6 +347,8 @@ public:
     STDMETHODIMP ActivateD3D11Decoding(ID3D11Device*,ID3D11DeviceContext*,HANDLE,UINT) override;
     STDMETHODIMP GetService(REFGUID service,REFIID requested,LPVOID* value) override;
     STDMETHODIMP GetAllocator(IMemAllocator** allocator) override;
+    STDMETHODIMP ReceiveConnection(IPin* connector,const AM_MEDIA_TYPE* type) override;
+    IPin* candidate=nullptr; // borrowed only during the synchronous base call
     STDMETHODIMP_(UINT) GetD3D11AdapterIndex() override;
     STDMETHODIMP_(UINT) GetD3D11TextureBindFlags() override {return D3D11_BIND_SHADER_RESOURCE;}
     STDMETHODIMP_(UINT) GetD3D11TextureMiscFlags() override {return D3D11_RESOURCE_MISC_SHARED;}
@@ -364,7 +387,7 @@ public:
     STDMETHODIMP GetService(REFGUID service,REFIID requested,LPVOID* value) override {
         return get_native_service("filter",service,requested,value);
     }
-    bool native_input_committed() const noexcept {return native_gpu_active_ || native_pending_;}
+    bool native_input_committed() const noexcept {return !cpu_upload_active_ && (native_gpu_active_ || native_pending_);}
     HRESULT get_native_service(const char* location,REFGUID service,REFIID requested,void** value) noexcept {
         if(!value)return E_POINTER;
         *value=nullptr;
@@ -551,6 +574,8 @@ public:
         if(!device || !context || context->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)return E_INVALIDARG;
         if(!native_feature_enabled_)return E_NOINTERFACE;
         if(m_State!=State_Stopped)return VFW_E_NOT_STOPPED;
+        if((input_.interlaced || (input_.ten_bit && input_.cpu_format!=nvof::CpuVideoFormat::p010)) && !starting_cpu_upload_)
+            return VFW_E_TYPE_NOT_ACCEPTED;
         if(!input_.native_color_supported) {
             write_log("native activation rejected: unsupported native color metadata (expected limited BT.709 SDR or BT.2020 PQ/HLG)");
             return VFW_E_TYPE_NOT_ACCEPTED;
@@ -603,6 +628,21 @@ public:
         }
     }
 
+    HRESULT activate_cpu_upload() {
+        if(native_feature_enabled_ && input_.ten_bit && !native_input_committed() && !cpu_upload_active_) {
+            try {
+                auto bridge=std::make_shared<nvof::MfD3d11Bridge>(native_adapter());
+                starting_cpu_upload_=true;
+                const HRESULT hr=activate_native(bridge->device(),bridge->context(),bridge->mutex(),0);
+                starting_cpu_upload_=false;
+                if(FAILED(hr))return hr;
+                cpu_bridge_=std::move(bridge);cpu_upload_active_=true;
+                write_log("CPU 10-bit upload activated; progressive P010 GPU output, fields="+std::to_string(input_.interlaced?2:1));
+            }catch(const std::exception& e) {starting_cpu_upload_=false;write_log(std::string("CPU upload activation failed: ")+e.what());return E_FAIL;}
+        }
+        return S_OK;
+    }
+
     HRESULT CompleteConnect(PIN_DIRECTION direction,IPin* connected) override {
         if(topology_logs_.fetch_add(1)<16)log_endpoint(instance_id_,"CompleteConnect",direction,connected);
         if (direction==PINDIR_OUTPUT && connected) {
@@ -637,7 +677,15 @@ public:
                     "; native activation is reported separately");
             } catch (...) { }
         }
-        return CTransformFilter::CompleteConnect(direction,connected);
+        // Establish GPU allocator BEFORE the renderer negotiates buffers. The
+        // built-in renderer can reject ordinary CPU P010 buffers at connection,
+        // so delaying activation until Run is too late for software decoders.
+        if(direction==PINDIR_OUTPUT) {
+            const HRESULT uploaded=activate_cpu_upload();if(FAILED(uploaded))return uploaded;
+        }
+        const HRESULT completed=CTransformFilter::CompleteConnect(direction,connected);
+        if(FAILED(completed))write_log("CompleteConnect allocator failed HRESULT="+std::to_string(uint32_t(completed)));
+        return completed;
     }
 
     HRESULT BreakConnect(PIN_DIRECTION direction) override {
@@ -745,9 +793,13 @@ public:
                 GUID lower=hvc1;lower.Data1=MAKEFOURCC('h','v','c','1');
                 GUID av01=hvc1;av01.Data1=MAKEFOURCC('A','V','0','1');
                 GUID av01lower=hvc1;av01lower.Data1=MAKEFOURCC('a','v','0','1');
+                GUID vp90=hvc1;vp90.Data1=MAKEFOURCC('V','P','9','0');
+                GUID vp90lower=hvc1;vp90lower.Data1=MAKEFOURCC('v','p','9','0');
+                GUID vp09=hvc1;vp09.Data1=MAKEFOURCC('v','p','0','9');
                 const bool av1=media.subtype==av01 || media.subtype==av01lower;
+                const bool vp9=media.subtype==vp90 || media.subtype==vp90lower || media.subtype==vp09;
                 const bool h265=media.subtype==hvc1 || media.subtype==hevc || media.subtype==hev1 || media.subtype==lower;
-                if(!av1 && !h265)continue;
+                if(!av1 && !h265 && !vp9)continue;
                 const BYTE* sequence=nullptr;size_t length=0;
                 if(media.formattype==FORMAT_MPEG2Video && media.cbFormat>=offsetof(MPEG2VIDEOINFO,dwSequenceHeader)) {
                     const auto* header=reinterpret_cast<const MPEG2VIDEOINFO*>(media.pbFormat);
@@ -755,8 +807,8 @@ public:
                     if(length>media.cbFormat-offsetof(MPEG2VIDEOINFO,dwSequenceHeader))continue;
                     sequence=reinterpret_cast<const BYTE*>(header->dwSequenceHeader);
                 }
-                // AV1 splitters may append configOBUs/av1C to VideoInfo(2).
-                if(av1 && !sequence) {
+                // AV1/VP9 splitters may append av1C/configOBUs or vpcC to VideoInfo(2).
+                if((av1 || vp9) && !sequence) {
                     size_t offset=0;
                     if(media.formattype==FORMAT_VideoInfo)offset=sizeof(VIDEOINFOHEADER);
                     else if(media.formattype==FORMAT_VideoInfo2)offset=sizeof(VIDEOINFOHEADER2);
@@ -765,6 +817,14 @@ public:
                 if(probe_services_ && !color_probe_logged_) try {
                     write_log("compressed color probe: subtype="+guid_text(media.subtype)+" format="+guid_text(media.formattype)+
                         " formatBytes="+std::to_string(media.cbFormat)+" sequenceBytes="+std::to_string(length));
+                    if(vp9 && media.cbFormat<=65536) {
+                        wchar_t local[32768]{};
+                        const DWORD count=GetEnvironmentVariableW(L"LOCALAPPDATA",local,_countof(local));
+                        if(count && count<_countof(local)) {
+                            std::ofstream dump(std::filesystem::path(local)/L"NvofPotPlayer"/L"vp9-color-format.bin",std::ios::binary);
+                            dump.write(reinterpret_cast<const char*>(media.pbFormat),media.cbFormat);
+                        }
+                    }
                     if(sequence && length<=65536) {
                         // Opt-in local diagnostic only; contains codec header, never frames/URLs.
                         wchar_t local[32768]{};
@@ -775,11 +835,32 @@ public:
                     }
                     color_probe_logged_=true;
                 }catch(...){color_probe_logged_=true;}
-                if(!sequence)continue;
-                auto color=nvof::hevc_color(sequence,length);
+                std::optional<nvof::HevcColor> color;
+                if(h265)color=nvof::hevc_color(sequence,length);
                 if(av1) {
-                    color.reset();auto a=nvof::av1_color(sequence,length);
+                    auto a=nvof::av1_color(sequence,length);
                     if(a)color=nvof::HevcColor{a->primaries,a->transfer,a->matrix,a->full_range};
+                }
+                if(vp9) {
+                    auto v=nvof::vp9_color(sequence,length);
+                    if(v)color=nvof::HevcColor{v->primaries,v->transfer,v->matrix,v->full_range};
+                    // Matroska splitters can convey container colour directly on
+                    // the compressed VideoInfo2 type, without any vpcC record.
+                    if((media.formattype==FORMAT_VideoInfo2 && media.cbFormat>=sizeof(VIDEOINFOHEADER2)) ||
+                       (media.formattype==FORMAT_MPEG2Video && media.cbFormat>=sizeof(MPEG2VIDEOINFO))) {
+                        const auto* video=reinterpret_cast<const VIDEOINFOHEADER2*>(media.pbFormat);
+                        if(video->dwControlFlags & AMCONTROL_COLORINFO_PRESENT) {
+                            DXVA2_ExtendedFormat c{};c.value=video->dwControlFlags;
+                            if(c.VideoTransferFunction || c.VideoPrimaries || c.VideoTransferMatrix) {
+                                if(c.VideoPrimaries!=MFVideoPrimaries_BT2020 || c.VideoTransferMatrix!=MFVideoTransferMatrix_BT2020_10 ||
+                                   (c.VideoTransferFunction!=MFVideoTransFunc_2084 && c.VideoTransferFunction!=MFVideoTransFunc_HLG) ||
+                                   (c.NominalRange!=DXVA2_NominalRange_Unknown && c.NominalRange!=DXVA2_NominalRange_16_235))return fallback;
+                                const unsigned transfer=c.VideoTransferFunction==MFVideoTransFunc_2084?16:18;
+                                if(color && (color->primaries!=9 || color->matrix!=9 || color->transfer!=transfer || color->full_range))return fallback;
+                                color=nvof::HevcColor{9,transfer,9,false};
+                            }
+                        }
+                    }
                 }
                 if(!color || color->full_range || color->primaries!=9 || color->matrix!=9 || (color->transfer!=16 && color->transfer!=18))continue;
                 DXVA2_ExtendedFormat hdr{};hdr.NominalRange=DXVA2_NominalRange_16_235;
@@ -799,16 +880,54 @@ public:
         return output.formattype==FORMAT_VideoInfo2 && output.pbFormat && output.cbFormat>=sizeof(VIDEOINFOHEADER2) &&
             reinterpret_cast<const VIDEOINFOHEADER2*>(output.pbFormat)->dwControlFlags==resolved_output_color_flags(input);
     }
+    nvof::AvcFormat upstream_avc_format() const noexcept {
+        try {
+            Microsoft::WRL::ComPtr<IPin> upstream;
+            if(!m_pInput)return {};
+            if(FAILED(m_pInput->ConnectedTo(&upstream)))upstream=static_cast<ProbeInputPin*>(m_pInput)->candidate;
+            if(!upstream)return {};
+            PIN_INFO info{};if(FAILED(upstream->QueryPinInfo(&info)) || !info.pFilter)return {};
+            Microsoft::WRL::ComPtr<IBaseFilter> decoder;decoder.Attach(info.pFilter);
+            Microsoft::WRL::ComPtr<IEnumPins> pins;if(FAILED(decoder->EnumPins(&pins)))return {};
+            Microsoft::WRL::ComPtr<IPin> pin;
+            for(unsigned i=0;i<64 && pins->Next(1,&pin,nullptr)==S_OK;++i,pin.Reset()) {
+                PIN_DIRECTION dir{};CMediaType mt;
+                if(FAILED(pin->QueryDirection(&dir)) || dir!=PINDIR_INPUT || FAILED(pin->ConnectionMediaType(&mt)) || !mt.pbFormat)continue;
+                const auto c=mt.subtype.Data1;
+                if(c!=MAKEFOURCC('A','V','C','1') && c!=MAKEFOURCC('a','v','c','1') &&
+                   c!=MAKEFOURCC('H','2','6','4') && c!=MAKEFOURCC('h','2','6','4'))continue;
+                if(mt.formattype==FORMAT_MPEG2Video && mt.cbFormat>=offsetof(MPEG2VIDEOINFO,dwSequenceHeader)) {
+                    const auto* h=reinterpret_cast<const MPEG2VIDEOINFO*>(mt.pbFormat);
+                    if(h->cbSequenceHeader<=mt.cbFormat-offsetof(MPEG2VIDEOINFO,dwSequenceHeader))
+                        return nvof::avc_format(reinterpret_cast<const BYTE*>(h->dwSequenceHeader),h->cbSequenceHeader);
+                }
+            }
+        }catch(...){}
+        return {};
+    }
+    bool parse_input_layout(const CMediaType& media,Layout& layout) const noexcept {
+        if(!parse_layout(media,layout))return false;
+        if(layout.interlaced && upstream_avc_format().frame_mbs_only==true) {
+            layout.interlaced=false;layout.top_first=false;layout.duration=layout.sample_duration;
+        }
+        return true;
+    }
     HRESULT CheckInputType(const CMediaType* type) override {
         if (!type) return E_POINTER;
         Layout layout;
-        return parse_layout(*type, layout) && (!(layout.ten_bit || layout.hdr_transfer) || native_feature_enabled_) ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
+        // Preserve actual 10-bit decoder output instead of accepting an implicit
+        // NV12 downgrade. Applies only to verified AVC SPS, not legacy native
+        // HEVC/AV1 media types that can advertise NV12 over a P010 surface.
+        if(type->subtype==MEDIASUBTYPE_NV12 && native_feature_enabled_ && !native_input_committed() && upstream_avc_format().depth>8)
+            return VFW_E_TYPE_NOT_ACCEPTED;
+        return parse_input_layout(*type, layout) && (!(layout.ten_bit || layout.hdr_transfer) || native_feature_enabled_) ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
     }
 
     HRESULT CheckTransform(const CMediaType* input, const CMediaType* output) override {
         if (!input || !output) return E_POINTER;
         Layout in, out;
-        if (!parse_layout(*input, in) || !parse_layout(*output, out) ||
+        if (!parse_input_layout(*input, in) || !parse_layout(*output, out) ||
+            out.interlaced || (output->subtype!=MEDIASUBTYPE_NV12 && output->subtype!=nvof::p010_subtype) ||
             in.width != out.width || in.height != out.height || (in.ten_bit && !out.ten_bit) || (!native_feature_enabled_ && in.ten_bit!=out.ten_bit))
             return VFW_E_TYPE_NOT_ACCEPTED;
         if(native_feature_enabled_) {
@@ -825,7 +944,7 @@ public:
     HRESULT SetMediaType(PIN_DIRECTION direction, const CMediaType* type) override {
         if (!type) return E_POINTER;
         Layout layout;
-        if (!parse_layout(*type, layout)) return VFW_E_TYPE_NOT_ACCEPTED;
+        if (!(direction==PINDIR_INPUT?parse_input_layout(*type,layout):parse_layout(*type,layout))) return VFW_E_TYPE_NOT_ACCEPTED;
         if (direction == PINDIR_INPUT) {
             if((native_gpu_active_ || native_pending_) && !layout.native_color_supported)return VFW_E_TYPE_NOT_ACCEPTED;
             input_ = layout;
@@ -867,6 +986,7 @@ public:
             destination = &video->rcTarget;
             bit_rate = &video->dwBitRate;
         }
+        media->SetSubtype(input_.ten_bit?&nvof::p010_subtype:&MEDIASUBTYPE_NV12);
         *source = {0, 0, input_.width, input_.height};
         *destination = {0, 0, 0, 0};
         bitmap->biWidth = input_.width;
@@ -898,6 +1018,7 @@ public:
     }
 
     HRESULT StartStreaming() override {
+        const HRESULT uploaded=activate_cpu_upload();if(FAILED(uploaded))return uploaded;
         for(int index=0;index<2;++index) {
             auto* pin=index==0?static_cast<CBasePin*>(m_pInput):static_cast<CBasePin*>(m_pOutput);
             Microsoft::WRL::ComPtr<IPin> connected;
@@ -909,6 +1030,7 @@ public:
             if(FAILED(mode))return mode;
         }
         cancelled_.store(false, std::memory_order_release);
+        cpu_prepare_ms_=cpu_gpu_ms_=0;cpu_upload_fields_=0;cpu_field_override_logged_=false;
         last_pts_.reset();
         last_duration_ = input_.duration > 0 ? input_.duration :
             nvof::supported_output_rate(target_)?rate_duration(target_):kUnits/24;
@@ -917,6 +1039,7 @@ public:
         output_frames_ = source_frames_ = near_endpoint_frames_ = 0;motion_frames_=protected_frames_=scene_cuts_=repeated_pairs_=subpixel_pass_frames_=identical_frames_=midpoint_pass_frames_=midpoint_limited_frames_=0;subpixel_unavailable_=midpoint_unavailable_=false;quality_state_="waiting";
         gpu_delivery_verified_=false;
         sample_probed_ = false;
+        hdr_trace_=std::make_shared<nvof::HdrDeliveryTrace>();
         sample_transport_ = "unknown";
         input_surface_format_="unknown";input_conversion_="none";
         engine_active_ = false;
@@ -933,7 +1056,13 @@ public:
         // CTransformFilter::Stop holds m_csReceive after input decommit.
         cancelled_.store(true, std::memory_order_release);
         release_engine();
+        if(cpu_upload_fields_)write_log("CPU upload timing fields="+std::to_string(cpu_upload_fields_)+
+            " prepareMs="+std::to_string(cpu_prepare_ms_)+" gpuAndDeliveryMs="+std::to_string(cpu_gpu_ms_));
         last_pts_.reset();
+        if(hdr_trace_)write_log("HDR side data: inputMask="+std::to_string(hdr_trace_->input_mask.load())+
+            " rendererRequestedMask="+std::to_string(hdr_trace_->requested_mask.load())+
+            " rendererReturnedMask="+std::to_string(hdr_trace_->returned_mask.load())+
+            " (bits: mastering=1 light=2 DV-RPU=4 DV-v1=8 DV-v2=16; transport only)");
         write_log("stream stop: GPU resources released after receive quiesced");
         write_status("stopped", "Playback stopped");
         return S_OK;
@@ -968,7 +1097,7 @@ public:
         const HRESULT hr = CTransformFilter::BeginFlush();
         {
             CAutoLock receive(&m_csReceive);
-            reset_history();
+            reset_history(true);
             last_pts_.reset();
         }
         return hr;
@@ -977,7 +1106,7 @@ public:
     HRESULT EndFlush() override {
         {
             CAutoLock receive(&m_csReceive);
-            reset_history();
+            reset_history(true);
             last_pts_.reset();
             failed_ = false;
         }
@@ -994,7 +1123,7 @@ public:
     HRESULT NewSegment(REFERENCE_TIME start, REFERENCE_TIME stop, double rate) override {
         if (!std::isfinite(rate) || rate <= 0) return E_INVALIDARG;
         CAutoLock receive(&m_csReceive);
-        reset_history();
+        reset_history(true);
         last_pts_.reset();
         failed_ = false;
         return CTransformFilter::NewSegment(start, stop, rate);
@@ -1012,8 +1141,9 @@ public:
             if (properties->dwSampleFlags & AM_SAMPLE_TYPECHANGED) {
                 const auto* media = reinterpret_cast<const CMediaType*>(properties->pMediaType);
                 Layout incoming;
-                if (!media || !parse_layout(*media, incoming) ||
+                if (!media || !parse_input_layout(*media, incoming) ||
                     incoming.width != output_.width || incoming.height != output_.height || incoming.ten_bit!=input_.ten_bit ||
+                    incoming.cpu_format!=input_.cpu_format || incoming.interlaced!=input_.interlaced || incoming.top_first!=input_.top_first ||
                     !connected_output_color_matches(*media) ||
                     rate_selected(incoming.duration)!=input_rate_selected_ ||
                     interpolate_source(incoming.duration,incoming.height)!=interpolation_requested() ||
@@ -1039,7 +1169,7 @@ public:
             // would poison the first post-seek pair. Discard it without GPU
             // work and let the first visible original create fresh history.
             if (start < 0 || sample->IsPreroll() == S_OK) {
-                reset_history();
+                reset_history(true);
                 last_pts_.reset();
                 return S_OK;
             }
@@ -1051,14 +1181,18 @@ public:
                 else if (timing != S_OK || stop <= start) last_duration_ = delta;
             }
             if (timing == S_OK && stop > start) last_duration_ = stop - start;
-            if (discontinuity) reset_history();
+            if (discontinuity) reset_history(true);
             const int64_t end=timing==S_OK && stop>start?stop:start+last_duration_;
             ++source_frames_;
+            if(cpu_upload_active_) {
+                last_pts_=start;
+                return receive_cpu10(sample,start,end,discontinuity);
+            }
             if(native_gpu_active_) {
                 last_pts_=start;
                 return receive_gpu(sample,start,end,discontinuity);
             }
-            if(input_.ten_bit || input_.hdr_transfer)return report_error("P010 requires native D3D11 decoder and renderer transport",VFW_E_TYPE_NOT_ACCEPTED);
+            if(input_.ten_bit || input_.hdr_transfer)return report_error("CPU 10-bit upload requires a compatible D3D11 renderer",VFW_E_TYPE_NOT_ACCEPTED);
             if (interpolation_requested()) ensure_pipeline();
             BYTE* data = nullptr;
             HRESULT hr = sample->GetPointer(&data);
@@ -1099,7 +1233,7 @@ public:
         if (failed_) return E_FAIL;
         try {
             HRESULT delivery = S_OK;
-            if(gpu_pipeline_)gpu_pipeline_->finish(last_duration_,[this,&delivery](const nvof::GpuOutputFrame& output) {
+            if(gpu_pipeline_)gpu_pipeline_->finish(cpu_upload_active_?cpu_last_frame_duration_:last_duration_,[this,&delivery](const nvof::GpuOutputFrame& output) {
                 delivery=deliver_gpu(output);
                 return delivery==S_OK;
             });
@@ -1145,6 +1279,11 @@ private:
         // Metadata is a sample contract, not conditional on a possibly untagged
         // decoder media type. Capture every sample without stale-frame caching.
         input.hdr=nvof::capture_hdr(sample);
+        if(input.hdr && hdr_trace_)for(size_t i=0;i<input.hdr->data.size();++i)if(!input.hdr->data[i].empty()) {
+            const unsigned bit=1u<<i;
+            if(!(hdr_trace_->input_mask.fetch_or(bit)&bit) && i>=2)
+                write_log("Dolby Vision side data received: slot="+std::to_string(i)+" bytes="+std::to_string(input.hdr->data[i].size()));
+        }
         const HRESULT agreed=ensure_native_output_format(p010);if(FAILED(agreed))return agreed;
         const std::string format=p010?"P010":"NV12";
         if(input_surface_format_!=format) {
@@ -1161,7 +1300,11 @@ private:
         // keep an owned output lease without a per-frame CPU completion wait.
         auto owned=gpu_engine_->copy(input);
         sample_transport_="d3d11-texture";
-        if(!interpolation_requested())return deliver_gpu({std::move(owned),stop>start?stop:start+last_duration_,discontinuity});
+        return push_gpu_frame(std::move(owned),stop,discontinuity);
+    }
+
+    HRESULT push_gpu_frame(nvof::GpuFrame owned,int64_t stop,bool discontinuity) {
+        if(!interpolation_requested())return deliver_gpu({std::move(owned),stop,discontinuity});
         if(!gpu_pipeline_)gpu_pipeline_=std::make_unique<nvof::GpuPhasePipeline>(target_,
             [this](const nvof::GpuFrame& a,const nvof::GpuFrame& b,const std::vector<int64_t>& times) {
                 auto batch=gpu_engine_->interpolate_pair(a,b,times);record_quality(batch.quality,times.size());record_endpoints(a.pts,b.pts,times);return batch;
@@ -1171,6 +1314,68 @@ private:
             delivery=deliver_gpu(output);return delivery==S_OK;
         });
         return delivery;
+    }
+
+    HRESULT receive_cpu10(IMediaSample* sample,int64_t start,int64_t stop,bool discontinuity) {
+        auto tick=std::chrono::steady_clock::now();
+        auto elapsed=[&](){const auto now=std::chrono::steady_clock::now();const double ms=std::chrono::duration<double,std::milli>(now-tick).count();tick=now;return ms;};
+        // StopStreaming releases the engine while keeping the negotiated device
+        // and allocator. A subsequent Run must recreate it, just like receive_gpu.
+        if(!gpu_engine_)gpu_engine_=std::make_unique<nvof::GpuFrucEngine>(directory_/L"runtime",
+            native_device_.Get(),native_context_.Get(),native_mutex_,nvof::GpuCompletionMode::context_ordered,true,
+            gpu_correction_,appearance_protection_,nvof::GpuInterpolationBackend::native_experimental);
+        BYTE* data=nullptr;HRESULT hr=sample->GetPointer(&data);
+        if(FAILED(hr) || !data)return report_error("CPU 10-bit input has no host buffer",FAILED(hr)?hr:E_POINTER);
+        if(sample->GetActualDataLength()<input_.size || sample->GetSize()<input_.size)
+            return report_error("CPU 10-bit input buffer is truncated",VFW_E_BUFFER_OVERFLOW);
+        if(!cpu_upload_)cpu_upload_=std::make_unique<nvof::CpuUpload>(native_device_.Get(),native_context_.Get(),native_mutex_);
+        cpu_upload_->begin(data,size_t(sample->GetActualDataLength()),
+            {input_.width,input_.height,input_.pitch,input_.cpu_format},discontinuity);
+        const auto hdr=nvof::capture_hdr(sample);
+        bool top_first=input_.top_first;
+        bool weave=false;
+        if(input_.interlaced) {
+            const auto flags=m_pInput->SampleProps()->dwTypeSpecificFlags;
+            if(flags & AM_VIDEO_FLAG_REPEAT_FIELD)return report_error("Repeat-field cadence is not supported by CPU deinterlacing",VFW_E_TYPE_NOT_ACCEPTED);
+            // FIELD1FIRST/WEAVE are valid for VIDEOINFOHEADER2 interlaced types.
+            top_first=(flags & AM_VIDEO_FLAG_FIELD1FIRST)!=0;
+            weave=(flags & AM_VIDEO_FLAG_WEAVE)!=0;
+            if(!flags)top_first=input_.top_first;
+        }
+        // Normally WEAVE is one progressive picture with its full duration.
+        // Some software decoders also tag untouched fields WEAVE. Override only
+        // on interlace-capable input with repeated moving-comb evidence; already
+        // blended/progressive pictures must not become duplicate half-frames.
+        const bool detected_fields=input_.interlaced && weave && cpu_upload_->needs_field_reconstruction();
+        if(detected_fields) {
+            top_first=input_.top_first;
+            if(!cpu_field_override_logged_) {
+                write_log("CPU moving fields detected in WEAVE sample: topFirst="+std::to_string(top_first)+
+                    " sampleFlags="+std::to_string(m_pInput->SampleProps()->dwTypeSpecificFlags)+
+                    " sampleDuration="+std::to_string(stop-start)+"; using negotiated field order");
+                cpu_field_override_logged_=true;
+            }
+        }
+        const unsigned fields=input_.interlaced && (!weave || detected_fields)?2:1;
+        if(stop-start<int64_t(fields))return VFW_E_SAMPLE_TIME_NOT_SET;
+        for(unsigned f=0;f<fields;++f) {
+            if(cancelled_.load(std::memory_order_acquire))return S_FALSE;
+            const int parity=fields==1?-1:(top_first?int(f):1-int(f));
+            cpu_prepare_ms_+=elapsed();++cpu_upload_fields_;
+            auto frame=cpu_upload_->render(parity,start+(stop-start)*f/fields);frame.hdr=hdr;
+            const int64_t end=start+(stop-start)*(f+1)/fields;
+            cpu_last_frame_duration_=end-frame.pts;
+            auto owned=gpu_engine_->copy(frame);
+            sample_transport_="cpu-upload-d3d11";
+            input_surface_format_=input_.cpu_format==nvof::CpuVideoFormat::y210?"Y210":
+                input_.cpu_format==nvof::CpuVideoFormat::p210?"P210":input_.cpu_format==nvof::CpuVideoFormat::p016?"P016":"P010";
+            input_conversion_=fields==2?(detected_fields?"gpu-10-bit-detected-fields-to-P010":"gpu-10-bit-field-reconstruction-to-P010"):
+                nvof::cpu_422(input_.cpu_format)?"10-bit-422-to-P010":"10-bit-upload";
+            hr=push_gpu_frame(std::move(owned),end,discontinuity && f==0);
+            cpu_gpu_ms_+=elapsed();
+            if(hr!=S_OK)return hr;
+        }
+        return S_OK;
     }
 
     HRESULT deliver_gpu(const nvof::GpuOutputFrame& output) {
@@ -1185,7 +1390,7 @@ private:
         if(cancelled_.load(std::memory_order_acquire))return S_FALSE;
         auto* surface=dynamic_cast<nvof::transport::SurfaceSample*>(raw);
         if(!surface)return report_error("renderer did not accept the native GPU allocator",E_UNEXPECTED);
-        surface->assign(output.frame);
+        surface->assign(output.frame,hdr_trace_);
         sample->SetTime(&start,&stop);
         result=sample->SetMediaType(pending_gpu_media_type_?&m_pOutput->CurrentMediaType():nullptr);if(FAILED(result))return result;
         sample->SetActualDataLength(output_.width*output_.height*3/(output_.ten_bit?1:2));
@@ -1256,7 +1461,9 @@ private:
         }
     }
 
-    void reset_history() noexcept {
+    void reset_history(bool same_input=false) noexcept {
+        cpu_last_frame_duration_=0;
+        if(cpu_upload_)cpu_upload_->reset(same_input);
         engine_active_ = false;quality_state_="waiting";
         if (pipeline_) pipeline_->reset();
         if (engine_) engine_->reset();
@@ -1265,6 +1472,7 @@ private:
     }
 
     void release_engine() noexcept {
+        cpu_upload_.reset();
         pipeline_.reset();
         engine_.reset();
         gpu_pipeline_.reset();
@@ -1273,6 +1481,8 @@ private:
 
     void release_native_activation(bool reset_transport=true) noexcept {
         release_engine();
+        cpu_upload_active_=false;cpu_upload_.reset();
+        cpu_bridge_.reset();
         native_gpu_active_=false;native_pending_=false;gpu_delivery_verified_=false;
         native_context_.Reset();native_device_.Reset();
         mf_bridge_.reset();mf_surface_selected_=false;
@@ -1384,6 +1594,8 @@ private:
                     << ",\"inputConversion\":" << json_string(input_conversion_)
                     << ",\"outputSurfaceFormat\":" << json_string(gpu_delivery_verified_?(output_.ten_bit?"P010":"NV12"):"")
                     << ",\"colorMode\":" << json_string(gpu_delivery_verified_?(output_.hdr_transfer==MFVideoTransFunc_2084?"HDR10":output_.hdr_transfer==MFVideoTransFunc_HLG?"HLG":"SDR"):"")
+                    << ",\"hdrSideDataInputMask\":" << (hdr_trace_?hdr_trace_->input_mask.load():0)
+                    << ",\"hdrSideDataRendererReadMask\":" << (hdr_trace_?hdr_trace_->returned_mask.load():0)
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
                     << ",\"doubleRate\":" << (selected_multiple(input_.duration)==2?"true":"false")
                     << ",\"outputFpsLimit\":" << output_limit_
@@ -1431,10 +1643,17 @@ private:
     const unsigned instance_id_=next_filter_instance.fetch_add(1);
     std::atomic<unsigned> topology_logs_{0};
     DiagnosticServiceProbe service_probe_;
+    bool cpu_field_override_logged_=false;
     bool probe_services_=false;
     std::filesystem::path directory_;
     Layout input_, output_;
     bool native_feature_enabled_=false;
+    bool cpu_upload_active_=false,starting_cpu_upload_=false;
+    double cpu_prepare_ms_=0,cpu_gpu_ms_=0;
+    uint64_t cpu_upload_fields_=0;
+    int64_t cpu_last_frame_duration_=0;
+    std::shared_ptr<nvof::MfD3d11Bridge> cpu_bridge_;
+    std::unique_ptr<nvof::CpuUpload> cpu_upload_;
     bool native_gpu_active_=false;
     bool gpu_delivery_verified_=false;
     bool native_pending_=false;
@@ -1453,6 +1672,7 @@ private:
     std::atomic<bool> native_input_requested_{false};
     std::atomic<bool> native_renderer_supported_{false};
     bool sample_probed_ = false;
+    std::shared_ptr<nvof::HdrDeliveryTrace> hdr_trace_;
     std::string sample_transport_ = "unknown";
     std::string input_surface_format_="unknown",input_conversion_="none";
     bool enabled_ = true;
@@ -1507,6 +1727,12 @@ STDMETHODIMP ProbeInputPin::NonDelegatingQueryInterface(REFIID id,void** value) 
     return result;
 }
 
+STDMETHODIMP ProbeInputPin::ReceiveConnection(IPin* connector,const AM_MEDIA_TYPE* type) {
+    candidate=connector;
+    const HRESULT hr=CTransformInputPin::ReceiveConnection(connector,type);
+    candidate=nullptr;return hr;
+}
+
 STDMETHODIMP ProbeInputPin::GetService(REFGUID service,REFIID requested,LPVOID* value) {
     return owner_->get_native_service("input pin",service,requested,value);
 }
@@ -1559,8 +1785,11 @@ public:
 };
 
 const AMOVIESETUP_MEDIATYPE pin_types[] = {{&MEDIATYPE_Video, &MEDIASUBTYPE_NV12},{&MEDIATYPE_Video,&nvof::p010_subtype}};
+const AMOVIESETUP_MEDIATYPE input_pin_types[] = {{&MEDIATYPE_Video,&MEDIASUBTYPE_NV12},
+    {&MEDIATYPE_Video,&nvof::p010_subtype},{&MEDIATYPE_Video,&nvof::p016_subtype},
+    {&MEDIATYPE_Video,&nvof::p210_subtype},{&MEDIATYPE_Video,&nvof::y210_subtype}};
 const AMOVIESETUP_PIN pins[] = {
-    {L"Input", FALSE, FALSE, FALSE, FALSE, &CLSID_NULL, nullptr, 2, pin_types},
+    {L"Input", FALSE, FALSE, FALSE, FALSE, &CLSID_NULL, nullptr, 5, input_pin_types},
     {L"Output", FALSE, TRUE, FALSE, FALSE, &CLSID_NULL, nullptr, 2, pin_types},
 };
 const AMOVIESETUP_FILTER registration = {
