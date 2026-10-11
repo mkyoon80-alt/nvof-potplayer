@@ -35,27 +35,30 @@ def main():
     shutil.copytree(ROOT / "licenses", output / "licenses")
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", output)
     shutil.copy2(ROOT / "docs" / "HDR-NATIVE-TRIAL.md", output)
-    html_path = output / "index.html"
-    html = html_path.read_text(encoding="utf-8")
-    html = html.replace('href="../../THIRD_PARTY_NOTICES.md"', 'href="THIRD_PARTY_NOTICES.md"')
-    html = html.replace('href="../../licenses/', 'href="licenses/')
-    html = html.replace('href="../HDR-NATIVE-TRIAL.md"', 'href="HDR-NATIVE-TRIAL.md"')
-    html_path.write_text(html, encoding="utf-8")
+    count = 0
+    for html_path in output.glob("*.html"):
+        html = html_path.read_text(encoding="utf-8-sig")
+        html = html.replace('href="../../THIRD_PARTY_NOTICES.md"', 'href="THIRD_PARTY_NOTICES.md"')
+        html = html.replace('href="../../licenses/', 'href="licenses/')
+        html = html.replace('href="../HDR-NATIVE-TRIAL.md"', 'href="HDR-NATIVE-TRIAL.md"')
+        html_path.write_text(html, encoding="utf-8")
+        links = Links()
+        links.feed(html)
+        for url in links.urls:
+            part = urlsplit(url)
+            if part.scheme or part.netloc:
+                continue
+            if not part.path:
+                if part.fragment and part.fragment not in links.ids:
+                    raise SystemExit(f"Missing anchor in {html_path.name}: {url}")
+                continue
+            target = (output / unquote(part.path)).resolve()
+            if not target.is_relative_to(output) or not target.is_file():
+                raise SystemExit(f"Missing or invalid local resource: {url}")
+        count += len(links.urls)
     (output / ".nojekyll").touch()
-    links = Links()
-    links.feed(html)
-    for url in links.urls:
-        part = urlsplit(url)
-        if part.scheme or part.netloc:
-            continue
-        if not part.path:
-            if part.fragment and part.fragment not in links.ids:
-                raise SystemExit(f"Missing anchor: {url}")
-            continue
-        target = (output / unquote(part.path)).resolve()
-        if not target.is_relative_to(output) or not target.is_file():
-            raise SystemExit(f"Missing or invalid local resource: {url}")
-    print(f"Staged manual and verified {len(links.urls)} links/resources: {output}")
+    print(f"Staged bilingual manual and verified {count} links/resources: {output}")
+
 
 
 if __name__ == "__main__":

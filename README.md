@@ -2,11 +2,11 @@
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Supports selectable FPS caps or ×2–×5 output, GPU-resident D3D11 processing, and native 10-bit HDR10/HLG signal passthrough. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
 
-**[Download v0.4.2](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.2)** · **[Korean manual](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+**[Download v0.4.2](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.2)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **FPS 상한 또는 원본 배수**를 골라 원본의 정수배로 보간합니다.
 
-압축을 풀어 사용하는 Windows x64 스탠드얼론 ZIP입니다. 필터·등록 도구·설정창과 .NET/WPF 런타임, 오프라인 매뉴얼을 포함합니다. NVIDIA 드라이버와 팟플레이어는 별도로 필요합니다.
+압축을 풀어 사용하는 Windows x64 스탠드얼론 ZIP입니다. 필터·등록 도구·설정창과 .NET/WPF 런타임, 한국어·영어 오프라인 매뉴얼을 포함합니다. NVIDIA 드라이버와 팟플레이어는 별도로 필요합니다.
 
 ## v0.4.2의 변경 사항
 
@@ -48,6 +48,7 @@ Newton 기반 자체 보간, NVOFA 세션·GPU 버퍼 재사용, 빌드 시 셰�
 
 ## 문서
 
+- [English user guide](https://mkyoon80-alt.github.io/nvof-potplayer/en.html) · [English offline guide](docs/manual/en.html). The controller UI is currently Korean; the English guide includes matching Korean button labels.
 - [온라인 사용 설명서](https://mkyoon80-alt.github.io/nvof-potplayer/) · [오프라인 설명서](docs/manual/index.html)
 - [팟플레이어 연결](docs/POTPLAYER_SETUP.ko.md)
 - [빌드 및 패키징](docs/BUILD.md)

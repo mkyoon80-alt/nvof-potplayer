@@ -21,7 +21,8 @@ The system-memory adapter uploads NV12 into a private NVIDIA D3D11 device and re
 ~~~powershell
 .\tools\build-local-package.ps1 -Version 0.4.2 -NativeDirectory build\release042\native\Release -UiDirectory ui\staging-release042
 python tools/build-manual-site.py --output build/release042/manual-site
-python tools/build-manual-assets.py --site-dir build/release042/manual-site --version 0.4.2 --output dist
+python tools/build-manual-assets.py --site-dir build/release042/manual-site --version 0.4.2 --language ko --output dist
+python tools/build-manual-assets.py --site-dir build/release042/manual-site --version 0.4.2 --language en --output dist
 ~~~
 
 The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. v0.4.2 is distributed as a standalone ZIP. The optional developer tool tools/build-installer.ps1 still supports Inno Setup 7.1.0; the compiler is not shipped.

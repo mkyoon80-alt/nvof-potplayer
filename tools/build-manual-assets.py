@@ -11,17 +11,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--site-dir", required=True, type=Path)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--language", choices=("ko", "en"), default="ko")
     parser.add_argument("--output", type=Path, default=Path("dist"))
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+[-.a-zA-Z0-9]*", args.version):
         raise SystemExit("Invalid version")
     site = args.site_dir.resolve()
-    html = (site / "index.html").read_text(encoding="utf-8")
+    entry = "en.html" if args.language == "en" else "index.html"
+    html = (site / entry).read_text(encoding="utf-8-sig")
     if args.version not in html:
         raise SystemExit("Manual version does not match the requested release")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    name = f"NvofPotPlayer-{args.version}-Manual-ko"
+    name = f"NvofPotPlayer-{args.version}-Manual-{args.language}"
     standalone, archive = output / (name + ".html"), output / (name + ".zip")
     if standalone.exists() or archive.exists():
         raise SystemExit("Manual output already exists; existing assets are preserved")
@@ -44,11 +46,24 @@ def main():
     html = html.replace('href="THIRD_PARTY_NOTICES.md"', f'href="{source}THIRD_PARTY_NOTICES.md"')
     html = html.replace('href="licenses/', f'href="{source}licenses/')
     html = html.replace('href="HDR-NATIVE-TRIAL.md"', f'href="{source}docs/HDR-NATIVE-TRIAL.md"')
+    html = html.replace('href="en.html"', 'href="https://mkyoon80-alt.github.io/nvof-potplayer/en.html"')
+    html = html.replace('href="index.html"', 'href="https://mkyoon80-alt.github.io/nvof-potplayer/"')
     standalone.write_text(html, encoding="utf-8")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
         for file in sorted(site.rglob("*")):
             if file.is_file() and file.name != ".nojekyll":
-                bundle.write(file, file.relative_to(site).as_posix())
+                relative = file.relative_to(site).as_posix()
+                if args.language == "en" and relative in ("index.html", "en.html"):
+                    page = file.read_text(encoding="utf-8-sig")
+                    if relative == "en.html":
+                        relative = "index.html"
+                        page = page.replace('href="index.html"', 'href="ko.html"')
+                    else:
+                        relative = "ko.html"
+                        page = page.replace('href="en.html"', 'href="index.html"')
+                    bundle.writestr(relative, page)
+                else:
+                    bundle.write(file, relative)
     print(standalone)
     print(archive)
 

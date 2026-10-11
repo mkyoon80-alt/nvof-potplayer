@@ -2,16 +2,16 @@
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Supports selectable FPS caps or ×2–×5 output, GPU-resident D3D11 processing, and native 10-bit HDR10/HLG signal passthrough. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
 
-**[Download v0.4.2](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.2)** · **[Korean manual](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+**[Download v0.4.2](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.2)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
 
-v0.4.0 이후 검증한 변경을 통합했습니다. Windows x64 스탠드얼론 ZIP과 최신 설정 화면을 반영한 한국어 매뉴얼을 제공합니다.
+v0.4.0 이후 검증한 변경을 통합했습니다. Windows x64 스탠드얼론 ZIP과 최신 설정 화면을 반영한 한국어·영문 매뉴얼을 제공합니다.
 
 - **출력 방식 선택:** FPS 상한 60 / 72 / 75 / 100 / 120 / 144 / 240fps, 또는 원본 배수 ×2 / ×3 / ×4 / ×5. 두 방식의 선택을 각각 기억합니다. 기존 최대 60/120fps 설정도 유지합니다.
 - **세로 해상도 조건:** 전체 / 1080p 이하 / 1440p 이하. 원본 FPS 조건과 함께 적용하며, 제외된 영상은 원본 FPS로 재생합니다.
 - **작은 FPS 편차 허용:** 30.003fps 영상도 최대 60fps에서는 ×2, 최대 120fps에서는 ×4로 처리합니다. 0.1% 범위의 편차를 허용하며 원본 재생 시간은 바꾸지 않습니다.
 - **YouTube AV1 HDR 색상 수정:** 디코더 연결 정보에서 HDR 표시가 빠진 경우 연결된 AV1 원본의 색 정보를 확인해 전달합니다. 디코더가 명시한 SDR 정보는 우선합니다. LG Jazz HDR 영상의 실제 팟플레이어 정상 색상 재생을 확인했습니다.
 - **움직이는 도형의 경계 개선:** 검은 배경의 빠른 원·사각형에 대해 움직임 추정과 모서리 처리를 보완했습니다. 일반 영상의 기존 보간 결과는 별도 비교로 확인했습니다.
-- **설정창과 매뉴얼 정리:** 현재의 세 탭과 새 출력 선택을 안내합니다. 매뉴얼의 오래된 화질 보정·입모양 기능 설명과 이미지를 제거하고 v0.4.2 화면으로 교체했습니다.
+- **설정창과 매뉴얼 정리:** 현재의 세 탭과 새 출력 선택을 안내합니다. 매뉴얼의 오래된 화질 보정·입모양 기능 설명과 이미지를 제거하고 v0.4.2 화면으로 교체했습니다. 영문 매뉴얼도 추가했으며 프로그램 UI는 한국어로 유지합니다.
 
 ## 출력 예시
 
