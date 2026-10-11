@@ -24,7 +24,9 @@ A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVI
 1. ZIP을 계속 사용할 폴더에 풉니다. 실행 파일·필터·런타임 파일을 함께 둡니다.
 2. `NvofControl.exe` → **연결 설정 → 필터 등록**을 누릅니다.
 3. 팟플레이어 **F5 → 코덱/필터 → 전역 필터 우선 순위 → 시스템 코덱 추가**에서 **NVIDIA Optical Flow for PotPlayer**를 추가하고 **최우선 사용**을 선택합니다.
-4. 보간 설정을 선택한 뒤 영상을 다시 엽니다. 다른 보간 필터는 동시에 사용하지 않습니다.
+4. **F5 → 코덱/필터 → 비디오 코덱 → 내장 코덱/DXVA 설정**에서 **하드웨어 가속(DXVA)**과 **D3D11 DXVA 우선 사용**을 켭니다. **DXVA2 Copy-Back**은 **사용하지 않음**으로 둡니다. [설정 화면과 항목별 안내](https://mkyoon80-alt.github.io/nvof-potplayer/#hardware)를 참고하세요.
+5. **F5 → 영상 → 영상 출력 장치**에서 **내장 Direct3D 11 영상 출력 장치**를 선택합니다.
+6. 보간 설정을 선택한 뒤 영상을 다시 엽니다. 진단의 **GPU 메모리로 직접 전달** 표시를 확인하세요. 다른 보간 필터는 동시에 사용하지 않습니다.
 
 10bit/HDR에는 내장 D3D11 디코더·렌더러의 네이티브 GPU 전달 경로를 사용합니다. 자세한 연결 설정과 동작 확인은 [사용 설명서](https://mkyoon80-alt.github.io/nvof-potplayer/)를 확인하세요.
 
