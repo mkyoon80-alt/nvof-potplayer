@@ -1,5 +1,7 @@
 #include "nvof/video_format.hpp"
 #include "nvof/hevc_color.hpp"
+#include "nvof/av1_color.hpp"
+#include "nvof/input_height_policy.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -52,7 +54,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.4.0";
+constexpr char kFilterBuild[]="0.4.2";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -451,8 +453,11 @@ public:
             gpu_correction_=false;appearance_protection_=false;native_synthesis_=true;
 
             input_rate_mask_=GetPrivateProfileIntW(L"Nvof",L"InputRateMask",nvof::kAllInputRates,ini.c_str()) & nvof::kAllInputRates;
+            input_height_limit_=nvof::normalize_height_limit(GetPrivateProfileIntW(L"Nvof",L"InputHeightLimit",0,ini.c_str()));
             // Integer multiples only; an absent/invalid limit means 60 fps.
             output_limit_=nvof::normalize_output_limit(int(GetPrivateProfileIntW(L"Nvof",L"OutputFpsLimit",60,ini.c_str())));
+            output_mode_=nvof::normalize_output_mode(int(GetPrivateProfileIntW(L"Nvof",L"OutputMode",0,ini.c_str())));
+            output_multiplier_=nvof::normalize_output_multiplier(int(GetPrivateProfileIntW(L"Nvof",L"OutputMultiplier",2,ini.c_str())));
             target_ = {0, 1};
             write_log("filter created instance="+std::to_string(instance_id_)+" NativeD3D11="+
                 std::to_string(native_feature_enabled_)+" ProbeServices="+std::to_string(probe_services_));
@@ -657,7 +662,10 @@ public:
         return nvof::input_rate_selected(source_rate(duration),input_rate_mask_);
     }
     nvof::Rate requested_target(REFERENCE_TIME duration) const {
-        return nvof::capped_source_rate(duration,output_limit_);
+        return nvof::selected_output_rate(duration,output_mode_,output_limit_,output_multiplier_);
+    }
+    int selected_multiple(REFERENCE_TIME duration) const {
+        return nvof::selected_output_multiple(duration,output_mode_,output_limit_,output_multiplier_);
     }
     bool same_target(REFERENCE_TIME duration) const {
         const auto incoming=requested_target(duration);
@@ -672,16 +680,17 @@ public:
         const auto target=requested_target(duration);
         return duration>0 && nvof::supported_output_rate(target) && duration<=rate_duration(target)+1;
     }
-    bool interpolate_source(REFERENCE_TIME duration) const {
-        return enabled_ && rate_selected(duration) && target_available(duration) && !source_reaches_target(duration);
+    bool interpolate_source(REFERENCE_TIME duration,int height) const {
+        return enabled_ && nvof::input_height_selected(height,input_height_limit_) && rate_selected(duration) && target_available(duration) && !source_reaches_target(duration);
     }
-    bool interpolation_requested() const {return interpolate_source(input_.duration);}
-    REFERENCE_TIME negotiated_duration(REFERENCE_TIME duration) const {
-        return interpolate_source(duration)?rate_duration(requested_target(duration)):duration;
+    bool interpolation_requested() const {return interpolate_source(input_.duration,input_.height);}
+    REFERENCE_TIME negotiated_duration(REFERENCE_TIME duration,int height) const {
+        return interpolate_source(duration,height)?rate_duration(requested_target(duration)):duration;
     }
     const char* bypass_reason() const {
         if(!enabled_)return "disabled";
         if(!input_rate_selected_)return "source-rate";
+        if(!nvof::input_height_selected(input_.height,input_height_limit_))return "source-height";
         if(!target_available(input_.duration))return input_.duration<=0?"unknown-source-rate":"output-rate-unsupported";
         if(source_reaches_target(input_.duration))return "at-or-above-target";
         return "";
@@ -689,6 +698,7 @@ public:
     const char* bypass_message() const {
         if(!enabled_)return "Interpolation disabled";
         if(!input_rate_selected_)return "Source frame rate excluded; original frames preserved";
+        if(!nvof::input_height_selected(input_.height,input_height_limit_))return "Source height excluded; original frames preserved";
         if(!target_available(input_.duration))return input_.duration<=0?
             "Source frame rate is unknown; original frames preserved":
             "Output frame rate exceeds supported timing bounds; original frames preserved";
@@ -715,7 +725,7 @@ public:
                 if(color.VideoTransferFunction || color.VideoPrimaries || color.VideoTransferMatrix)return fallback;
             }
         }
-        // Some native HEVC decoders expose untagged legacy NV12 media types,
+        // Some native decoders expose untagged legacy NV12 media types,
         // while the samples contain P010 + HDR side data. Read only their
         // connected compressed-video sequence header; no filename/GPU guesses.
         try {
@@ -733,7 +743,11 @@ public:
                 GUID hevc=hvc1;hevc.Data1=MAKEFOURCC('H','E','V','C');
                 GUID hev1=hvc1;hev1.Data1=MAKEFOURCC('H','E','V','1');
                 GUID lower=hvc1;lower.Data1=MAKEFOURCC('h','v','c','1');
-                if(media.subtype!=hvc1 && media.subtype!=hevc && media.subtype!=hev1 && media.subtype!=lower)continue;
+                GUID av01=hvc1;av01.Data1=MAKEFOURCC('A','V','0','1');
+                GUID av01lower=hvc1;av01lower.Data1=MAKEFOURCC('a','v','0','1');
+                const bool av1=media.subtype==av01 || media.subtype==av01lower;
+                const bool h265=media.subtype==hvc1 || media.subtype==hevc || media.subtype==hev1 || media.subtype==lower;
+                if(!av1 && !h265)continue;
                 const BYTE* sequence=nullptr;size_t length=0;
                 if(media.formattype==FORMAT_MPEG2Video && media.cbFormat>=offsetof(MPEG2VIDEOINFO,dwSequenceHeader)) {
                     const auto* header=reinterpret_cast<const MPEG2VIDEOINFO*>(media.pbFormat);
@@ -741,8 +755,32 @@ public:
                     if(length>media.cbFormat-offsetof(MPEG2VIDEOINFO,dwSequenceHeader))continue;
                     sequence=reinterpret_cast<const BYTE*>(header->dwSequenceHeader);
                 }
+                // AV1 splitters may append configOBUs/av1C to VideoInfo(2).
+                if(av1 && !sequence) {
+                    size_t offset=0;
+                    if(media.formattype==FORMAT_VideoInfo)offset=sizeof(VIDEOINFOHEADER);
+                    else if(media.formattype==FORMAT_VideoInfo2)offset=sizeof(VIDEOINFOHEADER2);
+                    if(offset && media.cbFormat>offset){sequence=media.pbFormat+offset;length=media.cbFormat-offset;}
+                }
+                if(probe_services_ && !color_probe_logged_) try {
+                    write_log("compressed color probe: subtype="+guid_text(media.subtype)+" format="+guid_text(media.formattype)+
+                        " formatBytes="+std::to_string(media.cbFormat)+" sequenceBytes="+std::to_string(length));
+                    if(sequence && length<=65536) {
+                        // Opt-in local diagnostic only; contains codec header, never frames/URLs.
+                        wchar_t local[32768]{};
+                        const DWORD count=GetEnvironmentVariableW(L"LOCALAPPDATA",local,_countof(local));
+                        if(!count || count>=_countof(local))continue;
+                        std::ofstream dump(std::filesystem::path(local)/L"NvofPotPlayer"/L"compressed-color-header.bin",std::ios::binary);
+                        dump.write(reinterpret_cast<const char*>(sequence),static_cast<std::streamsize>(length));
+                    }
+                    color_probe_logged_=true;
+                }catch(...){color_probe_logged_=true;}
                 if(!sequence)continue;
                 auto color=nvof::hevc_color(sequence,length);
+                if(av1) {
+                    color.reset();auto a=nvof::av1_color(sequence,length);
+                    if(a)color=nvof::HevcColor{a->primaries,a->transfer,a->matrix,a->full_range};
+                }
                 if(!color || color->full_range || color->primaries!=9 || color->matrix!=9 || (color->transfer!=16 && color->transfer!=18))continue;
                 DXVA2_ExtendedFormat hdr{};hdr.NominalRange=DXVA2_NominalRange_16_235;
                 hdr.VideoPrimaries=MFVideoPrimaries_BT2020;hdr.VideoTransferMatrix=MFVideoTransferMatrix_BT2020_10;
@@ -778,7 +816,7 @@ public:
             const auto* header=reinterpret_cast<const VIDEOINFOHEADER2*>(output->pbFormat);
             if(header->dwControlFlags!=resolved_output_color_flags(*input))return VFW_E_TYPE_NOT_ACCEPTED;
         }
-        const auto duration = negotiated_duration(in.duration);
+        const auto duration = negotiated_duration(in.duration,in.height);
         if ((duration>0 && out.duration<=0) || std::llabs(out.duration - duration) > 1)
             return VFW_E_TYPE_NOT_ACCEPTED;
         return S_OK;
@@ -812,7 +850,7 @@ public:
         RECT* source = nullptr;
         RECT* destination = nullptr;
         DWORD* bit_rate = nullptr;
-        const REFERENCE_TIME duration = negotiated_duration(input_.duration);
+        const REFERENCE_TIME duration = negotiated_duration(input_.duration,input_.height);
         if (media->formattype == FORMAT_VideoInfo) {
             auto* video = reinterpret_cast<VIDEOINFOHEADER*>(media->pbFormat);
             video->AvgTimePerFrame = duration;
@@ -887,7 +925,7 @@ public:
         write_log(std::string("stream start: ")+(input_.ten_bit?"P010 ":"NV12 ") + std::to_string(input_.width) + "x" +
             std::to_string(input_.height) + " target=" + std::to_string(target_.num) +
             "/" + std::to_string(target_.den) + " inputRateGroup="+input_rate_group()+
-            " InputRateMask="+std::to_string(input_rate_mask_)+" DoubleRate="+std::to_string(nvof::output_multiple(input_.duration,output_limit_)==2)+" bypassReason="+bypass_reason());
+            " InputRateMask="+std::to_string(input_rate_mask_)+" DoubleRate="+std::to_string(selected_multiple(input_.duration)==2)+" bypassReason="+bypass_reason());
         return S_OK;
     }
 
@@ -978,9 +1016,9 @@ public:
                     incoming.width != output_.width || incoming.height != output_.height || incoming.ten_bit!=input_.ten_bit ||
                     !connected_output_color_matches(*media) ||
                     rate_selected(incoming.duration)!=input_rate_selected_ ||
-                    interpolate_source(incoming.duration)!=interpolation_requested() ||
+                    interpolate_source(incoming.duration,incoming.height)!=interpolation_requested() ||
                     (interpolation_requested() && !same_target(incoming.duration)) ||
-                    std::llabs(negotiated_duration(incoming.duration)-output_.duration)>1)
+                    std::llabs(negotiated_duration(incoming.duration,incoming.height)-output_.duration)>1)
                     return report_error("dynamic resolution/rate/color change requires reopening the video", VFW_E_TYPE_NOT_ACCEPTED);
                 HRESULT hr = m_pInput->SetMediaType(media);
                 if (FAILED(hr)) return hr;
@@ -1347,14 +1385,18 @@ private:
                     << ",\"outputSurfaceFormat\":" << json_string(gpu_delivery_verified_?(output_.ten_bit?"P010":"NV12"):"")
                     << ",\"colorMode\":" << json_string(gpu_delivery_verified_?(output_.hdr_transfer==MFVideoTransFunc_2084?"HDR10":output_.hdr_transfer==MFVideoTransFunc_HLG?"HLG":"SDR"):"")
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
-                    << ",\"doubleRate\":" << (nvof::output_multiple(input_.duration,output_limit_)==2?"true":"false")
+                    << ",\"doubleRate\":" << (selected_multiple(input_.duration)==2?"true":"false")
                     << ",\"outputFpsLimit\":" << output_limit_
-                    << ",\"outputMultiple\":" << (interpolation_requested()?nvof::output_multiple(input_.duration,output_limit_):1)
+                    << ",\"outputMode\":" << output_mode_
+                    << ",\"outputMultiplier\":" << output_multiplier_
+                    << ",\"outputMultiple\":" << (interpolation_requested()?selected_multiple(input_.duration):1)
                     << ",\"requestedInterpolationBackend\":\"" << (native_synthesis_?"native-newton-cost":"fruc") << "\""
                     << ",\"nativeSynthesisRevision\":" << (native_synthesis_?11:0)
                     << ",\"gpuMidpointCorrection\":" << (gpu_correction_?"true":"false")
                     << ",\"appearanceProtection\":" << (appearance_protection_?"true":"false")
                     << ",\"appearancePassFrames\":" << appearance_pass_frames_
+                    << ",\"inputHeightLimit\":" << input_height_limit_
+                    << ",\"inputHeight\":" << input_.height
                     << ",\"inputRateMask\":" << input_rate_mask_
                     << ",\"inputRateGroup\":" << json_string(input_rate_group())
                     << ",\"bypassReason\":" << json_string(bypass_reason())
@@ -1377,7 +1419,7 @@ private:
                     << ",\"qualityState\":" << json_string(quality_state_)
                     << ",\"buildVersion\":" << json_string(kFilterBuild)
                     << ",\"gpuCompletion\":" << json_string(gpu_engine_&&gpu_engine_->queued_completion()?"context-ordered":"blocking")
-                    << ",\"algorithm\":" << json_string(native_synthesis_?"integer-native-newton-0.4.0":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
+                    << ",\"algorithm\":" << json_string(native_synthesis_?"integer-native-newton-0.4.2":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
                     << ",\"message\":" << json_string(message) << "}\n";
                 stream.flush();
                 if (!stream) return;
@@ -1414,8 +1456,10 @@ private:
     std::string sample_transport_ = "unknown";
     std::string input_surface_format_="unknown",input_conversion_="none";
     bool enabled_ = true;
-    int output_limit_=60;
+    int output_limit_=60, output_mode_=0, output_multiplier_=2;
     unsigned input_rate_mask_=nvof::kAllInputRates;
+    unsigned input_height_limit_=0;
+    mutable bool color_probe_logged_=false;
     bool gpu_correction_=true,appearance_protection_=true,native_synthesis_=false;
     uint64_t appearance_pass_frames_=0;
     bool input_rate_selected_=true;

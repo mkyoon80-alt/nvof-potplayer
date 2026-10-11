@@ -31,13 +31,13 @@ def main():
     html = html.replace('<script src="manual.js" defer></script>', '')
     html = html.replace('</body>', '<script>' + script + '</script></body>')
     def inline_image(match):
-        image = (site / match.group(1)).resolve()
+        image = (site / match.group(2)).resolve()
         if not image.is_relative_to(site) or not image.is_file():
             raise SystemExit("Image is outside the manual site or missing")
         mime = mimetypes.guess_type(image.name)[0]
         data = base64.b64encode(image.read_bytes()).decode("ascii")
-        return f'src="data:{mime};base64,{data}"'
-    html = re.sub(r'src="(images/[^"]+)"', inline_image, html)
+        return f'{match.group(1)}="data:{mime};base64,{data}"'
+    html = re.sub(r'(src|href)="(images/[^"]+)"', inline_image, html)
     # The guide itself is fully offline; supplementary vendor documents remain
     # linked to the same release source. The ZIP also carries those documents.
     source = f"https://github.com/mkyoon80-alt/nvof-potplayer/blob/v{args.version}/"

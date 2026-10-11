@@ -1,3 +1,5 @@
+> Historical validation notes. The current public release is v0.4.2: native P010 stays 10bit, with expanded FPS caps, direct ×2/×3/×4/×5 and source height conditions. Statements about 8bit conversion or local-only distribution below describe the older 0.3.2 trial. See [the current manual](manual/index.html).
+
 # Integer output limits — 0.3.2-rate.1
 
 The existing two output buttons now mean maximum 60 or 120 fps. The default is 60. A selected source uses the largest integer multiple within that limit; multiplier 1 means passthrough. Inputs above the limit are never downsampled. Reopen the video after changing the setting.
@@ -40,3 +42,13 @@ Timing samples are diagnostic only: a player was open during measurement, clips 
 ## Distribution
 
 Local trial only; not published to GitHub. The package contains self-contained controller runtime and the native filter, without NvOFFRUC/CUDA/GPU driver DLLs. The installed version and previous-build restoration path are recorded in `build/rate1/installation.json` after installation.
+
+## 0.4.1-test.5 extension
+
+The user chose integer output instead of exact fixed-FPS resampling. Caps now include 60, 72, 75, 100, 120, 144 and 240. `OutputMode=0` (default) applies the cap; `OutputMode=1` uses `OutputMultiplier=2|3|4|5` regardless of the saved cap. Invalid new keys default to cap mode and ×2. The existing 0.1% cap tolerance is retained. Phase generation still uses the original pair directly and rational 100-ns timestamps; it does not recursively interpolate intermediate frames. Unknown/unsupported rates preserve originals. Source selections and height limits keep precedence.
+
+Local validation adds one-hour ×3/×5 runs at 24 and 24000/1001 fps on CPU/GPU schedulers, every original identity, phase placement, no timestamp drift/gaps/overlaps, EOS and fresh seek origins. Expanded-cap and direct-multiplier DirectShow tests cover media negotiation, actual output timestamps, CPU/GPU delivery and color metadata. These are automated checks, not a claim that all GPUs sustain 240fps playback.
+
+## v0.4.2 release
+
+The tested 0.4.1-test.5 output policy and native synthesis are included without algorithm changes. Release resource versions and current user documentation were updated. Fourteen CTest suites were rerun on the release build. Earlier detailed integration and quality results above remain applicable to the unchanged code.

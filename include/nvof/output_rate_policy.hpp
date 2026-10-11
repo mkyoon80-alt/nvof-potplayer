@@ -42,19 +42,37 @@ inline Rate canonical_source_rate(int64_t duration) noexcept {
 }
 // A limit is not an exact resampling target: preserve originals and fill the
 // slots between them. Low rates stay within the engine's 32 generated phases.
-inline int normalize_output_limit(int limit) noexcept { return limit == 120 ? 120 : 60; }
+inline int normalize_output_limit(int limit) noexcept {
+    switch(limit) { case 60: case 72: case 75: case 100: case 120: case 144: case 240: return limit; default: return 60; }
+}
+inline int normalize_output_mode(int mode) noexcept { return mode == 1 ? 1 : 0; }
+inline int normalize_output_multiplier(int multiple) noexcept { return multiple >= 2 && multiple <= 5 ? multiple : 2; }
 inline int output_multiple(int64_t duration, int limit) noexcept {
     const Rate source = canonical_source_rate(duration);
     if (!supported_output_rate(source)) return 1;
-    const int64_t multiple = int64_t(normalize_output_limit(limit)) * source.den / source.num;
+    // Allow 0.1% above the nominal cap so small source-rate deviations (e.g.
+    // 30.003 fps) do not lose an entire multiplier. Preserve the exact source
+    // clock: this selects more phases, never retimes the video to 30/60/120.
+    // supported_output_rate bounds both products below 1.3e12.
+    const int64_t multiple = int64_t(normalize_output_limit(limit)) * 1001 * source.den /
+        (1000 * source.num);
     return int(multiple < 1 ? 1 : multiple > 33 ? 33 : multiple);
 }
-inline Rate capped_source_rate(int64_t duration, int limit) noexcept {
+// Mode 0 chooses the largest source multiple under the cap; mode 1 uses
+// the explicitly selected multiplier, independently of the remembered cap.
+inline int selected_output_multiple(int64_t duration, int mode, int limit, int multiple) noexcept {
+    if (!supported_output_rate(canonical_source_rate(duration))) return 1;
+    return normalize_output_mode(mode) == 1 ? normalize_output_multiplier(multiple) : output_multiple(duration, limit);
+}
+inline Rate selected_output_rate(int64_t duration, int mode, int limit, int multiple) noexcept {
     const Rate source = canonical_source_rate(duration);
     if (!supported_output_rate(source)) return {0,1};
-    const int64_t numerator = source.num * output_multiple(duration,limit);
+    const int64_t numerator = source.num * selected_output_multiple(duration,mode,limit,multiple);
     const int64_t divisor = std::gcd(numerator,source.den);
     const Rate target{numerator/divisor,source.den/divisor};
     return supported_output_rate(target) ? target : Rate{0,1};
+}
+inline Rate capped_source_rate(int64_t duration, int limit) noexcept {
+    return selected_output_rate(duration,0,limit,2);
 }
 } // namespace nvof

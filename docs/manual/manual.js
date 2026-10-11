@@ -12,3 +12,12 @@ if('IntersectionObserver' in window){
  },{rootMargin:'-90px 0px -50% 0px'});
  sections.forEach(s=>observer.observe(s));
 }
+
+const viewer=document.getElementById('image-viewer');
+if(viewer && typeof viewer.showModal==='function'){
+ document.querySelectorAll('figure a').forEach(link=>link.addEventListener('click',event=>{
+  const source=link.querySelector('img');if(!source)return;
+  event.preventDefault();const large=document.getElementById('large-image');large.src=source.src;large.alt=source.alt;viewer.showModal();
+ }));
+ document.getElementById('close-image').addEventListener('click',()=>viewer.close());
+}

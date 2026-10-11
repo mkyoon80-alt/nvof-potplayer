@@ -28,7 +28,16 @@ int wmain(int argc,wchar_t** argv){try{
         auto image=moving_color(w,h,t*12,false);
         for(int y=0;y<h;++y)for(int x=0;x<w;++x) {
             auto& v=image[size_t(y)*w+x];
-            if(scene==0) {
+            if(scene==7) {
+                // Rigid high-contrast shapes at different velocities. The exact
+                // fractional silhouette exposes chipped corners and a frayed
+                // circle without comparing against the implementation's flow.
+                double squareA=std::min({x-90.0,244.0-x,y-170.0-18*t,324.0+18*t-y});
+                double squareB=std::min({x-740.0,894.0-x,y-300.0+24*t,454.0-24*t-y});
+                double circle=38.0-std::hypot(x-460.0-32*t,y-290.0+39*t);
+                double alpha=std::clamp(std::max({squareA,squareB,circle}),0.0,1.0);
+                v=uint8_t(std::lround(16+219*alpha));
+            } else if(scene==0) {
                 double radius=std::hypot(x-300.0,y-265.0);
                 double alpha=std::clamp(2.5-std::abs(radius-170),0.0,1.0);
                 if(x>550&&x<850&&y>180&&y<340&&((x-550)%65)<10)alpha=1;
@@ -95,7 +104,7 @@ int wmain(int argc,wchar_t** argv){try{
         std::fill(image.begin()+size_t(w)*h,image.end(),128);return image;
     };
     bool qualityPassed=true;
-    for(int multiple : {2,4,5}) for(int scene=0;scene<7;++scene) {
+    for(int multiple : {2,3,4,5}) for(int scene=0;scene<8;++scene) {
         double sum=0,held=0;uint64_t ghosts=0,band=0;
         for(int i=0;i<8;++i) {
             double t=i*.125;auto a=fixture(t,scene),b=fixture(t+1,scene);
@@ -135,7 +144,7 @@ int wmain(int argc,wchar_t** argv){try{
     auto pb=engine.copy(uploadGuard(device.Get(),phaseB,w,h,400000));
     std::vector<std::vector<uint8_t>> references;
     for(int k=0;k<=88;++k)references.push_back(moving_color(w,h,-1+k*.25,false));
-    for(int multiple:{2,5}) {
+    for(int multiple:{2,3,5}) {
         std::vector<int64_t> times;for(int j=1;j<multiple;++j)times.push_back(400000LL*j/multiple);
         auto batch=engine.interpolate_pair(pa,pb,times);
         require(batch.frames.size()==times.size()&&!batch.quality.repeated_mask&&!batch.quality.scene_cut,"Texture phases were held");
@@ -153,5 +162,5 @@ int wmain(int argc,wchar_t** argv){try{
         }
     }
     require(qualityPassed,"One or more layer quality regressions");
-    std::cout<<"PASS curved stationary outline exterior, repeated bars, moving bright object, moving thin curves, repeated moving glyph strokes, curved moving occluder, small moving foreground, x2/x4/x5 phases and intact sources"<<std::endl;return 0;
+    std::cout<<"PASS curved stationary outline exterior, repeated bars, moving bright object, moving thin curves, repeated moving glyph strokes, curved moving occluder, small moving foreground, fast black-background shapes, x2/x4/x5 phases and intact sources"<<std::endl;return 0;
 }catch(const std::exception&e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

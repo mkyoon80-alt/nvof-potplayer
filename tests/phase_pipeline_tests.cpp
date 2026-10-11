@@ -331,8 +331,8 @@ void quantized_pipeline_cadence() {
 
 void integer_limit_cadence() {
     constexpr int count=60;
-    for(int64_t duration : {417083LL,416667LL,400000LL,333667LL,333333LL,200000LL,166833LL,166667LL,83333LL})
-    for(int limit : {60,120}) for(int mode=0;mode<3;++mode) {
+    for(int64_t duration : {417083LL,416667LL,416600LL,400000LL,333667LL,333333LL,333300LL,333001LL,333000LL,200000LL,166833LL,166667LL,166650LL,83333LL})
+    for(int limit : {60,72,75,100,120,144,240}) for(int mode=0;mode<3;++mode) {
         const Rate source=canonical_source_rate(duration),target=capped_source_rate(duration,limit);
         const int multiple=output_multiple(duration,limit);int calls=0,outputs=0;
         const int64_t origin=quantized_source_pts(source,0,1234567,mode);
@@ -353,6 +353,36 @@ void integer_limit_cadence() {
     }
 }
 
+void odd_multiple_long_playback() {
+    for(const Rate source:{Rate{24,1},Rate{24000,1001}})for(int multiple:{3,5}) {
+        const Rate target{source.num*multiple,source.den};
+        const int count=int(3600*source.num/source.den); int emitted=0;
+        PhasePipeline pipeline(target,[&](const Frame& a,const Frame& b,const std::vector<int64_t>& times) {
+            require(times.size()==size_t(multiple-1),"Odd multiple lost an interior phase");
+            for(int j=1;j<multiple;++j)
+                require(std::llabs((times[j-1]-a.pts)*multiple-(b.pts-a.pts)*j)<=multiple,"Odd phase outside one-tick rounding");
+            return phases(a,b,times);
+        },source);
+        auto emit=[&](const OutputFrame& output) {
+            require(output.frame.pts==clock_at(target,emitted) && output.stop==clock_at(target,emitted+1),"Hour-long odd clock drift/gap/overlap");
+            if(emitted%multiple==0)require(level(output.frame)==(emitted/multiple)%90,"Odd multiplier replaced original");
+            ++emitted;return true;
+        };
+        for(int i=0;i<count;++i)pipeline.push(make(clock_at(source,i),uint8_t(i%90)),false,emit);
+        pipeline.finish(clock_at(source,count)-clock_at(source,count-1),emit);
+        require(emitted==count*multiple,"Odd multiple EOS count mismatch");
+        pipeline.reset();int afterSeek=0;const int64_t origin=123456789;
+        auto seekEmit=[&](const OutputFrame& output) {
+            require(output.frame.pts==origin+clock_at(target,afterSeek),"Odd multiplier seek retained old clock");
+            require(output.discontinuity==(afterSeek==0),"Odd multiplier seek flag mismatch");
+            ++afterSeek;return true;
+        };
+        pipeline.push(make(origin,11),true,seekEmit);
+        pipeline.push(make(origin+clock_at(source,1),22),false,seekEmit);
+        require(afterSeek==multiple+1,"Odd multiplier seek phases missing");
+    }
+}
+
 int main() {
     try {
         initialize();
@@ -362,6 +392,7 @@ int main() {
         source_cadence_normalization();
         quantized_pipeline_cadence();
         integer_limit_cadence();
+        odd_multiple_long_playback();
         empty_requests();
         long_clock();
         phase_and_original();

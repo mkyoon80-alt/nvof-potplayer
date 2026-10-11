@@ -1,37 +1,50 @@
 # NVOF for PotPlayer
 
-팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **최대 60fps / 최대 120fps** 안에서 원본의 정수배로 보간합니다. 예를 들어 23.976fps는 각각 47.952fps(×2) / 119.880fps(×5)로 출력합니다.
+A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Supports selectable FPS caps or ×2–×5 output, GPU-resident D3D11 processing, and native 10-bit HDR10/HLG signal passthrough. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
 
-**[v0.4.0 다운로드](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.0)** · **[온라인 사용 설명서](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+**[Download v0.4.2](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.2)** · **[Korean manual](https://mkyoon80-alt.github.io/nvof-potplayer/)**
 
-이번 버전은 압축을 풀어 사용하는 스탠드얼론 ZIP입니다. 프로그램 안에 오프라인 매뉴얼이 포함되어 있고, 매뉴얼만 HTML·ZIP으로 따로 받을 수도 있습니다.
+팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **FPS 상한 또는 원본 배수**를 골라 원본의 정수배로 보간합니다.
 
-## 자체 포함 버전
+압축을 풀어 사용하는 Windows x64 스탠드얼론 ZIP입니다. 필터·등록 도구·설정창과 .NET/WPF 런타임, 오프라인 매뉴얼을 포함합니다. NVIDIA 드라이버와 팟플레이어는 별도로 필요합니다.
 
-- 필터, 등록 도구, 설정 프로그램과 .NET/WPF 런타임을 함께 제공합니다.
-- NvOFFRUC.dll, FRUC 연결 DLL과 CUDA 런타임은 포함하거나 호출하지 않습니다.
-- GPU 텍스처와 CPU 메모리 입력 모두 Newton 기반 자체 보간을 사용합니다. Cost Map 생성·적용을 끄고 자체 신뢰도 검사를 사용합니다.
-- 셰이더는 빌드할 때 미리 컴파일합니다.
-- 별도 CUDA Toolkit, Visual Studio, .NET 설치가 필요하지 않습니다.
-- Windows 10/11 x64, 지원 NVIDIA GPU·드라이버, 팟플레이어 등 호스트 플레이어는 별도입니다.
+## v0.4.2의 변경 사항
 
-## 스탠드얼론 ZIP 연결
+- **FPS 상한:** 60 / 72 / 75 / 100 / 120 / 144 / 240fps. 상한 안에서 가능한 가장 큰 정수배로 출력합니다.
+- **원본 배수:** ×2 / ×3 / ×4 / ×5를 직접 선택합니다. 이 모드에는 FPS 상한을 적용하지 않습니다.
+- **세로 해상도 조건:** 전체 / 1080p 이하 / 1440p 이하. 원본 FPS 조건과 함께 보간할 영상을 선택합니다.
+- 30.003fps처럼 표준값과 조금 다른 영상도 상한 계산에 0.1% 여유를 두어 최대 60fps에서 ×2, 최대 120fps에서 ×4로 처리합니다. 원본의 재생 시간은 유지합니다.
+- 일부 **YouTube AV1 HDR** 영상에서 색 정보가 SDR로 전달되어 색이 물빠지던 문제를 수정했습니다. 실제 팟플레이어 재생에서 정상 색상을 확인했습니다.
+- 검은 배경에서 빠르게 움직이는 원·사각형의 경계와 모서리 처리를 개선했습니다. 모든 장면의 아티팩트를 제거하는 것은 아닙니다.
 
-1. ZIP을 계속 사용할 폴더에 풉니다. 실행 파일·필터·런타임 파일은 함께 둡니다.
-2. `NvofControl.exe` → **연결 설정 → 필터 등록**을 누릅니다. 별도 .NET 설치는 필요하지 않습니다.
-3. 팟플레이어 **F5 → 코덱/필터 → 전역 필터 우선 순위 → 시스템 코덱 추가 → NVIDIA Optical Flow for PotPlayer → 최우선 사용**으로 연결합니다.
+24fps를 최대 60fps로 설정하면 **48fps**입니다. 72fps로 보려면 최대 72fps 또는 원본 ×3을 선택하세요. 정확한 목표 FPS로 변환하는 방식이 아니며, 높은 출력 FPS의 실시간 유지 여부는 GPU·영상·렌더러 설정에 따라 달라집니다.
 
-폴더를 옮기거나 삭제하려면 팟플레이어를 종료하고 **연결 설정 → 필터 등록 해제**를 누른 뒤 설정창을 닫습니다. 이동한 경우 새 폴더에서 다시 등록합니다. **현재 폴더 열기**로 위치를 확인할 수 있습니다. 관리자용 등록이 있으면 해제할 때 Windows 권한 승인을 요청합니다. 다른 폴더의 등록은 해제하지 않습니다.
+## 처음 연결하기
 
-설치 프로그램으로 설치한 기존 구성에는 **프로그램 제거**도 표시됩니다. 스탠드얼론 ZIP에는 이 버튼을 표시하지 않습니다. FRUC/CUDA 재배포 전용 동의 화면은 없으며, 남은 SDK·Microsoft·기타 구성요소 고지는 유지합니다.
+1. ZIP을 계속 사용할 폴더에 풉니다. 실행 파일·필터·런타임 파일을 함께 둡니다.
+2. `NvofControl.exe` → **연결 설정 → 필터 등록**을 누릅니다.
+3. 팟플레이어 **F5 → 코덱/필터 → 전역 필터 우선 순위 → 시스템 코덱 추가**에서 **NVIDIA Optical Flow for PotPlayer**를 추가하고 **최우선 사용**을 선택합니다.
+4. 보간 설정을 선택한 뒤 영상을 다시 엽니다. 다른 보간 필터는 동시에 사용하지 않습니다.
 
-기존 v0.3.0 설치본에서 옮길 때는 팟플레이어와 설정창을 닫고 `NvofPotPlayer.ini`를 백업한 뒤, Windows **설치된 앱**에서 이전 버전을 제거하세요. 새 ZIP을 별도 폴더에 풀고 필요한 설정을 복원한 후 필터를 등록합니다. 관리자용 등록이 있으면 제거 과정의 Windows 권한 승인을 허용하세요. 팟플레이어의 필터 선택과 최우선 사용도 다시 확인합니다.
+10bit/HDR에는 내장 D3D11 디코더·렌더러의 네이티브 GPU 전달 경로를 사용합니다. 자세한 연결 설정과 동작 확인은 [사용 설명서](https://mkyoon80-alt.github.io/nvof-potplayer/)를 확인하세요.
+
+## 업데이트와 제거
+
+기존 스탠드얼론은 팟플레이어와 설정창을 닫고 폴더를 백업한 뒤 같은 위치에 교체합니다. **기존 `NvofPotPlayer.ini`를 보존하세요.** 이전 최대 60/120fps 선택은 유지됩니다.
+
+폴더를 옮기거나 삭제하려면 팟플레이어를 종료하고 **연결 설정 → 필터 등록 해제**를 누릅니다. 해제 성공을 확인한 뒤 설정창을 닫고 폴더를 이동·삭제하세요. 이동했다면 새 위치에서 다시 등록합니다. 관리자용 등록은 해제할 때 Windows 권한 승인이 필요합니다. 다른 폴더의 등록은 해제하지 않습니다.
+
+v0.3.0 등 설치 프로그램 버전에서 전환할 때는 설정 파일을 백업하고 Windows **설치된 앱**에서 이전 버전을 제거한 뒤 새 ZIP을 별도 폴더에 풀어 등록하세요.
 
 ## 지원 범위
 
-프로그레시브 제한 범위 BT.709 SDR(NV12/P010)과 BT.2020 HDR10(PQ)·HLG(P010)를 대상으로 합니다. 네이티브 D3D11 P010 경로는 원본과 중간 프레임을 10bit로 출력합니다. 움직임 분석만 NV12를 사용하며 출력 정밀도를 8bit로 낮추지 않습니다. HDR 톤매핑은 플레이어·렌더러가 담당합니다. CPU 전달 경로는 NV12 SDR만 지원합니다. Dolby Vision·HDR10+ 동적 메타데이터는 지원하지 않습니다. HDR10 호환 기본 영상은 HDR10으로 처리합니다. 정밀도·색 정보·전달 검사와 제공된 HDR10 호환 파일의 실제 팟플레이어 정상 색상 재생을 확인했습니다. HLG는 신호 전달 검증을 통과했으며 실제 HLG 영상·화면 검증은 남아 있습니다. 상한 안에서 두 배 이상으로 늘릴 수 없는 영상은 원본으로 재생합니다. 상한보다 빠른 원본의 프레임을 줄이지 않습니다. 설정을 바꾸면 영상을 다시 열어 적용합니다.
+- Windows 10 2004 이상 / Windows 11 x64, Optical Flow 지원 NVIDIA GPU와 드라이버. 실제 재생 검증 장비는 RTX 5090입니다.
+- 네이티브 D3D11 경로: 제한 범위 BT.709 SDR(NV12/P010), BT.2020 HDR10(PQ)·HLG(P010). P010 원본과 중간 프레임을 10bit로 유지합니다.
+- HDR10 파일과 YouTube AV1 HDR의 실제 재생 색상을 확인했습니다. HLG는 색 정보 전달 검사를 완료했으며 실제 HLG 영상·화면 검증은 남아 있습니다.
+- Dolby Vision·HDR10+ 동적 메타데이터는 지원하지 않습니다. HDR10 호환 기본 영상은 HDR10으로 처리합니다. 톤매핑과 화면 HDR 전환은 플레이어·렌더러가 담당합니다.
+- CPU 메모리 입력은 NV12 SDR을 지원합니다. 인터레이스·다중 GPU 구성은 검증하지 않았습니다.
 
-머리카락, 겹친 물체, 글자 경계, 연기에는 잔여 아티팩트가 있습니다. 고정 흰 글자·코스 보호를 유지하면서 검은 배경의 스크롤 크레딧이 다른 줄과 뒤섞이는 오류를 줄입니다. 검은 배경에서 함께 움직이는 글자 묶음을 검증해 공통 이동으로 합성합니다. 검사에 통과하지 않는 영역과 화면 경계에는 잔여 깨짐이 있을 수 있습니다. 세션·GPU 버퍼 재사용 최적화는 유지합니다. 기본 Grid 4·Medium·최대 1920 분석과 Newton 합성은 유지합니다. RTX 5070의 4K60 → 120 실시간 성능이나 플루이드 모션 이상의 품질을 보장하지 않습니다. 실행 파일은 코드 서명되지 않았습니다.
+Newton 기반 자체 보간, NVOFA 세션·GPU 버퍼 재사용, 빌드 시 셰이더 사전 컴파일을 사용합니다. 기본 분석은 Grid 4·Medium·긴 변 최대 1920이며 Cost Map·Temporal Hints는 꺼져 있습니다. NvOFFRUC.dll과 CUDA 런타임을 포함하거나 호출하지 않습니다. 별도 .NET·CUDA Toolkit 설치가 필요하지 않습니다. 실행 파일은 코드 서명되지 않았습니다.
 
 ## 문서
 
@@ -39,18 +52,7 @@
 - [팟플레이어 연결](docs/POTPLAYER_SETUP.ko.md)
 - [빌드 및 패키징](docs/BUILD.md)
 - [릴리스 변경 내역](RELEASE.md)
+- [정수배 출력 검증](docs/INTEGER-RATE-TRIAL.md) · [HDR 구현 범위](docs/HDR-NATIVE-TRIAL.md)
 - [외부 구성요소 고지](THIRD_PARTY_NOTICES.md)
 
 Original project source is under [MIT](LICENSE). Microsoft DirectShow baseclasses, self-contained .NET/WPF and other components retain their own terms. The developer uses official NVIDIA Optical Flow SDK interfaces; SDK terms remain applicable. This project is independent of NVIDIA, Microsoft, PotPlayer, AMD and Smootter.
-
-Grid·Preset·분석 해상도 결과는 [실험 기록](docs/FLOW-PROFILE-TRIAL.md)에 있습니다. 이전 [Cost Map 결합 시험](docs/COST-MAP-FUSION.md)은 개발 이력으로 보존합니다.
-
-세션 재사용의 검증·성능 측정과 남은 동기화 비용은 [최적화 기록](docs/SESSION-REUSE.md)에 있습니다.
-
-경계 보완의 검증과 남은 문제는 [품질 시험 기록](docs/QUALITY-TRIAL.md)에 있습니다.
-
-고정 흰 그래픽 보완의 효과·추가 비용·제한은 [시험 기록](docs/STATIC-OVERLAY-TRIAL.md)에 있습니다.
-
-스크롤 크레딧의 보완과 한계는 [시험 기록](docs/CREDIT-SCROLL-TRIAL.md)에 있습니다.
-
-10bit SDR·HDR10·HLG의 구현 범위와 검증은 [HDR 네이티브 시험 기록](docs/HDR-NATIVE-TRIAL.md)에 있습니다.

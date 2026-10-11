@@ -29,11 +29,22 @@ namespace NvofControl
         private static extern bool WritePrivateProfileString(string section, string key, string value, string file);
         public SettingsStore(string path) { this.path = path; }
         public bool Enabled { get { return GetPrivateProfileInt("Nvof", "Enabled", 1, path) != 0; } }
-        public int OutputFpsLimit { get { return GetPrivateProfileInt("Nvof", "OutputFpsLimit", 60, path) == 120 ? 120 : 60; } }
+        public static readonly int[] OutputLimits = {60,72,75,100,120,144,240};
+        public int OutputFpsLimit { get { int value=(int)GetPrivateProfileInt("Nvof", "OutputFpsLimit", 60, path); return Array.IndexOf(OutputLimits,value)>=0?value:60; } }
+        public int OutputMode { get { return GetPrivateProfileInt("Nvof", "OutputMode", 0, path)==1?1:0; } }
+        public int OutputMultiplier { get { int value=(int)GetPrivateProfileInt("Nvof", "OutputMultiplier", 2, path); return value>=2&&value<=5?value:2; } }
+        public void SetOutputMode(int value) { if(value!=0&&value!=1)throw new ArgumentOutOfRangeException("value"); Write("OutputMode",value.ToString(CultureInfo.InvariantCulture)); }
+        public void SetOutputMultiplier(int value) { if(value<2||value>5)throw new ArgumentOutOfRangeException("value"); Write("OutputMultiplier",value.ToString(CultureInfo.InvariantCulture)); }
         public void SetOutputFpsLimit(int value)
         {
-            if (value != 60 && value != 120) throw new ArgumentOutOfRangeException("value");
+            if (Array.IndexOf(OutputLimits,value)<0) throw new ArgumentOutOfRangeException("value");
             Write("OutputFpsLimit", value.ToString(CultureInfo.InvariantCulture));
+        }
+        public int InputHeightLimit { get { uint value=GetPrivateProfileInt("Nvof", "InputHeightLimit", 0, path); return value==1080 || value==1440 ? (int)value : 0; } }
+        public void SetInputHeightLimit(int value)
+        {
+            if(value!=0 && value!=1080 && value!=1440)throw new ArgumentOutOfRangeException("value");
+            Write("InputHeightLimit", value.ToString(CultureInfo.InvariantCulture));
         }
         public int InputRateMask { get { return (int)(GetPrivateProfileInt("Nvof", "InputRateMask", 63, path) & 63); } }
         public void SetInputRateMask(int value)
@@ -68,7 +79,8 @@ namespace NvofControl
         public bool InputRateSelected = true;
         public int InputRateMask = 63;
         public bool DoubleRate;
-        public int OutputFpsLimit, OutputMultiple;
+        public int OutputFpsLimit, OutputMultiple, OutputMode, OutputMultiplier;
+        public int InputHeightLimit, InputHeight;
         public bool? GpuCorrection, AppearanceProtection;
         public long MidpointPassFrames, AppearancePassFrames;
         public string TransportLabel
@@ -130,10 +142,14 @@ namespace NvofControl
                 status.ColorMode=Value<string>(data,"colorMode","");
                 status.BypassReason = Value<string>(data, "bypassReason", "");
                 status.InputRateSelected = Value<bool>(data, "inputRateSelected", true);
+                status.InputHeightLimit=Value<int>(data,"inputHeightLimit",0);
+                status.InputHeight=Value<int>(data,"inputHeight",0);
                 status.InputRateMask = Value<int>(data, "inputRateMask", 63);
                 status.DoubleRate = Value<bool>(data, "doubleRate", false);
                 status.OutputFpsLimit = Value<int>(data, "outputFpsLimit", 0);
                 status.OutputMultiple = Value<int>(data, "outputMultiple", 0);
+                status.OutputMode = Value<int>(data, "outputMode", 0);
+                status.OutputMultiplier = Value<int>(data, "outputMultiplier", 2);
                 status.GpuCorrection = Value<bool?>(data, "gpuMidpointCorrection", null);
                 status.AppearanceProtection = Value<bool?>(data, "appearanceProtection", null);
                 status.MidpointPassFrames = Value<long>(data, "midpointPassFrames", 0);
@@ -279,7 +295,10 @@ namespace NvofControl
         private ToggleButton enabled;
         private readonly CheckBox[] inputRates = new CheckBox[6];
         private TextBlock rateSelectionHint, outputRateHint;
-        private RadioButton fps60, fps120;
+        private RadioButton heightAll, height1080, height1440;
+        private ComboBox outputMode, outputValue;
+        private int selectedLimit=60, selectedMultiplier=2;
+        private bool updatingOutput;
         private TextBlock notice, statusTitle, statusDetail, registerNotice;
         private System.Windows.Shapes.Ellipse statusDot;
         private TextBox diagnosticsText;
@@ -298,7 +317,8 @@ namespace NvofControl
             settings = new SettingsStore(Path.Combine(baseDirectory, "NvofPotPlayer.ini"));
             enabled = Find<ToggleButton>("EnabledToggle");
             outputRateHint = Find<TextBlock>("OutputRateHint");
-            fps60 = Find<RadioButton>("Fps60"); fps120 = Find<RadioButton>("Fps120");
+            outputMode = Find<ComboBox>("OutputModeChoice"); outputValue = Find<ComboBox>("OutputValueChoice");
+            heightAll=Find<RadioButton>("HeightAll");height1080=Find<RadioButton>("Height1080");height1440=Find<RadioButton>("Height1440");
             for (int index = 0; index < inputRates.Length; index++)
                 inputRates[index] = Find<CheckBox>("InputRate" + index);
             rateSelectionHint = Find<TextBlock>("RateSelectionHint");
@@ -324,8 +344,11 @@ namespace NvofControl
                 try { Process.Start(new ProcessStartInfo(uninstaller) { UseShellExecute=true, WorkingDirectory=baseDirectory }); window.Close(); }
                 catch (Exception ex) { Notify("제거 프로그램을 열지 못했습니다.", true, ex.Message); }
             };
-            fps60.Checked += delegate { SaveOutputLimit(); };
-            fps120.Checked += delegate { SaveOutputLimit(); };
+            heightAll.Checked += delegate { SaveHeightLimit(); };
+            height1080.Checked += delegate { SaveHeightLimit(); };
+            height1440.Checked += delegate { SaveHeightLimit(); };
+            outputMode.SelectionChanged += delegate { if(loading || updatingOutput)return; RefreshOutputValues(); SaveOutputChoice(true); };
+            outputValue.SelectionChanged += delegate { if(loading || updatingOutput)return; SaveOutputChoice(false); };
             enabled.Click += delegate { SaveEnabled(); };
             foreach (CheckBox rate in inputRates) rate.Click += delegate { SaveInputRates(); };
             Find<Button>("CloseButton").Click += delegate { window.Close(); };
@@ -393,9 +416,12 @@ namespace NvofControl
         {
             loading = true;
             enabled.IsChecked = settings.Enabled;
-            fps120.IsChecked = settings.OutputFpsLimit == 120;
-            fps60.IsChecked = !fps120.IsChecked;
-            UpdateOutputHint();
+            selectedLimit=settings.OutputFpsLimit; selectedMultiplier=settings.OutputMultiplier;
+            outputMode.SelectedIndex=settings.OutputMode;
+            RefreshOutputValues();
+            heightAll.IsChecked=settings.InputHeightLimit==0;
+            height1080.IsChecked=settings.InputHeightLimit==1080;
+            height1440.IsChecked=settings.InputHeightLimit==1440;
             int mask = settings.InputRateMask;
             for (int index = 0; index < inputRates.Length; index++)
                 inputRates[index].IsChecked = (mask & (1 << index)) != 0;
@@ -429,18 +455,50 @@ namespace NvofControl
             try { settings.SetInputRateMask(SelectedRateMask()); Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false); }
             catch (Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
         }
+        private void RefreshOutputValues()
+        {
+            updatingOutput=true;
+            bool multiple=outputMode.SelectedIndex==1;
+            outputValue.Items.Clear();
+            foreach(int value in multiple ? new int[] {2,3,4,5} : SettingsStore.OutputLimits)
+                outputValue.Items.Add(new ComboBoxItem { Content=multiple?"×"+value:"최대 "+value+" fps", Tag=value });
+            int selected=multiple?selectedMultiplier:selectedLimit;
+            foreach(ComboBoxItem item in outputValue.Items) if((int)item.Tag==selected) outputValue.SelectedItem=item;
+            Find<TextBlock>("OutputValueLabel").Text=multiple?"배수":"FPS 상한";
+            updatingOutput=false;
+            UpdateOutputHint();
+        }
         private void UpdateOutputHint()
         {
-            outputRateHint.Text = fps120.IsChecked == true
-                ? "23.976 → 119.880 fps · 25 → 100 fps\n상한 안에서 원본의 정수배로 보간합니다."
-                : "23.976 → 47.952 fps · 30 → 60 fps\n50·60 fps 영상은 원본으로 재생합니다.";
+            if(outputMode.SelectedIndex==1)
+                outputRateHint.Text="24 → "+(24*selectedMultiplier)+" fps · 30 → "+(30*selectedMultiplier)+" fps\n선택한 배수로 보간하며, 원본 프레임을 유지합니다.";
+            else {
+                int m24=Math.Max(1,selectedLimit/24),m25=Math.Max(1,selectedLimit/25);
+                outputRateHint.Text="24 → "+(24*m24)+" fps · 25 → "+(25*m25)+" fps\n상한 안에서 가능한 가장 큰 정수배로 보간합니다.";
+            }
         }
-        private void SaveOutputLimit()
+        private string OutputChoiceLabel() { return outputMode.SelectedIndex==1?"원본 배수 ×"+selectedMultiplier:"최대 "+selectedLimit+" fps · 정수배"; }
+        private int SelectedHeightLimit() { return height1080.IsChecked==true?1080:height1440.IsChecked==true?1440:0; }
+        private static string HeightLabel(int value) { return value==0?"전체":value+"p 이하"; }
+        private void SaveHeightLimit()
         {
+            if(loading || preview)return;
+            try { settings.SetInputHeightLimit(SelectedHeightLimit()); Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false); }
+            catch(Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
+        }
+        private void SaveOutputChoice(bool modeChanged)
+        {
+            ComboBoxItem item=outputValue.SelectedItem as ComboBoxItem;
+            if(item==null)return;
+            if(outputMode.SelectedIndex==1)selectedMultiplier=(int)item.Tag;else selectedLimit=(int)item.Tag;
             UpdateOutputHint();
-            if (loading || preview) return;
-            try { settings.SetOutputFpsLimit(fps120.IsChecked == true ? 120 : 60); Notify("저장됨 · 영상을 다시 열면 적용됩니다.", false); }
-            catch (Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.", true, ex.Message); }
+            if(loading || preview)return;
+            try {
+                if(modeChanged)settings.SetOutputMode(outputMode.SelectedIndex);
+                else if(outputMode.SelectedIndex==1)settings.SetOutputMultiplier(selectedMultiplier);
+                else settings.SetOutputFpsLimit(selectedLimit);
+                Notify("저장됨 · 영상을 다시 열면 적용됩니다.",false);
+            } catch(Exception ex) { LoadSettings(); Notify("설정을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.",true,ex.Message); }
         }
         private void Notify(string text, bool error, string detail = null)
         {
@@ -489,7 +547,12 @@ namespace NvofControl
             }
             else if (status.State == "bypass")
             {
-                if (status.BypassReason == "source-rate")
+                if (status.BypassReason == "source-height")
+                {
+                    statusTitle.Text=recent?"해상도 조건으로 원본 재생":"마지막 재생 상태 · 해상도 조건으로 제외";
+                    statusDetail.Text=status.InputHeight+"p · "+Fps(status.OutputFps)+" fps · 적용 기준: "+HeightLabel(status.InputHeightLimit);
+                }
+                else if (status.BypassReason == "source-rate")
                 {
                     statusTitle.Text = recent ? "보간 대상에서 제외된 영상" : "마지막 재생 상태 · 보간 대상에서 제외";
                     statusDetail.Text = Fps(status.InputFps) + " fps 원본으로 재생" + (recent ? " 중입니다. 보간할 원본 프레임 선택에서 제외되어 있습니다." : "했습니다. 현재 재생 상태는 업데이트 대기 중입니다.");
@@ -537,7 +600,7 @@ namespace NvofControl
                 statusDetail.Text = "팟플레이어가 관리자 권한으로 실행 중입니다. 연결 설정에서 관리자용 필터를 등록하세요.";
             }
             StringBuilder text = new StringBuilder();
-            text.AppendLine("NVOF for PotPlayer 0.4.0");
+            text.AppendLine("NVOF for PotPlayer " + (Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "버전 확인 불가"));
             if (registration != null)
             {
                 text.AppendLine("팟플레이어 권한: " + registration.PlayerDescription);
@@ -547,12 +610,13 @@ namespace NvofControl
                 if (registration.ElevatedPlayer && !registration.MachineRegistered) text.AppendLine("관리자 팟플레이어에서는 사용자별 COM 등록을 사용하지 않습니다. 관리자용 등록이 필요합니다.");
                 if (!String.IsNullOrEmpty(registration.RegistrationReadError)) text.AppendLine("등록 조회 오류: " + registration.RegistrationReadError);
             }
-            text.AppendLine("설정: " + (enabled.IsChecked == true ? "사용" : "사용 안 함") + " / 최대 " + (fps120.IsChecked == true ? "120" : "60") + " fps · 정수배");
+            text.AppendLine("설정: " + (enabled.IsChecked == true ? "사용" : "사용 안 함") + " / " + OutputChoiceLabel());
             string[] rateLabels = { "24", "25", "30", "50", "60", "기타" };
             List<string> selectedLabels = new List<string>();
             for (int index = 0; index < inputRates.Length; index++)
                 if (inputRates[index].IsChecked == true) selectedLabels.Add(rateLabels[index]);
             text.AppendLine("보간할 원본 프레임: " + (selectedLabels.Count == 0 ? "선택 없음" : String.Join(", ", selectedLabels.ToArray()) + " fps"));
+            text.AppendLine("보간할 세로 해상도: "+HeightLabel(SelectedHeightLimit()));
             text.AppendLine("영상 전달: " + status.TransportLabel);
             if(!String.IsNullOrEmpty(status.InputFormat))text.AppendLine("입력 형식: "+status.InputFormat+(status.InputFormat=="P010"?" · 10bit":status.InputFormat=="NV12"?" · 8bit":""));
             if(!String.IsNullOrEmpty(status.OutputFormat))text.AppendLine("출력 형식: "+status.OutputFormat+(status.OutputFormat=="P010"?" · 10bit":" · 8bit"));
@@ -564,9 +628,10 @@ namespace NvofControl
                 text.AppendLine("프로세스: " + status.ProcessId + (status.ProcessAlive ? " (실행 중)" : " (종료됨)"));
                 text.AppendLine("FPS: " + Fps(status.InputFps) + " → " + Fps(status.OutputFps));
                 text.AppendLine("출력 프레임: " + status.OutputFrames);
+                text.AppendLine("재생에 적용된 세로 해상도: "+HeightLabel(status.InputHeightLimit)+" · 입력 "+status.InputHeight+"p");
                 text.AppendLine("재생에 적용된 원본 프레임 선택: " + status.InputRateMask);
-                text.AppendLine("재생에 적용된 출력 모드: " + (status.OutputFpsLimit > 0 ? "최대 " + status.OutputFpsLimit + " fps · ×" + status.OutputMultiple : status.DoubleRate ? "원본의 두 배 (×2)" : "이전 필터 · 보고 없음"));
-                if (!String.IsNullOrEmpty(status.BypassReason)) text.AppendLine("원본 재생 이유: " + (status.BypassReason == "source-rate" ? "원본 프레임 선택에서 제외" : status.BypassReason == "disabled" ? "보간 사용 꺼짐" : status.BypassReason == "at-or-above-target" ? "상한 내 정수배 없음" : status.BypassReason == "unknown-source-rate" ? "원본 FPS 확인 불가" : status.BypassReason == "output-rate-unsupported" ? "출력 FPS가 지원 범위 밖" : status.BypassReason));
+                text.AppendLine("재생에 적용된 출력 모드: " + (status.OutputMode==1 ? "원본 배수 ×"+status.OutputMultiplier+" · 실제 ×"+status.OutputMultiple : status.OutputFpsLimit > 0 ? "최대 " + status.OutputFpsLimit + " fps · 실제 ×" + status.OutputMultiple : status.DoubleRate ? "원본의 두 배 (×2)" : "이전 필터 · 보고 없음"));
+                if (!String.IsNullOrEmpty(status.BypassReason)) text.AppendLine("원본 재생 이유: " + (status.BypassReason == "source-height" ? "세로 해상도 조건에서 제외" : status.BypassReason == "source-rate" ? "원본 프레임 선택에서 제외" : status.BypassReason == "disabled" ? "보간 사용 꺼짐" : status.BypassReason == "at-or-above-target" ? "상한 내 정수배 없음" : status.BypassReason == "unknown-source-rate" ? "원본 FPS 확인 불가" : status.BypassReason == "output-rate-unsupported" ? "출력 FPS가 지원 범위 밖" : status.BypassReason));
                 text.AppendLine("마지막 기록: " + status.UpdatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"));
                 if (!String.IsNullOrEmpty(status.Message)) text.AppendLine("필터 메시지: " + status.Message);
             }
@@ -742,7 +807,9 @@ namespace NvofControl
         {
             if (state == "live") return;
             RuntimeStatus fixture = new RuntimeStatus { Exists=state != "waiting", ProcessId=1234, State=state, InputFps=23.976, OutputFps=47.952, DoubleRate=true, OutputFrames=120, UpdatedUtc=DateTime.UtcNow, ProcessAlive=true, Message="Preview fixture — not runtime telemetry." };
-            if(state=="limit120") { fixture.State="active";fixture.OutputFps=120000.0/1001;fixture.OutputFpsLimit=120;fixture.OutputMultiple=5;fixture.Transport="d3d11-gpu";fps120.IsChecked=true; }
+            if(state=="limit120") { fixture.State="active";fixture.OutputFps=120000.0/1001;fixture.OutputFpsLimit=120;fixture.OutputMultiple=5;fixture.Transport="d3d11-gpu";selectedLimit=120;outputMode.SelectedIndex=0;RefreshOutputValues(); }
+            if(state=="limit240") { selectedLimit=240;outputMode.SelectedIndex=0;RefreshOutputValues(); fixture.State="active";fixture.OutputFps=239.760;fixture.OutputFpsLimit=240;fixture.OutputMultiple=10; }
+            if(state=="multiple5") { selectedMultiplier=5;outputMode.SelectedIndex=1;RefreshOutputValues(); fixture.State="active";fixture.OutputFps=119.880;fixture.OutputMode=1;fixture.OutputMultiplier=5;fixture.OutputMultiple=5; }
             if (state == "error") fixture.Message = "Preview: GPU initialization failed.";
             if (state == "double" || state == "double-expanded")
             {
@@ -805,7 +872,7 @@ namespace NvofControl
                     if (previewIndex + 1 >= args.Length) throw new ArgumentException("--render-preview requires an output path.");
                     string state = Arg(args, "--preview-state", "live");
                     int width = Int32.Parse(Arg(args, "--preview-width", "504"), CultureInfo.InvariantCulture);
-                    int height = Int32.Parse(Arg(args, "--preview-height", "461"), CultureInfo.InvariantCulture);
+                    int height = Int32.Parse(Arg(args, "--preview-height", "501"), CultureInfo.InvariantCulture);
                     if (width < 360 || width > 3000 || height < 300 || height > 3000) throw new ArgumentOutOfRangeException("preview size");
                     controller.PreviewState(state);
                     string focusedName = Arg(args, "--preview-focus", "");
@@ -883,6 +950,13 @@ namespace NvofControl
                 string settingsPath = Path.Combine(folder, "settings.ini");
                 File.WriteAllText(settingsPath, "[Nvof]\r\nNativeD3D11=1\r\nProbeServices=0\r\n");
                 SettingsStore store = new SettingsStore(settingsPath);
+                if(store.InputHeightLimit!=0)throw new Exception("Default height limit must include all videos.");
+                foreach(int height in new int[] {1080,1440,0}) {
+                    store.SetInputHeightLimit(height);store.SetEnabled(false);
+                    if(new SettingsStore(settingsPath).InputHeightLimit!=height || store.Enabled)throw new Exception("Height limit persistence failed.");
+                }
+                bool invalidHeight=false;try {store.SetInputHeightLimit(2160);}catch(ArgumentOutOfRangeException){invalidHeight=true;}
+                if(!invalidHeight)throw new Exception("Unsupported height limit accepted.");
                 if (store.InputRateMask != 63) throw new Exception("Missing source-rate selection must preserve all-rates behavior.");
                 if (!store.GpuCorrection || !store.AppearanceProtection) throw new Exception("Existing INIs must retain both enhancements by default.");
                 foreach (bool gpu in new bool[] {false,true}) foreach (bool mouth in new bool[] {false,true})
@@ -890,7 +964,7 @@ namespace NvofControl
                     store.SetGpuCorrection(gpu); store.SetAppearanceProtection(mouth); store.SetEnabled(false); store.SetOutputFpsLimit(120);
                     if (store.GpuCorrection != gpu || store.AppearanceProtection != mouth) throw new Exception("Independent enhancement settings were coupled or migration reset them.");
                 }
-                foreach (int limit in new int[] { 60, 120 })
+                foreach (int limit in SettingsStore.OutputLimits)
                 {
                     store.SetOutputFpsLimit(limit);
                     if (new SettingsStore(settingsPath).OutputFpsLimit != limit || store.Enabled) throw new Exception("Output limit persistence reset another setting.");
@@ -900,6 +974,16 @@ namespace NvofControl
                 bool invalidLimitRejected=false;
                 try { store.SetOutputFpsLimit(119); } catch(ArgumentOutOfRangeException) { invalidLimitRejected=true; }
                 if(!invalidLimitRejected)throw new Exception("Invalid output limit accepted.");
+                if(store.OutputMode!=0 || store.OutputMultiplier!=2)throw new Exception("Old INI must retain cap mode and default x2.");
+                foreach(int multiple in new int[] {2,3,4,5}) {
+                    store.SetOutputFpsLimit(144);store.SetOutputMultiplier(multiple);store.SetOutputMode(1);
+                    if(new SettingsStore(settingsPath).OutputMultiplier!=multiple || store.OutputMode!=1 || store.OutputFpsLimit!=144)throw new Exception("Direct multiplier persistence failed.");
+                    store.SetOutputMode(0); if(store.OutputMultiplier!=multiple || store.OutputFpsLimit!=144)throw new Exception("Mode switch forgot independent choice.");
+                }
+                bool badMode=false,badMultiple=false;
+                try{store.SetOutputMode(2);}catch(ArgumentOutOfRangeException){badMode=true;}
+                try{store.SetOutputMultiplier(6);}catch(ArgumentOutOfRangeException){badMultiple=true;}
+                if(!badMode||!badMultiple)throw new Exception("Unsupported output choice accepted.");
                 string uninstallFixture=Path.Combine(folder,"uninstaller");
                 Directory.CreateDirectory(uninstallFixture);
                 File.WriteAllText(Path.Combine(uninstallFixture,"unins000.exe"),"old");
@@ -918,6 +1002,9 @@ namespace NvofControl
                 File.WriteAllText(statusPath, "{\"processId\":" + Process.GetCurrentProcess().Id + ",\"state\":\"bypass\",\"bypassReason\":\"source-rate\",\"inputRateSelected\":false,\"inputRateMask\":5,\"inputFps\":59.94,\"outputFps\":59.94}");
                 RuntimeStatus excluded = RuntimeStatus.Read(statusPath);
                 if (excluded.BypassReason != "source-rate" || excluded.InputRateSelected || excluded.InputRateMask != 5 || excluded.InputFps != excluded.OutputFps) throw new Exception("Excluded-rate status must retain its reason and original rate.");
+                File.WriteAllText(statusPath,"{\"state\":\"active\",\"outputMode\":1,\"outputMultiplier\":3,\"outputMultiple\":3,\"outputFpsLimit\":120}");
+                RuntimeStatus direct=RuntimeStatus.Read(statusPath);
+                if(direct.OutputMode!=1 || direct.OutputMultiplier!=3 || direct.OutputMultiple!=3 || direct.OutputFpsLimit!=120)throw new Exception("Direct-mode telemetry must stay independent of remembered cap.");
                 File.WriteAllText(statusPath, "{broken");
                 status = RuntimeStatus.Read(statusPath);
                 if (status.Exists || String.IsNullOrEmpty(status.ReadError)) throw new Exception("Invalid status must not show active.");
@@ -951,24 +1038,33 @@ namespace NvofControl
                 ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked = true;
                 if (!rate24.IsEnabled || !rate60.IsEnabled) throw new Exception("Master-on must restore source-rate controls.");
                 testController.PreviewState("double");
-                RadioButton cap60=(RadioButton)testWindow.FindName("Fps60"), cap120=(RadioButton)testWindow.FindName("Fps120");
-                cap120.IsChecked=true;
-                if(cap60.IsChecked==true || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("119.880"))throw new Exception("120 limit selection or hint failed.");
+                ComboBox mode=(ComboBox)testWindow.FindName("OutputModeChoice"), value=(ComboBox)testWindow.FindName("OutputValueChoice");
+                mode.SelectedIndex=0;
+                for(int i=0;i<SettingsStore.OutputLimits.Length;++i) {
+                    value.SelectedIndex=i;
+                    if((int)((ComboBoxItem)value.SelectedItem).Tag!=SettingsStore.OutputLimits[i])throw new Exception("Output cap list mismatch.");
+                }
+                mode.SelectedIndex=1;value.SelectedIndex=3;
+                if(value.Items.Count!=4 || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("24 → 120"))throw new Exception("x5 selection or hint failed.");
                 ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=false;
-                if(cap60.IsEnabled || cap120.IsEnabled || cap120.IsChecked!=true)throw new Exception("Master-off lost output selection.");
+                if(mode.IsEnabled || value.IsEnabled || value.SelectedIndex!=3)throw new Exception("Master-off lost output selection.");
                 ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=true;
-                cap60.IsChecked=true;
-                if(cap120.IsChecked==true || !((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("47.952"))throw new Exception("60 limit selection or hint failed.");
+                mode.SelectedIndex=0;
+                if((int)((ComboBoxItem)value.SelectedItem).Tag!=240)throw new Exception("Mode switch forgot last cap.");
+                value.SelectedIndex=0;
+                if(!((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("24 → 48"))throw new Exception("Cap mode must not imply exact 60 fps.");
+                mode.SelectedIndex=1;
+                if((int)((ComboBoxItem)value.SelectedItem).Tag!=5)throw new Exception("Mode switch forgot last multiplier.");
                 testController.PreviewState("error");
                 if (!((TextBox)testWindow.FindName("DiagnosticsText")).Text.Contains("AnotherLongExampleFolder")) throw new Exception("Full action error details must remain available without expanding the footer.");
                 foreach (int width in new int[] { 504, 464 })
                 {
                     ((TabItem)testWindow.FindName("InterpolationTab")).IsSelected = true;
                     FrameworkElement client = (FrameworkElement)testWindow.Content;
-                    client.Measure(new Size(width, 461)); client.Arrange(new Rect(0, 0, width, 461)); client.UpdateLayout();
+                    client.Measure(new Size(width, 501)); client.Arrange(new Rect(0, 0, width, 501)); client.UpdateLayout();
                     TextBlock saveText = (TextBlock)testWindow.FindName("SaveNotice");
                     double footerTop = saveText.TransformToAncestor(client).Transform(new Point(0, 0)).Y - 8;
-                    foreach (string controlName in new string[] { "EnabledToggle", "InputRate0", "InputRate5", "OutputRateSummary", "Fps60", "Fps120", "OutputRateHint" })
+                    foreach (string controlName in new string[] { "EnabledToggle", "InputRate0", "InputRate5", "OutputRateSummary", "OutputModeChoice", "OutputValueChoice", "OutputValueLabel", "HeightAll", "Height1080", "Height1440", "OutputRateHint" })
                     {
                         FrameworkElement item = (FrameworkElement)testWindow.FindName(controlName);
                         Rect bounds = item.TransformToAncestor(client).TransformBounds(new Rect(0, 0, item.ActualWidth, item.ActualHeight));

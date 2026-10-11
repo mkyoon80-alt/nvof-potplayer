@@ -1,5 +1,6 @@
 #include "nvof/video_format.hpp"
 #include "hevc_color_fixture.hpp"
+#include "av1_color_fixture.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -30,7 +31,9 @@
 
 using Microsoft::WRL::ComPtr;
 const CLSID kFilter = {0xedeca044, 0x78cd, 0x40eb, {0x8f, 0x37, 0x63, 0xd9, 0x47, 0xc5, 0x01, 0xa0}};
-constexpr int kWidth = 640, kHeight = 360;
+int kWidth = 640, kHeight = 360;
+bool av1_fixture_header=false;
+int av1_format=0;
 REFERENCE_TIME kDuration = 417083;
 REFERENCE_TIME declared_duration=-1;
 bool require_services=false;
@@ -262,10 +265,18 @@ public:
     HRESULT CheckMediaType(const CMediaType*) override {return S_OK;}
     STDMETHODIMP ConnectionMediaType(AM_MEDIA_TYPE* media) override {
         if(!media)return E_POINTER;if(!recover_transfer)return VFW_E_NOT_CONNECTED;
-        auto seq=hevc_fixture::hvcc(recover_transfer);
+        auto seq=av1_fixture_header?(recover_transfer==18?av1_fixture::hlg:av1_fixture::pq):hevc_fixture::hvcc(recover_transfer);
         CMediaType type;type.SetType(&MEDIATYPE_Video);
         const GUID hvc1={MAKEFOURCC('H','V','C','1'),0,0x10,{0x80,0,0,0xaa,0,0x38,0x9b,0x71}};
-        type.SetSubtype(&hvc1);type.SetFormatType(&FORMAT_MPEG2Video);
+        GUID codec=hvc1;if(av1_fixture_header)codec.Data1=MAKEFOURCC('A','V','0','1');
+        type.SetSubtype(&codec);
+        if(av1_fixture_header && av1_format) {
+            const size_t header=av1_format==1?sizeof(VIDEOINFOHEADER):sizeof(VIDEOINFOHEADER2);
+            auto* data=type.AllocFormatBuffer(ULONG(header+seq.size()));std::memset(data,0,header);
+            std::memcpy(data+header,seq.data(),seq.size());
+            type.SetFormatType(av1_format==1?&FORMAT_VideoInfo:&FORMAT_VideoInfo2);return CopyMediaType(media,&type);
+        }
+        type.SetFormatType(&FORMAT_MPEG2Video);
         const size_t size=offsetof(MPEG2VIDEOINFO,dwSequenceHeader)+seq.size();
         auto* m=reinterpret_cast<MPEG2VIDEOINFO*>(type.AllocFormatBuffer(ULONG(size)));if(!m)return E_OUTOFMEMORY;
         std::memset(m,0,size);m->cbSequenceHeader=DWORD(seq.size());std::memcpy(m->dwSequenceHeader,seq.data(),seq.size());
@@ -791,6 +802,15 @@ int wmain(int argc,wchar_t** argv) {
         recover_transfer=wcscmp(argv[9],L"hdr10-legacy")==0?16:18;
         hdr_transfer=recover_transfer==16?MFVideoTransFunc_2084:MFVideoTransFunc_HLG;p010_fixture=true;color_fixture=1;
     }
+    if(argc>9 && std::wstring(argv[9]).find(L"av1-")==0) {
+        av1_fixture_header=true;recover_transfer=std::wstring(argv[9]).find(L"hlg")!=std::wstring::npos?18:16;
+        hdr_transfer=recover_transfer==16?MFVideoTransFunc_2084:MFVideoTransFunc_HLG;
+        p010_fixture=true;color_fixture=1;
+        if(std::wstring(argv[9]).find(L"sdr")!=std::wstring::npos){hdr_transfer=0;color_fixture=2;}
+        if(std::wstring(argv[9]).find(L"vi1")!=std::wstring::npos)av1_format=1;
+        if(std::wstring(argv[9]).find(L"vi2")!=std::wstring::npos)av1_format=2;
+    }
+    if(argc>11){kWidth=std::stoi(argv[10]);kHeight=std::stoi(argv[11]);}
     if(argc>9 && wcscmp(argv[9],L"sdr-override")==0){recover_transfer=16;p010_fixture=true;color_fixture=2;}
     if(p010_media)p010_fixture=true;
     require_services=argc>2 && wcscmp(argv[2],L"--probe-services")==0;

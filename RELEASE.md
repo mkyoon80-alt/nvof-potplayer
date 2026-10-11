@@ -1,3 +1,36 @@
+# 0.4.2 — 출력 선택 확장 · AV1 HDR 색상 수정 · 움직임 경계 개선
+
+A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Supports selectable FPS caps or ×2–×5 output, GPU-resident D3D11 processing, and native 10-bit HDR10/HLG signal passthrough. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
+
+**[Download v0.4.2](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.2)** · **[Korean manual](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+
+v0.4.0 이후 검증한 변경을 통합했습니다. Windows x64 스탠드얼론 ZIP과 최신 설정 화면을 반영한 한국어 매뉴얼을 제공합니다.
+
+- **출력 방식 선택:** FPS 상한 60 / 72 / 75 / 100 / 120 / 144 / 240fps, 또는 원본 배수 ×2 / ×3 / ×4 / ×5. 두 방식의 선택을 각각 기억합니다. 기존 최대 60/120fps 설정도 유지합니다.
+- **세로 해상도 조건:** 전체 / 1080p 이하 / 1440p 이하. 원본 FPS 조건과 함께 적용하며, 제외된 영상은 원본 FPS로 재생합니다.
+- **작은 FPS 편차 허용:** 30.003fps 영상도 최대 60fps에서는 ×2, 최대 120fps에서는 ×4로 처리합니다. 0.1% 범위의 편차를 허용하며 원본 재생 시간은 바꾸지 않습니다.
+- **YouTube AV1 HDR 색상 수정:** 디코더 연결 정보에서 HDR 표시가 빠진 경우 연결된 AV1 원본의 색 정보를 확인해 전달합니다. 디코더가 명시한 SDR 정보는 우선합니다. LG Jazz HDR 영상의 실제 팟플레이어 정상 색상 재생을 확인했습니다.
+- **움직이는 도형의 경계 개선:** 검은 배경의 빠른 원·사각형에 대해 움직임 추정과 모서리 처리를 보완했습니다. 일반 영상의 기존 보간 결과는 별도 비교로 확인했습니다.
+- **설정창과 매뉴얼 정리:** 현재의 세 탭과 새 출력 선택을 안내합니다. 매뉴얼의 오래된 화질 보정·입모양 기능 설명과 이미지를 제거하고 v0.4.2 화면으로 교체했습니다.
+
+## 출력 예시
+
+24fps → 최대 60fps: **48fps**, 최대 72fps 또는 원본 ×3: **72fps**, 최대 120fps 또는 원본 ×5: **120fps**.
+
+25fps → 최대 120fps: **100fps**, 최대 240fps: **225fps**. FPS 상한은 정확한 목표 FPS가 아닙니다. 원본 배수 모드에서는 상한을 적용하지 않습니다. 변경 사항은 영상을 다시 열어 적용합니다.
+
+## 업데이트
+
+팟플레이어와 설정창을 닫고 기존 폴더를 백업한 뒤 교체합니다. **기존 NvofPotPlayer.ini는 보존하세요.** 폴더를 옮길 경우 기존 위치에서 필터 등록을 해제하고 새 위치에서 등록합니다. 설치 프로그램 버전에서 전환하는 방법은 [사용 설명서](https://mkyoon80-alt.github.io/nvof-potplayer/)에 있습니다.
+
+## 검증과 범위
+
+출력 정책·색 정보·타임스탬프 등 14개 자동 검사, 28개 DirectShow 연결 사례, 32개 GPU 합성 사례와 기존 영상 7개 구간 비교를 수행했습니다. ×3·×5는 24fps와 23.976fps의 한 시간 분량 타임스탬프, 원본 보존, 탐색과 종료를 검사했습니다. 이는 한 시간의 실제 팟플레이어 연속 재생 시험과는 구분됩니다.
+
+HDR10 파일과 YouTube AV1 HDR 색상은 실제 팟플레이어 재생에서 확인했습니다. HLG는 신호 전달 검사까지 완료했습니다. Dolby Vision·HDR10+ 동적 메타데이터는 지원하지 않으며, HDR10 호환 기본 영상은 HDR10으로 처리합니다. 검증 GPU는 RTX 5090입니다. 출력 FPS 선택이 모든 GPU의 4K 고주사율 실시간 재생을 보장하지는 않습니다.
+
+---
+
 # 0.4.0 — 스탠드얼론 · 정수배 출력 · 네이티브 10bit/HDR
 
 v0.3.0 이후의 보간 개선과 HDR 색상 수정본을 통합했습니다. 압축을 풀어 사용하는 Windows x64 ZIP과 한국어 매뉴얼을 배포합니다.

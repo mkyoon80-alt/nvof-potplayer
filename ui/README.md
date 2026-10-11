@@ -27,13 +27,16 @@ The controller reads and writes `NvofPotPlayer.ini` beside the executable and fi
 | Key | Values | Default |
 | --- | --- | --- |
 | `Enabled` | `1` or `0` | `1` |
-| `OutputFpsLimit` | `60` or `120` | `60` |
+| `OutputMode` | `0` = FPS cap, `1` = direct source multiplier | `0` |
+| `OutputFpsLimit` | `60`, `72`, `75`, `100`, `120`, `144`, `240` | `60` |
+| `OutputMultiplier` | `2`, `3`, `4`, `5` | `2` |
 | `DoubleRate` | Legacy rollback compatibility; ignored by this filter | `1` |
+| `InputHeightLimit` | `0` = all, `1080`, `1440` | `0` |
 | `InputRateMask` | Integer from `0` through `63` | `63` |
 
 Source-rate bits are 24 fps=`1`, 25=`2`, 30=`4`, 50=`8`, 60=`16`, and other=`32`. Rates 23.976, 29.97, and 59.94 belong to the 24, 30, and 60 groups. An empty selection preserves original frames for every source. Turning the master switch off disables the checkboxes without discarding their selection.
 
-Output uses the largest integer multiple within the selected cap, preserving above-cap sources and original-rate exclusions. Missing/invalid limits default to 60. Historical TargetFps/DoubleRate keys are ignored; the controller does not rewrite unrelated settings on launch. Changes apply when reopening the video. Previews and tests do not write installed settings. Runtime diagnostics separately report the applied output limit and multiplier.
+Output uses the largest integer multiple within the selected cap, or the explicitly selected source multiplier. Both modes preserve originals; neither is exact fixed-FPS resampling. The cap and multiplier are remembered independently. Direct multiplier mode ignores the cap; cap mode preserves above-cap sources. Source-rate/height exclusions and master-off take precedence in both modes. Missing/invalid limits default to 60, mode to cap, and multiplier to ×2. Historical TargetFps/DoubleRate keys are ignored; the controller does not rewrite unrelated settings on launch. Changes apply when reopening the video. Previews and tests do not write installed settings. Runtime diagnostics separately report the applied output limit and multiplier.
 
 Runtime status comes from `%LOCALAPPDATA%/NvofPotPlayer/status.json` and stays independent of the saved settings. The controller uses `processId`, `state`, `transport`, `inputFps`, `outputFps`, `outputFrames`, `message`, `bypassReason`, `inputRateSelected`, `inputRateMask`, and `doubleRate`. Supported states are `waiting`, `active`, `bypass`, `error`, and `stopped`.
 

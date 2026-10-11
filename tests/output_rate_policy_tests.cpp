@@ -50,7 +50,38 @@ int main() {
         require(nvof::output_multiple(417083,119)==2,"invalid limit must default to 60");
         const auto odd=nvof::capped_source_rate(416999,120);
         require(odd.num==50000000 && odd.den==416999,"nonstandard rate was rounded up across the cap");
-        require(nvof::output_multiple(416600,120)==4,"nonstandard rate above 24 crossed the 120 cap");
+        require(nvof::output_multiple(416600,120)==5,"tiny 24p deviation lost a phase");
+        require(nvof::output_multiple(415000,120)==4,"material rate excess must not cross the cap");
+        for(int limit : {60,120}) {
+            const int expected=limit/30;
+            require(nvof::output_multiple(333300,limit)==expected,"30.003 fps lost a multiplier");
+            const auto preserved=nvof::capped_source_rate(333300,limit);
+            require(preserved.num*333300LL==10000000LL*expected*preserved.den,"tolerant cap retimed the source");
+            require(nvof::output_multiple(333001,limit)==expected,"in-tolerance boundary rejected");
+            require(nvof::output_multiple(333000,limit)==expected-1,"above-tolerance boundary accepted");
+            require(nvof::output_multiple(332226,limit)==expected-1,"30.1 fps excess treated as rounding");
+        }
+        require(nvof::output_multiple(166650,60)==1 && nvof::output_multiple(166650,120)==2,
+            "60.006 fps must bypass at 60 and double at 120");
+        // Published UI choices: caps retain source originals and direct modes
+        // ignore the remembered cap. Invalid new keys preserve old defaults.
+        const int caps[]={60,72,75,100,120,144,240};
+        const int expected24[]={2,3,3,4,5,6,10},expected25[]={2,2,3,4,4,5,9};
+        for(int i=0;i<7;++i) {
+            require(nvof::output_multiple(416667,caps[i])==expected24[i],"24p expanded cap mismatch");
+            require(nvof::output_multiple(400000,caps[i])==expected25[i],"25p expanded cap mismatch");
+            require(nvof::output_multiple(10000000,caps[i])<=33,"Expanded cap exceeds phase pool");
+        }
+        for(int multiple=2;multiple<=5;++multiple)for(int64_t duration:{417083LL,416667LL,400000LL,333300LL,166667LL}) {
+            const auto source=nvof::canonical_source_rate(duration);
+            const auto rate=nvof::selected_output_rate(duration,1,60,multiple);
+            require(rate.num*source.den==source.num*multiple*rate.den,"Direct multiple lost exact source cadence");
+            require(nvof::selected_output_multiple(duration,1,60,multiple)==multiple,"Direct mode still capped");
+        }
+        require(nvof::selected_output_rate(0,1,120,3).num==0,"Direct mode invented unknown source");
+        require(nvof::selected_output_rate(25000,1,240,3).num==0,"Direct mode exceeded 1000 fps timing bound");
+        require(nvof::selected_output_multiple(416667,9,72,5)==3,"Invalid mode must preserve cap semantics");
+        require(nvof::selected_output_multiple(416667,1,240,6)==2,"Invalid multiplier must default x2");
         // Constructor must use the same bounds as the target policy.
         nvof::HybridPipeline precise({20000000,416999},[](const nvof::Frame& a,const nvof::Frame& b) {
             auto middle=a;middle.pts=(a.pts+b.pts)/2;return middle;

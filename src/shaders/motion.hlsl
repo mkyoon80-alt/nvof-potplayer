@@ -640,11 +640,21 @@ groupshared float glyphForeground[289];
 groupshared float4 glyphShape[32];
 groupshared float2 glyphFeatureErrors[32];
 groupshared uint glyphKind;
+groupshared uint glyphFastOnly;
+groupshared uint glyphDense;
 groupshared float4 glyphStats[32];
 groupshared float2 glyphErrors[32];
 groupshared float4 glyphFits[32];
 groupshared float4 glyphBest;
 groupshared uint glyphAccepted;
+// Integrate all raster phases inside each 3-pixel fitting cell. Sparse taps
+// otherwise underestimate motion when a sharp edge falls between sample rows.
+float rigidMatchLuma(float2 p,bool next) {
+    float scale=max(size.x/size.z,size.y/size.w),sum=0;
+    [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-1;x<=1;++x)
+        sum+=yAt(p+float2(x,y)*scale,next);
+    return sum/9.0;
+}
 float cachedGroupCost(float2 p,float2 v) {
     float scale=max(size.x/size.z,size.y/size.w);
     if(!inside(p+v-24.0*scale)||!inside(p+v+24.0*scale))return 255.0;
@@ -652,7 +662,7 @@ float cachedGroupCost(float2 p,float2 v) {
     [loop]for(int i=0;i<289;++i) {
         float2 q=p+float2(i%17-8,i/17-8)*3.0*scale;
         float a=glyphKind==1?glyphSource[i]:glyphForeground[i]*255.0;
-        float b=glyphKind==1?yAt(q+v,true)*255.0:glyphMatchFeature(q+v,true)*255.0;
+        float b=glyphKind==1?(glyphDense!=0?rigidMatchLuma(q+v,true):yAt(q+v,true))*255.0:glyphMatchFeature(q+v,true)*255.0;
         float active=max(a,b)>40.0?1.0:0.0;
         error+=abs(a-b)*active;ink+=active;
     }
@@ -693,9 +703,13 @@ float cachedGroupCost(float2 p,float2 v) {
         // Sparse thin strokes are enough to propose a model, but final synthesis
         // requires three nearby independently fitted groups to agree.
         float4 sh=glyphShape[0];bool foreground=sh.x>=180.0&&sh.y>=3.0&&sh.y<90.0&&sh.z>=2.0&&sh.z>=sh.y*0.4;
-        glyphKind=legacy?1:2;
-        if(!legacy)zero=glyphFeatureErrors[0].x/max(glyphFeatureErrors[0].y,1.0);
-        glyphAccepted=(legacy&&zero>=12.0)||(!legacy&&foreground);
+        // A broad opaque edge can miss the majority-black classifier purely
+        // because of cell alignment. Admit it only to the fast rigid path.
+        bool broad=st.x>=64.0&&st.y>=st.x*0.85&&st.z>=8.0&&st.w<3.0;
+        glyphFastOnly=!legacy&&broad;glyphDense=0;
+        glyphKind=(legacy||broad)?1:2;
+        if(glyphKind==2)zero=glyphFeatureErrors[0].x/max(glyphFeatureErrors[0].y,1.0);
+        glyphAccepted=((legacy||broad)&&zero>=12.0)||(!legacy&&!broad&&foreground);
         glyphBest=float4(0,0,zero,zero);
     }
     GroupMemoryBarrierWithGroupSync();
@@ -731,7 +745,9 @@ float cachedGroupCost(float2 p,float2 v) {
         }
         if(inside(anchor)) {
             v=flow(anchor,false);
-            if(length(v)>=scale&&length(v)<=16.0*scale)cost=cachedGroupCost(p,v);
+            // Black-background groups may move farther than scrolling credits.
+            // Keep the original bound for foreground fits over a live scene.
+            if(length(v)>=(glyphFastOnly!=0?16.0:1.0)*scale&&length(v)<=(glyphKind==1?64.0:16.0)*scale)cost=cachedGroupCost(p,v);
         }
     }
     glyphFits[lane]=float4(v,cost,0);
@@ -756,14 +772,36 @@ float cachedGroupCost(float2 p,float2 v) {
         GroupMemoryBarrierWithGroupSync();
     }
     if(!glyphAccepted)return;
-    [loop]for(int level=0;level<4;++level) {
-        float step=scale*exp2(-float(level));v=glyphBest.xy;cost=255.0;
+    // Fast black-background shapes need a wider local correction than the
+    // subpixel credit fit. Retain the original refinement for all slower fits.
+    bool fastRigid=glyphKind==1&&length(glyphBest.xy)>16.0*scale;
+    [loop]for(int level=0;level<(fastRigid?7:4);++level) {
+        float step=scale*exp2(float(fastRigid?3:0)-float(level));v=glyphBest.xy;cost=255.0;
         if(lane<9){v+=float2(int(lane)%3-1,int(lane)/3-1)*step;cost=cachedGroupCost(p,v);}
         glyphFits[lane]=float4(v,cost,0);
         GroupMemoryBarrierWithGroupSync();
         if(lane==0)[unroll]for(int i=0;i<9;++i)if(glyphFits[i].z<glyphBest.z)glyphBest.xyz=glyphFits[i].xyz;
         GroupMemoryBarrierWithGroupSync();
     }
+    if(fastRigid) {
+        [loop]for(int i=int(lane);i<289;i+=32) {
+            float2 q=p+float2(i%17-8,i/17-8)*3.0*scale;
+            glyphSource[i]=rigidMatchLuma(q,false)*255.0;
+        }
+        if(lane==0)glyphDense=1;
+        GroupMemoryBarrierWithGroupSync();
+        if(lane==0)glyphBest.z=cachedGroupCost(p,glyphBest.xy);
+        GroupMemoryBarrierWithGroupSync();
+        [loop]for(int level=0;level<3;++level) {
+            float step=scale*exp2(-1.0-float(level));v=glyphBest.xy;cost=255.0;
+            if(lane<9){v+=float2(int(lane)%3-1,int(lane)/3-1)*step;cost=cachedGroupCost(p,v);}
+            glyphFits[lane]=float4(v,cost,0);
+            GroupMemoryBarrierWithGroupSync();
+            if(lane==0)[unroll]for(int i=0;i<9;++i)if(glyphFits[i].z<glyphBest.z)glyphBest.xyz=glyphFits[i].xyz;
+            GroupMemoryBarrierWithGroupSync();
+        }
+    }
+    if(glyphFastOnly!=0&&length(glyphBest.xy)<=16.0*scale)return;
     float neutral=0;
     [loop]for(int i=int(lane);i<289;i+=32) {
         float2 q=p+float2(i%17-8,i/17-8)*3.0*scale+glyphBest.xy;
@@ -777,6 +815,43 @@ float cachedGroupCost(float2 p,float2 v) {
     }
     if(lane==0&&(glyphKind==2||glyphStats[0].w<3.0)&&glyphBest.z<=(glyphKind==1?10.0:20.0)&&glyphBest.z<=glyphBest.w*0.35&&length(glyphBest.xy)>=scale)
         glyphOutput[group.xy]=float4(glyphBest.xyz,float(glyphKind));
+}
+// Along a straight edge, different tangential velocities can fit equally well.
+// Do not let that aperture ambiguity discard a verified nearby corner model.
+// This fallback is confined to conflicting fast black-background rigid fits;
+// coherent fits and foreground credit models keep their direct path.
+float rigidPatchError(float2 a,float2 b) {
+    float scale=max(size.x/size.z,size.y/size.w),sum=0,peak=0;
+    [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-1;x<=1;++x) {
+        float2 d=float2(x,y)*3.0*scale;
+        float error=abs(rigidMatchLuma(a+d,false)-rigidMatchLuma(b+d,true))*255.0;
+        sum+=error;peak=max(peak,error);
+    }
+    float2 chroma=abs(uvAt(a,false)-uvAt(b,true))*255.0;
+    return max(sum/9.0,peak/2.0)+max(chroma.x,chroma.y);
+}
+bool resolveRigidConflict(float2 p,int2 base,int2 hi,out float2 velocity) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    float bestError=4.0,bestWeight=0;velocity=0;
+    [loop]for(int y=-1;y<3;++y)[loop]for(int x=-1;x<3;++x) {
+        int2 index=base+int2(x,y);
+        if(any(index<0)||any(index>hi))continue;
+        float4 model=glyphMotion.Load(int3(index,0));
+        if(model.w!=1.0||length(model.xy)<=16.0*scale)continue;
+        float2 center=(float2(index)+0.5)*32.0*scale+mode.w*model.xy;
+        float2 influence=saturate(1.0-abs(p-center)/(32.0*scale));
+        float weight=influence.x*influence.y;
+        if(weight<=0.02)continue;
+        float2 a=p-mode.w*model.xy,b=p+(1.0-mode.w)*model.xy;
+        if(!inside(a)||!inside(b))continue;
+        // Compare integrated edge coverage; sharp source raster phases can
+        // disagree even when their translated silhouette is correct.
+        float error=rigidPatchError(a,b);
+        if(error<bestError||(error==bestError&&weight>bestWeight)) {
+            bestError=error;bestWeight=weight;velocity=model.xy;
+        }
+    }
+    return bestWeight>0;
 }
 bool glyphGroupColor(float2 p,out float2 value) {
     float scale=max(size.x/size.z,size.y/size.w);
@@ -806,8 +881,11 @@ bool glyphGroupColor(float2 p,out float2 value) {
             float a=weight.x*weight.y;
             if(a>0.02){foregroundVelocity+=model.xy*a;foregroundTotal+=a;foregroundSum+=model.xy;++support;
                 foregroundLo=min(foregroundLo,model.xy);foregroundHi=max(foregroundHi,model.xy);}
-        }else if(x>=0&&x<2&&y>=0&&y<2) {
-            float2 weight=saturate(1.0-abs(p-center)/(24.0*scale));
+        }else if((x>=0&&x<2&&y>=0&&y<2)||(model.w==1.0&&length(model.xy)>16.0*scale)) {
+            // Look up fast models at their phase-adjusted position, including
+            // those whose source patch is outside the nearest four cells.
+            float radius=length(model.xy)>16.0*scale?32.0:24.0;
+            float2 weight=saturate(1.0-abs(p-center)/(radius*scale));
             float a=weight.x*weight.y*model.w;
             if(a>0){kind=1;velocity+=model.xy*a;total+=a;lo=min(lo,model.xy);high=max(high,model.xy);}
         }
@@ -840,7 +918,11 @@ bool glyphGroupColor(float2 p,out float2 value) {
     if(edgeSupport>=3&&length(edgeHi-edgeLo)<=1.5*scale) {
         kind=1;velocity=edgeVelocity;total=edgeTotal;lo=edgeLo;high=edgeHi;edgeModel=true;
     }
-    if(total<0.02||length(high-lo)>1.5*scale)return false;
+    if(total<0.02)return false;
+    if(length(high-lo)>1.5*scale) {
+        if(kind!=1.0||edgeModel||!resolveRigidConflict(p,base,hi,velocity))return false;
+        total=1.0;
+    }
     velocity/=total;
     float2 a=p-mode.w*velocity,b=p+(1.0-mode.w)*velocity;
     bool validA=inside(a),validB=inside(b);

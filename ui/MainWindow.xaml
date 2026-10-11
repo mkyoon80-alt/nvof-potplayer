@@ -1,6 +1,6 @@
-﻿<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="NVIDIA Optical Flow · PotPlayer" Width="520" Height="500" MinWidth="480" MinHeight="500"
+        Title="NVIDIA Optical Flow · PotPlayer" Width="520" Height="540" MinWidth="480" MinHeight="540"
         WindowStartupLocation="CenterScreen" Background="#F6F7F5" Foreground="#222925"
         FontFamily="Segoe UI, Malgun Gothic" FontSize="13" UseLayoutRounding="True" SnapsToDevicePixels="True">
   <Window.Resources>
@@ -149,6 +149,22 @@
         </ControlTemplate.Triggers>
       </ControlTemplate></Setter.Value></Setter>
     </Style>
+    <Style x:Key="OutputSelect" TargetType="ComboBox">
+      <Setter Property="MinHeight" Value="38"/>
+      <Setter Property="Padding" Value="10,6"/>
+      <Setter Property="Background" Value="White"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="MaxDropDownHeight" Value="300"/>
+      <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisual}"/>
+      <Setter Property="ItemContainerStyle">
+        <Setter.Value><Style TargetType="ComboBoxItem"><Setter Property="Padding" Value="10,6"/><Setter Property="MinHeight" Value="32"/></Style></Setter.Value>
+      </Setter>
+      <Style.Triggers>
+        <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger>
+      </Style.Triggers>
+    </Style>
   </Window.Resources>
   <Grid Background="#F6F7F5">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -166,7 +182,7 @@
     <TabControl x:Name="SettingsTabs" Grid.Row="1" SelectedIndex="0" KeyboardNavigation.TabNavigation="Continue">
       <TabItem x:Name="InterpolationTab" Header="보간 설정">
         <StackPanel x:Name="InterpolationPanel" TextElement.Foreground="{StaticResource Ink}" TextElement.FontWeight="Normal">
-          <TextBlock Text="보간할 원본 FPS" FontWeight="SemiBold" Margin="0,0,0,7"/>
+          <TextBlock Text="보간할 원본 FPS" FontWeight="SemiBold" Margin="0,0,0,6"/>
           <UniformGrid x:Name="InputRateChoices" Rows="1" Columns="6" IsEnabled="{Binding IsChecked, ElementName=EnabledToggle}" KeyboardNavigation.TabNavigation="Continue" AutomationProperties.Name="보간할 원본 프레임">
             <CheckBox x:Name="InputRate0" Content="24" Style="{StaticResource RateCheck}" ToolTip="23.976 및 24 fps" AutomationProperties.Name="원본 24 fps 보간, 23.976 포함"/>
             <CheckBox x:Name="InputRate1" Content="25" Style="{StaticResource RateCheck}" AutomationProperties.Name="원본 25 fps 보간"/>
@@ -175,15 +191,29 @@
             <CheckBox x:Name="InputRate4" Content="60" Style="{StaticResource RateCheck}" ToolTip="59.94 및 60 fps" AutomationProperties.Name="원본 60 fps 보간, 59.94 포함"/>
             <CheckBox x:Name="InputRate5" Content="기타" Style="{StaticResource RateCheck}" ToolTip="목록에 없는 원본 FPS" AutomationProperties.Name="기타 원본 프레임 보간"/>
           </UniformGrid>
-          <TextBlock x:Name="RateSelectionHint" Text="23.976·29.97·59.94 fps는 각각 24·30·60에 포함됩니다." Style="{StaticResource Subtle}" Margin="0,5,0,20"/>
-          <TextBlock x:Name="OutputRateSummary" Text="출력 상한" FontWeight="SemiBold" Margin="0,0,0,8"/>
-          <Border Background="#E9EEE9" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="5" Padding="2" IsEnabled="{Binding IsChecked, ElementName=EnabledToggle}">
-            <UniformGrid Rows="1" Columns="2">
-              <RadioButton x:Name="Fps60" Content="최대 60fps" GroupName="Fps" Style="{StaticResource FpsChoice}" AutomationProperties.Name="출력 상한 최대 60 fps"/>
-              <RadioButton x:Name="Fps120" Content="최대 120fps" GroupName="Fps" Style="{StaticResource FpsChoice}" AutomationProperties.Name="출력 상한 최대 120 fps"/>
-            </UniformGrid>
-          </Border>
-          <TextBlock x:Name="OutputRateHint" Style="{StaticResource Subtle}" Margin="0,5,0,0"/>
+          <TextBlock x:Name="RateSelectionHint" Text="23.976·29.97·59.94 fps는 각각 24·30·60에 포함됩니다." Style="{StaticResource Subtle}" Margin="0,4,0,16"/>
+          <StackPanel Margin="0,0,0,16">
+            <TextBlock Text="세로 해상도" FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <Border IsEnabled="{Binding IsChecked, ElementName=EnabledToggle}" Background="#E9EEE9" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="5" Padding="2" ToolTip="선택한 세로 해상도를 넘는 영상은 원본 FPS로 재생합니다.">
+              <UniformGrid Rows="1" Columns="3">
+                <RadioButton x:Name="HeightAll" Content="전체" GroupName="Height" Style="{StaticResource FpsChoice}" AutomationProperties.Name="세로 해상도 전체 보간"/>
+                <RadioButton x:Name="Height1080" Content="1080p 이하" GroupName="Height" Style="{StaticResource FpsChoice}" AutomationProperties.Name="세로 해상도 1080p 이하 보간"/>
+                <RadioButton x:Name="Height1440" Content="1440p 이하" GroupName="Height" Style="{StaticResource FpsChoice}" AutomationProperties.Name="세로 해상도 1440p 이하 보간"/>
+              </UniformGrid>
+            </Border>
+          </StackPanel>
+          <Grid IsEnabled="{Binding IsChecked, ElementName=EnabledToggle}">
+            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <TextBlock x:Name="OutputRateSummary" Text="출력 방식" FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <TextBlock x:Name="OutputValueLabel" Grid.Column="2" Text="FPS 상한" FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <ComboBox x:Name="OutputModeChoice" Grid.Row="1" Style="{StaticResource OutputSelect}" AutomationProperties.LabeledBy="{Binding ElementName=OutputRateSummary}">
+              <ComboBoxItem Content="FPS 상한"/>
+              <ComboBoxItem Content="원본 배수"/>
+            </ComboBox>
+            <ComboBox x:Name="OutputValueChoice" Grid.Row="1" Grid.Column="2" Style="{StaticResource OutputSelect}" AutomationProperties.LabeledBy="{Binding ElementName=OutputValueLabel}"/>
+          </Grid>
+          <TextBlock x:Name="OutputRateHint" Style="{StaticResource Subtle}" Margin="0,4,0,0"/>
         </StackPanel>
       </TabItem>
       <TabItem x:Name="SetupTab" Header="연결 설정">
