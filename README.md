@@ -2,18 +2,17 @@
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
 
-**[Download v0.4.5](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.5)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+**[Download v0.4.6](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.6)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **FPS 상한 또는 원본 배수**를 골라 원본의 정수배로 보간합니다.
 
 압축을 풀어 사용하는 Windows x64 스탠드얼론 ZIP입니다. 필터·등록 도구·설정창과 .NET/WPF 런타임, 한국어·영어 오프라인 매뉴얼을 포함합니다. NVIDIA 드라이버와 팟플레이어는 별도로 필요합니다.
 
-## v0.4.5의 변경 사항
+## v0.4.6의 변경 사항
 
-- **HW/SW 전환 멈춤 수정:** 하드웨어 가속을 끈 뒤 소프트웨어 NV12 입력과 기존 GPU 출력 연결이 맞지 않아 멈추던 문제를 수정했습니다. NV12/P010 전환 시 출력 형식을 갱신합니다.
-- **CPU NV12도 GPU로 보간·전달:** 호환 D3D11 렌더러에서는 CPU로 디코딩한 8bit SDR 입력을 GPU에 올려 보간한 뒤 GPU 프레임으로 전달합니다. 실제 팟플레이어에서 멈춤 없이 재생되는 것을 확인했습니다. 기존 CPU 10bit 경로도 유지합니다.
-- **선택형 성능 진단:** 처리·버퍼 대기·렌더러 전달 시간을 기록합니다. 기본값은 꺼짐이며 실제 화면의 드랍 수와는 별개입니다.
-- **한·영 매뉴얼 업데이트:** CPU 디코딩, 10bit 유지 조건, 전체화면 HDR 색상 비교 방법을 보완했습니다. [전체 변경 내역](RELEASE.md) · [SW 경로 검증](docs/SW-DECODING.md)
+- **SW 최초 재생 보간 수정:** HW로 시작한 뒤 SW로 바꾸면 동작하지만, 처음부터 HW 가속을 끄고 열면 보간이 빠지던 문제를 수정했습니다. 이제 HW를 먼저 켤 필요 없이 SW 상태에서 바로 열 수 있습니다.
+- **재생·전환 검증:** 팟플레이어를 완전히 종료한 뒤 SW로 다시 시작하는 실제 재생을 확인했습니다. HW/SW 전환과 기존 10bit·HDR 경로도 검사했습니다.
+- **한·영 매뉴얼 업데이트:** SW 시작 방법과 문제 해결 안내를 반영했습니다. [전체 변경 내역](RELEASE.md) · [SW 경로 검증](docs/SW-DECODING.md)
 
 FPS 상한 **60 / 72 / 75 / 100 / 120 / 144 / 240fps**, 원본 배수 **×2 / ×3 / ×4 / ×5**, 원본 FPS·세로 해상도 조건은 그대로 사용할 수 있습니다.
 
@@ -49,7 +48,7 @@ v0.3.0 등 설치 프로그램 버전에서 전환할 때는 설정 파일을 �
 
 Newton 기반 자체 보간, NVOFA 세션·GPU 버퍼 재사용, 빌드 시 셰이더 사전 컴파일을 사용합니다. 기본 분석은 Grid 4·Medium·긴 변 최대 1920이며 Cost Map·Temporal Hints는 꺼져 있습니다. NvOFFRUC.dll과 CUDA 런타임을 포함하거나 호출하지 않습니다. 별도 .NET·CUDA Toolkit 설치가 필요하지 않습니다. 실행 파일은 코드 서명되지 않았습니다.
 
-전체화면 HDR 색상이 과하게 진해지는 일부 환경의 제보는 아직 재현되지 않았습니다. v0.4.5는 이 문제나 모든 4K 프레임 저하가 해결됐다고 주장하지 않습니다. [비교 방법](https://mkyoon80-alt.github.io/nvof-potplayer/#troubleshoot)을 참고하세요.
+전체화면 HDR 색상이 과하게 진해지는 일부 환경의 제보는 아직 재현되지 않았습니다. v0.4.6는 이 문제나 모든 4K 프레임 저하가 해결됐다고 주장하지 않습니다. [비교 방법](https://mkyoon80-alt.github.io/nvof-potplayer/#troubleshoot)을 참고하세요.
 
 ## 문서
 

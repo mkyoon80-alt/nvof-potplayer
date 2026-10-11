@@ -61,7 +61,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.4.5";
+constexpr char kFilterBuild[]="0.4.6";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -689,10 +689,11 @@ public:
             } catch (...) { }
         }
         // Establish GPU allocator BEFORE the renderer negotiates buffers. The
-        // built-in renderer can reject ordinary CPU P010 buffers at connection,
-        // so delaying activation until Run is too late for software decoders.
+        // built-in renderer can reject ordinary host buffers for both NV12
+        // and P010. Waiting until Run loses the SW-only graph before streaming
+        // starts; a prior HW connection must not be required to prime it.
         if(direction==PINDIR_OUTPUT) {
-            const HRESULT uploaded=activate_cpu_upload();if(FAILED(uploaded))return uploaded;
+            const HRESULT uploaded=activate_cpu_upload(true);if(FAILED(uploaded))return uploaded;
         }
         const HRESULT completed=CTransformFilter::CompleteConnect(direction,connected);
         if(FAILED(completed))write_log("CompleteConnect allocator failed HRESULT="+std::to_string(uint32_t(completed)));

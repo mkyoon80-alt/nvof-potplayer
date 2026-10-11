@@ -344,6 +344,7 @@ public:
     void hold_all(){std::lock_guard<std::mutex> guard(results_lock_);hold_all_=true;}
     size_t gpu_count()const{return gpu_count_;}
     size_t cpu_count()const{return cpu_count_;}
+    void require_native_allocator(){require_native_allocator_=true;}
     ~SinkPin() override {
         if (unblock_) CloseHandle(unblock_);
         if (entered_) CloseHandle(entered_);
@@ -352,6 +353,9 @@ public:
         return type->majortype == MEDIATYPE_Video && (type->subtype == MEDIASUBTYPE_NV12 || type->subtype==nvof::p010_subtype) ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
     }
     STDMETHODIMP NotifyAllocator(IMemAllocator* allocator,BOOL read_only) override {
+        // PotPlayer's native renderer needs its device before accepting the
+        // first allocator, not just before Run/Receive.
+        if(require_native_allocator_ && !native_active_)return VFW_E_NO_ALLOCATOR;
         HRESULT result=CBaseInputPin::NotifyAllocator(allocator,read_only);
         if(FAILED(result))return result;
         result=allocator->Commit();if(FAILED(result))return result;
@@ -454,6 +458,7 @@ public:
 private:
     std::mutex results_lock_;
     bool advertise_=true,reject_=false,native_active_=false,hold_all_=false,custom_allocator_=false;
+    bool require_native_allocator_=false;
     size_t gpu_count_=0,cpu_count_=0;
     ComPtr<ID3D11Device> native_device_;
     ComPtr<ID3D11DeviceContext> native_context_;

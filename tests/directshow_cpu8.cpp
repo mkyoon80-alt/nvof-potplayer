@@ -11,6 +11,7 @@ void cpu8_case(IClassFactory* factory, bool reconnect) {
     HRESULT hr=S_OK;
     auto* source=new Source(&hr);check(hr,"source");
     auto* sink=new Sink(&hr,true,false);check(hr,"sink");
+    sink->pin().require_native_allocator();
     ComPtr<IBaseFilter> src=source,dst=sink;
     check(graph->AddFilter(src.Get(),L"Decoder"),"add source");
     check(graph->AddFilter(filter.Get(),L"NVOF"),"add filter");
@@ -67,6 +68,7 @@ void cpu8_case(IClassFactory* factory, bool reconnect) {
             throw std::runtime_error("CPU NV12 must interpolate and deliver GPU surfaces with valid timestamps");
     }
     std::cout<<"PASS "<<(reconnect?"P010 HW -> CPU NV12 -> HW (same renderer, 3 cycles)":"CPU NV12 cold start")
+        <<(color_fixture==1?" (VideoInfo)":" (VideoInfo2)")
         <<"; GPU output, format, seek, pause, restart, timestamps\n";
 }
 std::vector<uint8_t> read_nv12(IMediaSample* sample,ID3D11Device* device,ID3D11DeviceContext* context) {
@@ -95,6 +97,7 @@ void cpu8_pixels(IClassFactory* factory,const std::filesystem::path& raw={}) {
     ComPtr<IGraphBuilder> graph;check(CoCreateInstance(CLSID_FilterGraph,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&graph)),"pixel graph");
     HRESULT hr=S_OK;auto* source=new CpuSource(&hr);check(hr,"pixel source");
     auto* sink=new Sink(&hr,true,false);check(hr,"pixel sink");
+    sink->pin().require_native_allocator();
     ComPtr<IBaseFilter> src=source,dst=sink;
     check(graph->AddFilter(src.Get(),L"Software decoder"),"pixel add source");
     check(graph->AddFilter(filter.Get(),L"NVOF"),"pixel add filter");
@@ -149,6 +152,9 @@ int wmain(int argc,wchar_t** argv) {
         } else {
             cpu8_case(factory.Get(),true);
             cpu8_case(factory.Get(),false);
+            color_fixture=1; // PotPlayer's SW decoder negotiates legacy VideoInfo.
+            cpu8_case(factory.Get(),false);
+            color_fixture=0;
             cpu8_pixels(factory.Get());
         }
     } catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';result=1;}

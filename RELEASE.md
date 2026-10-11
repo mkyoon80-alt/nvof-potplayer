@@ -1,3 +1,39 @@
+# 0.4.6 — SW 최초 재생 보간 수정
+
+A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
+
+**[Download v0.4.6](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.6)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+
+## What's new
+
+- Fixed interpolation failing when PotPlayer starts with hardware decoding disabled. Software-decoded NV12 now prepares GPU output during the initial renderer connection. Starting with HW decoding and then switching to SW is no longer necessary.
+- Verified SW-only startup in actual PotPlayer playback, with regression checks for repeated HW/SW switching, seeking, pause/resume, and 10-bit/HDR paths.
+- Updated both Korean and English online/offline manuals with SW startup instructions and troubleshooting.
+
+## 변경 사항
+
+- **처음부터 SW로 재생해도 보간:** HW로 시작한 뒤 SW로 바꾸면 동작하지만, 처음부터 HW 가속을 끄고 열면 보간이 빠지던 문제를 수정했습니다. 소프트웨어 NV12 입력의 GPU 출력 준비를 최초 렌더러 연결 단계로 앞당겼습니다.
+- **실제 재생 확인:** 팟플레이어를 완전히 종료한 뒤 SW 상태로 새로 실행해도 보간되는 것을 확인했습니다. HW/SW 반복 전환, 탐색·일시정지와 기존 10bit·HDR 경로도 검증했습니다.
+- **한·영 매뉴얼:** 네이티브 DXVA가 필수는 아니라는 점과 SW로 처음 여는 방법, 업데이트 후 확인 순서를 반영했습니다.
+
+## 업데이트 / Update
+
+팟플레이어와 설정창을 완전히 닫고 기존 폴더를 백업한 뒤 프로그램 파일을 교체하세요. **기존 `NvofPotPlayer.ini`는 보존합니다.** 같은 폴더에서 업데이트하면 기존 등록을 사용할 수 있습니다. 내장 D3D11 렌더러를 사용하며, SW 디코딩을 쓸 때 HW를 먼저 켤 필요는 없습니다.
+
+Close PotPlayer and the controller, back up the folder, and replace the program files while **keeping your existing `NvofPotPlayer.ini`**. Registration remains valid when updating in the same folder. Use PotPlayer's built-in D3D11 renderer. You can open the video directly with hardware decoding disabled.
+
+스탠드얼론 ZIP에는 자체 .NET/WPF 런타임과 한국어·영어 오프라인 매뉴얼이 포함됩니다. 매뉴얼은 언어별 HTML·ZIP으로도 제공합니다. NVIDIA GPU와 드라이버, 팟플레이어는 별도로 필요합니다.
+
+The standalone ZIP includes the self-contained .NET/WPF runtime and both offline manuals. Separate HTML and ZIP manuals are also available in each language. An NVIDIA GPU, its driver, and PotPlayer are still required.
+
+원본이 10bit라도 디코더가 NV12로 넘기면 8bit 경로입니다. 10bit를 유지하려면 지원되는 10bit 입력 형식을 사용하세요. 인터레이스 영상 설정과 HDR 지원 범위는 매뉴얼을 참고하세요. 이번 변경은 SW 최초 연결 수정이며, 모든 4K 성능 저하나 별도 제보된 전체화면 HDR 색상 문제의 해결을 의미하지 않습니다.
+
+A 10-bit source decoded to NV12 reaches the filter as 8-bit. Use a supported 10-bit decoder output to retain precision. This update addresses SW startup; it does not claim to resolve every 4K frame-rate drop or the separate fullscreen HDR color report.
+
+[SW decoding and verification](docs/SW-DECODING.md) · [CPU 10-bit/interlaced input](docs/CPU-10BIT.md)
+
+---
+
 # 0.4.5 — SW 디코딩 전환 멈춤 수정
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
