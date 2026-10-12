@@ -8,8 +8,8 @@ Visual Studio 2022 C++, Windows SDK, CMake 3.20+, Git and official NVIDIA Optica
 
 ~~~powershell
 .\tools\fetch-build-deps.ps1
-.\tools\build.ps1 -BuildDirectory build\release047\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
-.\ui\build-ui.ps1 -OutputDirectory ui\staging-release047
+.\tools\build.ps1 -BuildDirectory build\release048\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
+.\ui\build-ui.ps1 -OutputDirectory ui\staging-release048
 ~~~
 
 The filter and register helper use static MSVC /MT. Shader bytecode is generated at build time. CMake never finds CUDA or builds the old FRUC bridge in this profile. Historical FRUC-specific research tests remain as source references but are not active build targets.
@@ -19,19 +19,19 @@ Supported CPU NV12 SDR and 10-bit samples upload to the GPU and return GPU surfa
 ## Package and manual
 
 ~~~powershell
-.\tools\build-local-package.ps1 -Version 0.4.7 -NativeDirectory build\release047\native\Release -UiDirectory ui\staging-release047
-python tools/build-manual-site.py --output build/release047/manual-site
-python tools/build-manual-assets.py --site-dir build/release047/manual-site --version 0.4.7 --language ko --output dist
-python tools/build-manual-assets.py --site-dir build/release047/manual-site --version 0.4.7 --language en --output dist
+.\tools\build-local-package.ps1 -Version 0.4.8 -NativeDirectory build\release048\native\Release -UiDirectory ui\staging-release048
+python tools/build-manual-site.py --output build/release048/manual-site
+python tools/build-manual-assets.py --site-dir build/release048/manual-site --version 0.4.8 --language ko --output dist
+python tools/build-manual-assets.py --site-dir build/release048/manual-site --version 0.4.8 --language en --output dist
 ~~~
 
-The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. v0.4.7 is distributed as a standalone ZIP. The optional developer tool tools/build-installer.ps1 still supports Inno Setup 7.1.0; the compiler is not shipped.
+The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. v0.4.8 is distributed as a standalone ZIP. The optional developer tool tools/build-installer.ps1 still supports Inno Setup 7.1.0; the compiler is not shipped.
 
 Old runtime acquisition scripts are unnecessary. tools/install-phase-upgrade.ps1 is retired to prevent accidental installation of FRUC. Earlier acquisition evidence remains in config/legacy-runtime-manifest.json and Git history, not in the current package.
 
 ## Validation
 
-tools/build.ps1 runs eighteen core, parser, conversion and shader validation tests. Explicit GPU tests include native_cost_map, native_motion_layers, native_motion_guard, native_cpu_transport, gpu_interop_stress and NV12/P010 DirectShow tests. Use an absent runtime path for native engine tests.
+tools/build.ps1 runs nineteen core, parser, conversion and shader validation tests. Explicit GPU tests include native_cost_map, native_motion_layers, native_motion_guard, native_cpu_transport, gpu_interop_stress and NV12/P010 DirectShow tests. Use an absent runtime path for native engine tests.
 
 runtime_dependencies.exe audits a package for removed FRUC/CUDA/driver files and loads its filter. Import-table inspection verifies that product binaries do not depend on CUDA or FRUC.
 
@@ -60,3 +60,13 @@ The CPU NV12 fixture requires renderer device activation before the initial allo
 ## v0.4.7 regression coverage
 
 See [PLAYBACK-PERFORMANCE.md](PLAYBACK-PERFORMANCE.md), [SOFTWARE-HDR-TRIAL.md](SOFTWARE-HDR-TRIAL.md), and [THIN-OVERLAY-TRIAL.md](THIN-OVERLAY-TRIAL.md) for shared-context, HDR allocator, and thin-line controls. Stop player/GPU workloads before GPU tests. Keep test logs and source media out of release packages.
+
+## v0.4.8 adapter-selection coverage
+
+Run `adapter_selection_tests.exe` for CPU-only selection policy checks.
+`directshow_cpu8.exe <filter.ax> --adapter-hint-regression` injects a non-NVIDIA
+and invalid renderer hint while checking SW starts and retained P010 HW/SW
+connections. `--adapter-nv12-regression` checks NV12 HW/SW cycling with an
+invalid hint. The first test deliberately fails against released 0.4.7.
+Use a separate test INI/LOCALAPPDATA, and close players before GPU tests.
+See [ADAPTER-SWITCH-TRIAL.md](ADAPTER-SWITCH-TRIAL.md) for physical-PC verification.

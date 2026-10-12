@@ -49,6 +49,7 @@
 #include "nvof/mf_bridge.hpp"
 #include "nvof/input_rate_policy.hpp"
 #include "nvof/output_rate_policy.hpp"
+#include "nvof/adapter_selection.hpp"
 
 // Independent identity: never replaces the Smootter/VapourSynth filter.
 // {EDECA044-78CD-40EB-8F37-63D947C501A0}
@@ -61,7 +62,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.4.7";
+constexpr char kFilterBuild[]="0.4.8";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -591,21 +592,44 @@ public:
 
     UINT native_adapter() {
         auto renderer=native_renderer();
-        if(renderer)return renderer->GetD3D11AdapterIndex();
+        const UINT hint=renderer?renderer->GetD3D11AdapterIndex():UINT_MAX;
+        std::optional<uint64_t> retained;
+        {CAutoLock receive(&m_csReceive);if(renderer_gpu_committed_)retained=renderer_adapter_luid_;}
         Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
-        if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))return UINT_MAX;
-        UINT first_nvidia=UINT_MAX;
+        if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+            throw std::runtime_error("Cannot enumerate NVIDIA adapters");
+        std::vector<nvof::AdapterCandidate> candidates;
         for(UINT index=0;;++index) {
             Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-            if(factory->EnumAdapters1(index,&adapter)==DXGI_ERROR_NOT_FOUND)break;
+            const HRESULT next=factory->EnumAdapters1(index,&adapter);
+            if(next==DXGI_ERROR_NOT_FOUND)break;
+            if(FAILED(next) || !adapter)throw std::runtime_error("DXGI adapter enumeration failed");
             DXGI_ADAPTER_DESC1 description{};
-            if(adapter && SUCCEEDED(adapter->GetDesc1(&description)) && description.VendorId==0x10de &&
-                !(description.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)) {
-                if(wcsstr(description.Description,L"5090"))return index;
-                if(first_nvidia==UINT_MAX)first_nvidia=index;
-            }
+            if(FAILED(adapter->GetDesc1(&description)))throw std::runtime_error("Cannot identify DXGI adapter");
+            candidates.push_back({index,adapter_luid(description.AdapterLuid),description.VendorId,
+                bool(description.Flags&DXGI_ADAPTER_FLAG_SOFTWARE),wcsstr(description.Description,L"5090")!=nullptr});
         }
-        return first_nvidia;
+        const auto selected=nvof::select_nvidia_adapter(candidates,hint,retained);
+        if(!selected)throw std::runtime_error(retained?"Retained renderer NVIDIA adapter is unavailable":"No NVIDIA D3D11 hardware adapter");
+        // Connection-time only; no additional work/logging on the frame path.
+        if(selected->index!=hint && renderer) {
+            write_log("adapter selection: rendererHint="+std::to_string(hint)+
+                " selectedNvidiaIndex="+std::to_string(selected->index)+
+                " reason="+(retained?"retained-renderer-luid":"validated-nvidia-fallback"));
+        }
+        return selected->index;
+    }
+
+    static uint64_t adapter_luid(LUID luid) noexcept {
+        return (uint64_t(uint32_t(luid.HighPart))<<32)|luid.LowPart;
+    }
+    static std::optional<uint64_t> device_adapter_luid(ID3D11Device* device) noexcept {
+        Microsoft::WRL::ComPtr<IDXGIDevice> dxgi;
+        Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+        DXGI_ADAPTER_DESC desc{};
+        if(!device || FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgi))) ||
+           FAILED(dxgi->GetAdapter(&adapter)) || FAILED(adapter->GetDesc(&desc)) || desc.VendorId!=0x10de)return {};
+        return adapter_luid(desc.AdapterLuid);
     }
 
     HRESULT activate_native(ID3D11Device* device,ID3D11DeviceContext* context,HANDLE mutex,UINT flags) {
@@ -626,6 +650,8 @@ public:
         Microsoft::WRL::ComPtr<ID3D11Device> context_device;
         context->GetDevice(&context_device);
         if(context_device.Get()!=device)return E_INVALIDARG;
+        const auto device_luid=device_adapter_luid(device);
+        if(!device_luid)return VFW_E_TYPE_NOT_ACCEPTED;
         HANDLE duplicate=nullptr;
         if(mutex && !DuplicateHandle(GetCurrentProcess(),mutex,GetCurrentProcess(),&duplicate,0,FALSE,DUPLICATE_SAME_ACCESS))
             return HRESULT_FROM_WIN32(GetLastError());
@@ -647,7 +673,7 @@ public:
                 write_log("native activation rejected by renderer HRESULT="+std::to_string(static_cast<unsigned long>(result)));
                 return result;
             }
-            if(renderer) {renderer_mutex_lifetime_=duplicate_owner;renderer_gpu_committed_=true;}
+            if(renderer) {renderer_mutex_lifetime_=duplicate_owner;renderer_gpu_committed_=true;renderer_adapter_luid_=device_luid;}
             release_native_activation(false);
             native_device_=device;native_context_=context;native_mutex_=duplicate;
             native_mutex_lifetime_=std::move(duplicate_owner);
@@ -703,6 +729,8 @@ public:
                 return VFW_E_TYPE_NOT_ACCEPTED;
             }
             if(native_pending_) {
+                const auto device_luid=device_adapter_luid(native_device_.Get());
+                if(!device_luid)return VFW_E_TYPE_NOT_ACCEPTED;
                 Microsoft::WRL::ComPtr<nvof::transport::DecoderConfiguration> renderer;
                 HRESULT activated=connected->QueryInterface(IID_PPV_ARGS(&renderer));
                 if(SUCCEEDED(activated))activated=renderer->ActivateD3D11Decoding(native_device_.Get(),
@@ -712,10 +740,14 @@ public:
                         std::to_string(static_cast<unsigned long>(activated)));
                     return activated;
                 }
-                renderer_mutex_lifetime_=native_mutex_lifetime_;
-                renderer_gpu_committed_=true;
-                native_pending_=false;
-                native_gpu_active_=true;
+                {
+                    CAutoLock receive(&m_csReceive);
+                    renderer_mutex_lifetime_=native_mutex_lifetime_;
+                    renderer_gpu_committed_=true;
+                    renderer_adapter_luid_=device_luid;
+                    native_pending_=false;
+                    native_gpu_active_=true;
+                }
                 write_log("pending native activation completed by compatible renderer");
             }
             try {
@@ -764,6 +796,7 @@ public:
                 native_pending_=!!native_device_;
                 renderer_mutex_lifetime_.reset();
                 renderer_gpu_committed_=false;
+                renderer_adapter_luid_.reset();
             }
         }
         if (direction==PINDIR_OUTPUT) native_renderer_supported_.store(false,std::memory_order_release);
@@ -1851,6 +1884,7 @@ private:
     std::unique_ptr<nvof::CpuUpload> cpu_upload_;
     bool native_gpu_active_=false;
     bool renderer_gpu_committed_=false; // Survives input-only reconnects.
+    std::optional<uint64_t> renderer_adapter_luid_; // Actual accepted GPU, survives input-only reconnects.
     bool gpu_delivery_verified_=false;
     bool native_pending_=false;
     bool pending_gpu_media_type_=false;
@@ -1966,7 +2000,11 @@ STDMETHODIMP ProbeInputPin::NotifyAllocator(IMemAllocator* allocator,BOOL read_o
 STDMETHODIMP ProbeInputPin::ActivateD3D11Decoding(ID3D11Device* device,ID3D11DeviceContext* context,HANDLE mutex,UINT flags) {
     return owner_->activate_native(device,context,mutex,flags);
 }
-STDMETHODIMP_(UINT) ProbeInputPin::GetD3D11AdapterIndex() {return owner_->native_adapter();}
+STDMETHODIMP_(UINT) ProbeInputPin::GetD3D11AdapterIndex() {
+    try {return owner_->native_adapter();}
+    catch(const std::exception& e) {write_log(std::string("native adapter query failed: ")+e.what());return UINT_MAX;}
+    catch(...) {return UINT_MAX;}
+}
 
 class NvofPropertyPage final : public CBasePropertyPage {
 public:

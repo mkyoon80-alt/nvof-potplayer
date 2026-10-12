@@ -6,7 +6,7 @@ import shutil
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTES = ("HDR-NATIVE-TRIAL.md", "CPU-10BIT.md", "SW-DECODING.md", "VP9-HDR.md", "DOLBY-VISION-HLG.md", "PLAYBACK-PERFORMANCE.md", "SOFTWARE-HDR-TRIAL.md", "THIN-OVERLAY-TRIAL.md")
+NOTES = ("HDR-NATIVE-TRIAL.md", "CPU-10BIT.md", "SW-DECODING.md", "VP9-HDR.md", "DOLBY-VISION-HLG.md", "PLAYBACK-PERFORMANCE.md", "SOFTWARE-HDR-TRIAL.md", "THIN-OVERLAY-TRIAL.md", "ADAPTER-SWITCH-TRIAL.md")
 
 class Links(HTMLParser):
     def __init__(self):

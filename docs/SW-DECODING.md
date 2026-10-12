@@ -1,10 +1,19 @@
-# Software decoding and GPU delivery — v0.4.7
+# Software decoding and GPU delivery — v0.4.8
 
 Native DXVA is recommended when available, but is not required. With a
 compatible D3D11 renderer, software-decoded NV12 SDR frames now upload to the
 NVIDIA GPU, use the common interpolation pipeline, and reach the renderer as
 GPU surfaces. This path does not read the synthesized full frames back to CPU
 memory. Existing P010/P016/P210/Y210 input support is retained.
+
+## v0.4.8: GPU selection with integrated graphics enabled
+
+An unvalidated renderer adapter index could select a non-NVIDIA GPU after an
+input-only HW-to-SW reconnect. The filter now validates the index and retains
+the actual NVIDIA GPU identity accepted by the renderer. Fresh SW startup also
+handles invalid/non-NVIDIA hints. The trial was confirmed working on an RTX
+5080 + AMD integrated-GPU PC without disabling integrated graphics. Existing
+NV12/P010 and HDR processing remain unchanged. See [validation and scope](ADAPTER-SWITCH-TRIAL.md).
 
 ## v0.4.7: HDR precision after switching
 

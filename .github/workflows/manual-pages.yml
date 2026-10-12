@@ -13,6 +13,7 @@ on:
       - 'docs/PLAYBACK-PERFORMANCE.md'
       - 'docs/SOFTWARE-HDR-TRIAL.md'
       - 'docs/THIN-OVERLAY-TRIAL.md'
+      - 'docs/ADAPTER-SWITCH-TRIAL.md'
       - 'licenses/**'
       - 'THIRD_PARTY_NOTICES.md'
       - 'tools/build-manual-site.py'

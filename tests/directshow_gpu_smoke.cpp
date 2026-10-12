@@ -322,6 +322,7 @@ private:
     SourcePin pin_;
     EncodedInfoPin encoded_;
 };
+UINT renderer_adapter_hint=0;
 class SinkPin final : public CBaseInputPin, public nvof::transport::DecoderConfiguration {
 public:
     DECLARE_IUNKNOWN;
@@ -341,7 +342,7 @@ public:
         if(!device || !context)return E_POINTER;
         native_device_=device;native_context_=context;borrowed_mutex_=mutex;native_active_=true;return S_OK;
     }
-    STDMETHODIMP_(UINT) GetD3D11AdapterIndex() override {return 0;}
+    STDMETHODIMP_(UINT) GetD3D11AdapterIndex() override {return renderer_adapter_hint;}
     bool borrowed_mutex_valid()const {DWORD flags=0;return !borrowed_mutex_ || GetHandleInformation(borrowed_mutex_,&flags)!=FALSE;}
     void hold_all(){std::lock_guard<std::mutex> guard(results_lock_);hold_all_=true;}
     long allocator_capacity()const{return allocator_capacity_;}

@@ -1,3 +1,29 @@
+# v0.4.8 — GPU selection when switching HW/SW decoding
+
+## 한국어
+
+내장 GPU와 NVIDIA GPU가 함께 있는 PC에서 HW 디코딩을 SW로 바꾸면 재생이 멈추던 GPU 선택 문제를 수정했습니다. 렌더러가 전달한 GPU 번호를 검증하고, 전환 전 정상 사용하던 NVIDIA GPU를 유지합니다. 처음부터 SW로 시작할 때도 잘못된 GPU 번호를 그대로 사용하지 않습니다.
+
+RTX 5080 + AMD 내장 GPU 환경에서 수정본의 정상 동작을 확인했습니다. 내장 GPU를 끌 필요가 없으며, 기존 보간 품질·HDR·10bit 경로와 사용자 설정은 유지합니다. 프레임마다 수행하는 추가 검사나 로그는 넣지 않았습니다. 한국어·영어 온라인 및 오프라인 매뉴얼도 업데이트했습니다.
+
+업데이트 전에 팟플레이어와 NVOF 설정창을 닫고 기존 폴더를 백업하세요. 같은 폴더에 교체할 때 **기존 NvofPotPlayer.ini를 보존**하세요.
+
+## English
+
+Fixed GPU selection that could stop playback when switching from hardware to software decoding on PCs with both an integrated GPU and an NVIDIA GPU. Renderer adapter indices are validated, and the NVIDIA GPU already accepted by the renderer is retained across input-only reconnection. Software startup also rejects invalid/non-NVIDIA hints before selecting an available NVIDIA adapter.
+
+The trial was confirmed working on an RTX 5080 + AMD integrated-GPU PC. Disabling the integrated GPU is unnecessary for this fix. Interpolation, HDR/10-bit processing, and user settings are preserved. No per-frame diagnostics or logging were added. Korean and English online, offline ZIP, and standalone HTML guides are updated.
+
+Close PotPlayer and the controller, back up the existing folder, and **preserve NvofPotPlayer.ini** when replacing files in the same location.
+
+## Validation and scope
+
+Released 0.4.7 reproduced the reported non-NVIDIA adapter error under an injected renderer hint; the corrected build passed. Tests cover invalid hints, retained GPU identity, NV12/P010 HW/SW switching, software startup, HDR/10-bit precision and metadata, and renderer/resource lifetime. The main test PC has no integrated GPU; its injected-hint tests are separate from the user's successful 5080/AMD playback check.
+
+This fixes the reported adapter-selection failure, not every possible multi-GPU configuration. Prior HDR display-color and moving-object occlusion limitations remain unchanged. See [GPU selection validation](docs/ADAPTER-SWITCH-TRIAL.md).
+
+---
+
 # v0.4.7 — Playback scheduling, software HDR, and thin fixed lines
 
 ## 한국어

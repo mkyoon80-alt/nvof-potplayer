@@ -45,7 +45,7 @@ def main():
     source = f"https://github.com/mkyoon80-alt/nvof-potplayer/blob/v{args.version}/"
     html = html.replace('href="THIRD_PARTY_NOTICES.md"', f'href="{source}THIRD_PARTY_NOTICES.md"')
     html = html.replace('href="licenses/', f'href="{source}licenses/')
-    for note in ("HDR-NATIVE-TRIAL.md", "CPU-10BIT.md", "SW-DECODING.md", "VP9-HDR.md", "DOLBY-VISION-HLG.md", "PLAYBACK-PERFORMANCE.md", "SOFTWARE-HDR-TRIAL.md", "THIN-OVERLAY-TRIAL.md"):
+    for note in ("HDR-NATIVE-TRIAL.md", "CPU-10BIT.md", "SW-DECODING.md", "VP9-HDR.md", "DOLBY-VISION-HLG.md", "PLAYBACK-PERFORMANCE.md", "SOFTWARE-HDR-TRIAL.md", "THIN-OVERLAY-TRIAL.md", "ADAPTER-SWITCH-TRIAL.md"):
         html = html.replace(f'href="{note}"', f'href="{source}docs/{note}"')
     html = html.replace('href="en.html"', 'href="https://mkyoon80-alt.github.io/nvof-potplayer/en.html"')
     html = html.replace('href="index.html"', 'href="https://mkyoon80-alt.github.io/nvof-potplayer/"')

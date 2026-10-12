@@ -2,8 +2,9 @@
 // previously negotiated P010 output survive switching the decoder to software.
 #define NVOF_CPU10_HELPERS_ONLY
 #include "directshow_cpu10.cpp"
+#include "nvof/mf_bridge.hpp"
 
-void cpu8_case(IClassFactory* factory, bool reconnect) {
+void cpu8_case(IClassFactory* factory, bool reconnect, bool hardware_p010=true) {
     ComPtr<IBaseFilter> filter;
     check(factory->CreateInstance(nullptr,IID_PPV_ARGS(&filter)),"create filter");
     ComPtr<IGraphBuilder> graph;
@@ -24,9 +25,9 @@ void cpu8_case(IClassFactory* factory, bool reconnect) {
     ComPtr<nvof::transport::DecoderConfiguration> native;
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
     if(reconnect) {
-        check(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,
-            D3D11_CREATE_DEVICE_VIDEO_SUPPORT|D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"device");
+        // Do not assume adapter zero is NVIDIA on a hybrid system.
+        nvof::MfD3d11Bridge bridge;
+        device=bridge.device();context=bridge.context();
         ComPtr<ID3D10Multithread> protection;check(context.As(&protection),"context protection");
         protection->SetMultithreadProtected(TRUE);
         check(in.As(&native),"native contract");
@@ -35,7 +36,7 @@ void cpu8_case(IClassFactory* factory, bool reconnect) {
     check(graph->ConnectDirect(out.Get(),&sink->pin(),nullptr),"connect renderer");
     for(int cycle=0;cycle<(reconnect?3:1);++cycle) {
         if(reconnect) {
-            p010_fixture=true;
+            p010_fixture=hardware_p010;
             if(cycle)check(native->ActivateD3D11Decoding(device.Get(),context.Get(),nullptr,0),"return to HW");
             check(source->pin().set_gpu_mode(true),"HW samples");
             check(control->Run(),"HW Run");
@@ -43,7 +44,8 @@ void cpu8_case(IClassFactory* factory, bool reconnect) {
             check(source->pin().push_gpu(1,device.Get(),context.Get()),"HW interpolation");
             check(control->Stop(),"HW Stop");
             CMediaType retained;check(out->ConnectionMediaType(&retained),"retained type");
-            if(retained.subtype!=nvof::p010_subtype)throw std::runtime_error("fixture did not establish P010");
+            if(retained.subtype!=(hardware_p010?nvof::p010_subtype:MEDIASUBTYPE_NV12))
+                throw std::runtime_error("fixture did not establish requested HW format");
             check(graph->Disconnect(&source->pin()),"disconnect decoder");
             check(graph->Disconnect(in.Get()),"disconnect input only");
             check(graph->ConnectDirect(&source->pin(),in.Get(),&media),"reconnect CPU decoder");
@@ -67,7 +69,8 @@ void cpu8_case(IClassFactory* factory, bool reconnect) {
         if(sink->pin().cpu_count() || sink->pin().gpu_count()<=before+16 || !sink->pin().valid)
             throw std::runtime_error("CPU NV12 must interpolate and deliver GPU surfaces with valid timestamps");
     }
-    std::cout<<"PASS "<<(reconnect?"P010 HW -> CPU NV12 -> HW (same renderer, 3 cycles)":"CPU NV12 cold start")
+    std::cout<<"PASS "<<(reconnect?(hardware_p010?"P010 HW -> CPU NV12 -> HW (same renderer, 3 cycles)":
+        "NV12 HW -> CPU NV12 -> HW (same renderer, 3 cycles)"):"CPU NV12 cold start")
         <<(color_fixture==1?" (VideoInfo)":" (VideoInfo2)")
         <<"; GPU output, format, seek, pause, restart, timestamps\n";
 }
@@ -146,7 +149,32 @@ int wmain(int argc,wchar_t** argv) {
     try {
         auto get=reinterpret_cast<HRESULT(WINAPI*)(REFCLSID,REFIID,void**)>(GetProcAddress(module,"DllGetClassObject"));
         ComPtr<IClassFactory> factory;check(get(kFilter,IID_PPV_ARGS(&factory)),"factory");
-        if(argc>4) {
+        if(argc==3 && std::wstring(argv[2])==L"--adapter-nv12-regression") {
+            renderer_adapter_hint=0xfffffffeu;
+            cpu8_case(factory.Get(),true,false);
+            renderer_adapter_hint=0;
+        } else if(argc==3 && std::wstring(argv[2])==L"--adapter-hint-regression") {
+            ComPtr<IDXGIFactory1> dxgi;check(CreateDXGIFactory1(IID_PPV_ARGS(&dxgi)),"DXGI");
+            UINT non_nvidia=UINT_MAX;
+            for(UINT i=0;;++i) {
+                ComPtr<IDXGIAdapter1> adapter;const HRESULT next=dxgi->EnumAdapters1(i,&adapter);
+                if(next==DXGI_ERROR_NOT_FOUND)break;
+                check(next,"adapter");DXGI_ADAPTER_DESC1 desc{};check(adapter->GetDesc1(&desc),"adapter description");
+                if(desc.VendorId!=0x10de || (desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)) {non_nvidia=i;break;}
+            }
+            if(non_nvidia==UINT_MAX)throw std::runtime_error("Regression needs a non-NVIDIA or software adapter");
+            renderer_adapter_hint=non_nvidia;
+            std::cout<<"Renderer advertises non-NVIDIA adapter index "<<non_nvidia<<'\n';
+            cpu8_case(factory.Get(),true);
+            cpu8_case(factory.Get(),false);
+            color_fixture=1;cpu8_case(factory.Get(),false);color_fixture=0;
+            // Also check stale/out-of-range renderer hints without ever using
+            // that index to construct a device on the corrected path.
+            renderer_adapter_hint=0xfffffffeu;
+            cpu8_case(factory.Get(),true);
+            cpu8_case(factory.Get(),false);
+            renderer_adapter_hint=0;
+        } else if(argc>4) {
             kWidth=_wtoi(argv[3]);kHeight=_wtoi(argv[4]);kDuration=420000;
             cpu8_pixels(factory.Get(),argv[2]);
         } else {

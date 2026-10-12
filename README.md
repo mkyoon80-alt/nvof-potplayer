@@ -2,18 +2,17 @@
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
 
-**[Download v0.4.7](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.7)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+**[Download v0.4.8](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.8)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **FPS 상한 또는 원본 배수**를 골라 원본의 정수배로 보간합니다.
 
 압축을 풀어 사용하는 Windows x64 스탠드얼론 ZIP입니다. 필터·등록 도구·설정창과 .NET/WPF 런타임, 한국어·영어 오프라인 매뉴얼을 포함합니다. NVIDIA 드라이버와 팟플레이어는 별도로 필요합니다.
 
-## v0.4.7의 변경 사항
+## v0.4.8의 변경 사항
 
-- **HW 재생 대기 개선:** 디코더·보간·렌더러가 공유하는 GPU 장치를 기다리는 동안 잠금을 오래 잡지 않도록 했습니다. P010의 불필요한 완료 대기와 높은 배수에서의 출력 버퍼 대기도 줄였습니다. 저지연 모드 켜기 상태의 실제 재생으로 확인했습니다.
-- **SW HDR·10bit 연결 개선:** HDR 영상을 처음부터 SW로 열거나 HW에서 SW로 전환할 때, 지원되는 디코더에서 실제 P010을 받아 10bit를 유지합니다. 반복 전환 중 멈추던 연결 문제도 수정했습니다.
-- **고정 조준선 개선:** 가는 가로·세로 선이 움직이는 배경을 따라 갈라지는 현상을 줄였습니다. 움직이는 총 주변 등 가려짐 경계의 깨짐은 아직 남아 있습니다.
-- **한·영 매뉴얼 업데이트:** 재생 성능, SW HDR 확인법과 HDR 색상 비교 방법을 반영했습니다. [전체 변경 내역](RELEASE.md)
+- **내장 GPU가 함께 있는 PC의 HW→SW 전환 멈춤 수정:** 렌더러의 GPU 번호를 검증하고, 이미 사용하던 NVIDIA GPU를 유지하도록 했습니다. RTX 5080 + AMD 내장 GPU 환경에서 수정본의 정상 동작을 확인했습니다.
+- **SW 시작 시 GPU 선택 개선:** 잘못된 GPU 번호가 전달되어도 사용 가능한 NVIDIA GPU를 선택합니다. 내장 GPU를 끄는 설정 변경은 필요하지 않습니다.
+- **한·영 매뉴얼 업데이트:** 다중 GPU 환경의 전환 문제와 설정을 보존하는 업데이트 방법을 추가했습니다. 기존 보간·HDR·10bit 처리와 출력 설정은 유지합니다. [전체 변경 내역](RELEASE.md)
 
 FPS 상한 **60 / 72 / 75 / 100 / 120 / 144 / 240fps**, 원본 배수 **×2 / ×3 / ×4 / ×5**, 원본 FPS·세로 해상도 조건은 그대로 사용할 수 있습니다.
 
@@ -41,11 +40,11 @@ v0.3.0 등 설치 프로그램 버전에서 전환할 때는 설정 파일을 �
 
 ## 지원 범위
 
-- Windows 10 2004 이상 / Windows 11 x64, Optical Flow 지원 NVIDIA GPU와 드라이버. 실제 재생 검증 장비는 RTX 5090입니다.
+- Windows 10 2004 이상 / Windows 11 x64, Optical Flow 지원 NVIDIA GPU와 드라이버. 주요 재생 검증은 RTX 5090에서 진행했으며, RTX 5080 + AMD 내장 GPU 환경에서도 HW/SW 전환 수정본의 정상 동작을 확인했습니다.
 - 네이티브 D3D11 경로: 제한 범위 BT.709 SDR(NV12/P010), BT.2020 HDR10(PQ)·HLG(P010). P010 원본과 중간 프레임을 10bit로 유지합니다.
 - HDR10 파일과 YouTube AV1·VP9 HDR의 실제 재생 색상을 확인했습니다. HEVC HLG는 실제 재생·신호 전달을 확인했으며 별도 화면 색상 비교는 남아 있습니다.
 - Dolby Vision은 디코더가 제공한 메타데이터의 전달을 지원합니다. Profile 8.1에서 확인했으며 Profile 5·7 등의 전체 처리나 화면의 Dolby Vision 모드는 보장하지 않습니다. HDR10+ 동적 메타데이터는 지원하지 않습니다. 톤매핑과 화면 HDR 전환은 플레이어·렌더러가 담당합니다.
-- CPU 입력은 NV12 SDR과 P010/P016/P210/Y210을 지원합니다. 지원되는 SW HDR 연결은 P010을 요청해 실제 10bit를 유지합니다. 디코더가 이를 지원하지 않고 NV12로 전달하면 8bit 입력이며, 잃은 정밀도를 복원하지 않습니다. 10bit 경로는 P010 4:2:0으로 출력하며 P016의 상위 10bit를 사용합니다. CPU 10bit 프로그레시브와 1080i 인터레이스를 확인했습니다. 일반 텔레시네·단일 필드·반복 필드 및 다중 GPU 구성은 검증 범위 밖입니다.
+- CPU 입력은 NV12 SDR과 P010/P016/P210/Y210을 지원합니다. 지원되는 SW HDR 연결은 P010을 요청해 실제 10bit를 유지합니다. 디코더가 이를 지원하지 않고 NV12로 전달하면 8bit 입력이며, 잃은 정밀도를 복원하지 않습니다. 10bit 경로는 P010 4:2:0으로 출력하며 P016의 상위 10bit를 사용합니다. CPU 10bit 프로그레시브와 1080i 인터레이스를 확인했습니다. 일반 텔레시네·단일 필드·반복 필드 및 그 밖의 다중 GPU 구성은 별도 검증이 필요합니다.
 
 Newton 기반 자체 보간, NVOFA 세션·GPU 버퍼 재사용, 빌드 시 셰이더 사전 컴파일을 사용합니다. 기본 분석은 Grid 4·Medium·긴 변 최대 1920이며 Cost Map·Temporal Hints는 꺼져 있습니다. NvOFFRUC.dll과 CUDA 런타임을 포함하거나 호출하지 않습니다. 별도 .NET·CUDA Toolkit 설치가 필요하지 않습니다. 실행 파일은 코드 서명되지 않았습니다.
 
@@ -57,6 +56,7 @@ SDR 모드의 HDR 과밝기는 로컬 비교에서 팟플레이어의 **D3D11 HD
 - [온라인 사용 설명서](https://mkyoon80-alt.github.io/nvof-potplayer/) · [오프라인 설명서](docs/manual/index.html)
 - [팟플레이어 연결](docs/POTPLAYER_SETUP.ko.md)
 - [재생 대기 최적화](docs/PLAYBACK-PERFORMANCE.md) · [SW HDR·10bit 검증](docs/SOFTWARE-HDR-TRIAL.md) · [가는 고정선 검증](docs/THIN-OVERLAY-TRIAL.md)
+- [내장 GPU 환경의 HW/SW 전환 수정](docs/ADAPTER-SWITCH-TRIAL.md)
 - [빌드 및 패키징](docs/BUILD.md)
 - [릴리스 변경 내역](RELEASE.md)
 - [정수배 출력 검증](docs/INTEGER-RATE-TRIAL.md) · [HDR 구현 범위](docs/HDR-NATIVE-TRIAL.md)
