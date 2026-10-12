@@ -115,7 +115,13 @@ separated from uninterrupted playback before interpreting long waits.
 ## Separate HDR appearance reports
 
 The local HDR-to-SDR overbrightness report also occurred with NVOF excluded.
-The cause of this and other fullscreen red/oversaturated reports is not yet
-confirmed; v0.4.7 does not claim a color-management fix. Compare the same scene
+The user resolved that SDR-viewing case by turning off PotPlayer's Use H/W
+HDR output mode while retaining ST 2084 correction, Auto tone mapping, and
+125-nit SDR luminance. Hardware decoding can remain enabled. See the
+[SDR viewing setup](https://mkyoon80-alt.github.io/nvof-potplayer/en.html#hdr-sdr) and
+[observation record](SOFTWARE-HDR-TRIAL.md#observation).
+
+The separate fullscreen red/oversaturated report remains unconfirmed;
+v0.4.7 does not claim a general color-management fix. Compare the same scene
 with the filter excluded (not just interpolation disabled), then check player,
 Windows, driver, and monitor display settings. Record original values.

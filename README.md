@@ -49,7 +49,7 @@ v0.3.0 등 설치 프로그램 버전에서 전환할 때는 설정 파일을 �
 
 Newton 기반 자체 보간, NVOFA 세션·GPU 버퍼 재사용, 빌드 시 셰이더 사전 컴파일을 사용합니다. 기본 분석은 Grid 4·Medium·긴 변 최대 1920이며 Cost Map·Temporal Hints는 꺼져 있습니다. NvOFFRUC.dll과 CUDA 런타임을 포함하거나 호출하지 않습니다. 별도 .NET·CUDA Toolkit 설치가 필요하지 않습니다. 실행 파일은 코드 서명되지 않았습니다.
 
-HDR 과채도·붉은색의 원인은 아직 확정되지 않았습니다. 로컬 HDR→SDR 과밝기 비교에서는 필터를 제외해도 같은 증상이 나타났습니다. v0.4.7은 이 색상 문제나 모든 4K 프레임 저하의 해결을 보장하지 않습니다. [비교 방법](https://mkyoon80-alt.github.io/nvof-potplayer/#troubleshoot)을 참고하세요.
+SDR 모드의 HDR 과밝기는 로컬 비교에서 팟플레이어의 **D3D11 HDR 출력을 H/W로 처리**를 끄고 ST 2084 보정·Auto·125 nits를 유지하자 해결됐습니다. HW 디코딩은 계속 사용할 수 있습니다. [SDR 감상 설정](https://mkyoon80-alt.github.io/nvof-potplayer/#hdr-sdr)을 참고하세요. 별도의 전체화면 붉은색·과채도 제보는 아직 원인이 확정되지 않았으며, 모든 HDR 색상 문제나 4K 프레임 저하의 해결을 보장하지 않습니다.
 
 ## 문서
 

@@ -21,10 +21,19 @@ decoder still delivered 8-bit host frames. Recovering color tags cannot
 restore the precision discarded by that negotiation. Native decoding of
 the same source instead delivered P010 textures and Dolby side data.
 
-This is separate from the user's excessive HDR-to-SDR brightness report:
-the user reproduced that appearance with NVOF excluded, with Windows SDR
-and PotPlayer's ST 2084 correction enabled. That observation does not
-establish which player tone-mapping option causes the appearance.
+This is separate from the user's excessive HDR-to-SDR brightness report.
+On 2026-10-12 the user confirmed the appearance with NVOF excluded, Windows
+in SDR, and ST 2084 correction enabled. Switching HW/SW decoding and changing
+the tone-mapping curve or SDR luminance made no visible difference. Turning
+off PotPlayer's "D3D11 HDR 출력을 H/W로 처리" (Use H/W HDR output mode) made
+those controls responsive; bright detail returned with Auto tone mapping and
+125-nit SDR luminance unchanged. ST 2086 correction remained off.
+
+This is a user-confirmed player-setting resolution for this SDR-viewing case,
+not a filter code fix or a measured characterization of PotPlayer's internal
+HDR pipeline. Hardware decoding and GPU interpolation can remain enabled.
+It does not establish the cause of the separate fullscreen red/oversaturated
+report or prescribe this setting for actual HDR display output.
 
 ## Change
 
