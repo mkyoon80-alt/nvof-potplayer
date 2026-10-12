@@ -154,11 +154,11 @@ int wmain(){try {
     bLayer=layered(8,1,100,true);
     // Exercise final compositing: coherent neighboring models repair the glyph
     // footprint; pixels away from ink retain the ordinary mapping byte-for-byte.
-    std::vector<float> offsets(aw*ah*4,0),weights(aw*ah*4,1),mask(w*h*2,0);
+    std::vector<float> offsets(aw*ah*4,0),weights(aw*ah*4,1),mask(w*h*4,0);
     for(int i=0;i<aw*ah;++i)weights[i*4]=weights[i*4+1]=.5f;
     auto ot=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,aw,ah,aw*16,offsets.data(),D3D11_BIND_SHADER_RESOURCE);
     auto wt=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,aw,ah,aw*16,weights.data(),D3D11_BIND_SHADER_RESOURCE);
-    auto mt=texture(DXGI_FORMAT_R32G32_FLOAT,w,h,w*8,mask.data(),D3D11_BIND_SHADER_RESOURCE);
+    auto mt=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,w,h,w*16,mask.data(),D3D11_BIND_SHADER_RESOURCE);
     ComPtr<ID3D11ShaderResourceView> ov,wv,mv,gv;
     check(device->CreateShaderResourceView(ot.Get(),nullptr,&ov),"Offsets view");check(device->CreateShaderResourceView(wt.Get(),nullptr,&wv),"Weights view");
     check(device->CreateShaderResourceView(mt.Get(),nullptr,&mv),"Mask view");check(device->CreateShaderResourceView(models.Get(),nullptr,&gv),"Models view");

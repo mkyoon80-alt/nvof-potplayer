@@ -44,8 +44,9 @@ void test_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int w,
  };
  fill(0);auto firstExpected=expected;
  auto first=engine.copy({source,UINT(arrays-1),w,h,100});
- require(!engine.queued_completion(),"P010 must complete GPU work before sharing output");
- require(download(bridge.device(),bridge.context(),first)==firstExpected,"P010 precision/crop/UV mismatch");
+ require(engine.queued_completion()==queued,"P010 changed the requested completion contract");
+ // Reuse the decoder array immediately, before any readback wait. Shared
+ // context command order must preserve both captured pictures in queued mode.
  fill(173);auto second=engine.copy({source,UINT(arrays-1),w,h,417183});
  require(download(bridge.device(),bridge.context(),second)==expected,"P010 second snapshot mismatch");
  require(download(bridge.device(),bridge.context(),first)==firstExpected,"Decoder reuse changed retained original");
@@ -79,8 +80,8 @@ double error10(const std::vector<uint16_t>& a,const std::vector<uint16_t>& b,int
  for(int y=48;y<h-48;++y)for(int x=48;x<w-48;++x){double d=int(a[y*w+x]>>6)-int(b[y*w+x]>>6);error+=d*d;++n;}
  return error/n;
 }
-void moving_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int w,int h) {
- GpuFrucEngine engine(runtime,bridge.device(),bridge.context(),bridge.mutex());
+std::vector<std::vector<uint16_t>> moving_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int w,int h,bool queued=false,int phases=4) {
+ GpuFrucEngine engine(runtime,bridge.device(),bridge.context(),bridge.mutex(),queued?GpuCompletionMode::context_ordered:GpuCompletionMode::blocking);
  auto upload=[&](double shift,int64_t pts) {
   auto pixels=moving10(w,h,shift);D3D11_TEXTURE2D_DESC desc{};
   desc.Width=w;desc.Height=h;desc.MipLevels=1;desc.ArraySize=1;desc.Format=DXGI_FORMAT_P010;desc.SampleDesc.Count=1;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
@@ -92,26 +93,28 @@ void moving_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int 
  hdr->data[2].assign(128,0x42);hdr->data[4].assign(9353,0x42);
  auto nextHdr=std::make_shared<HdrMetadata>();nextHdr->data[0].assign(80,0x24);current.hdr=nextHdr;
  nextHdr->data[2].assign(128,0x24);nextHdr->data[4].assign(9353,0x24);
- auto batch=engine.interpolate_pair(previous,current,{80000,160000,240000,320000});
- require(!batch.quality.scene_cut && batch.frames.size()==4 && batch.quality.native_synthesized_mask==15,"Moving P010 phases were not synthesized");
+ std::vector<int64_t> times;for(int i=1;i<=phases;++i)times.push_back(400000LL*i/(phases+1));
+ auto batch=engine.interpolate_pair(previous,current,times);
+ require(!batch.quality.scene_cut && batch.frames.size()==size_t(phases) && batch.quality.native_synthesized_mask==((1u<<phases)-1),"Moving P010 phases were not synthesized");
  std::vector<std::vector<uint16_t>> retained;
  const auto left=moving10(w,h,0),right=moving10(w,h,20);
- for(int i=0;i<4;++i) {
-  const auto phase=download(bridge.device(),bridge.context(),batch.frames[i]);auto truth=moving10(w,h,(i+1)*4);
-  std::vector<uint16_t> blend(left.size());for(size_t k=0;k<blend.size();++k)blend[k]=uint16_t(std::lround(((left[k]>>6)*(4-i)+(right[k]>>6)*(i+1))/5.0))<<6;
+ for(int i=0;i<phases;++i) {
+  const auto phase=download(bridge.device(),bridge.context(),batch.frames[i]);auto truth=moving10(w,h,20.0*(i+1)/(phases+1));
+  std::vector<uint16_t> blend(left.size());for(size_t k=0;k<blend.size();++k)blend[k]=uint16_t(std::lround(((left[k]>>6)*(phases-i)+(right[k]>>6)*(i+1))/double(phases+1)))<<6;
   const double actual=error10(phase,truth,w,h),mixed=error10(blend,truth,w,h);
   require(actual<mixed*.4,"Moving P010 did not outperform ordinary blend");
   size_t lowBits=0;for(auto v:phase){require((v&63)==0,"P010 output has invalid low storage bits");lowBits+=(v&192)!=0;}
   require(lowBits>phase.size()/4,"Synthesized P010 was reduced to 8-bit precision");
   require(batch.frames[i].hdr==hdr,"Phase HDR metadata is not inherited from preceding frame");
   if(i)require(phase!=retained.back(),"Different motion phases have identical pixels");
-  retained.push_back(phase);std::cout<<"P010 phase="<<(i+1)*.2<<" MSE="<<actual<<" blend="<<mixed<<" lowBits="<<lowBits<<'\n';
+  retained.push_back(phase);std::cout<<"P010 phase="<<double(i+1)/(phases+1)<<" MSE="<<actual<<" blend="<<mixed<<" lowBits="<<lowBits<<'\n';
  }
  require(download(bridge.device(),bridge.context(),previous)==left && download(bridge.device(),bridge.context(),current)==right,"Synthesis modified original 10-bit pixels");
  require(engine.copy(current).hdr==nextHdr,"Copy lost HDR metadata");
  engine.reset();auto fresh=upload(0,0);require(!fresh.hdr,"Seek leaked old HDR metadata");
- for(int i=0;i<4;++i)require(download(bridge.device(),bridge.context(),batch.frames[i])==retained[i],"Retained phase changed after reset/reuse");
- std::cout<<"PASS P010 moving x5/originals/precision/HDR lifetime/seek\n";
+ for(int i=0;i<phases;++i)require(download(bridge.device(),bridge.context(),batch.frames[i])==retained[i],"Retained phase changed after reset/reuse");
+ std::cout<<"PASS P010 moving x"<<phases+1<<" queued="<<queued<<" originals/precision/HDR lifetime/seek\n";
+ return retained;
 }
 
 }
@@ -123,6 +126,10 @@ int wmain(int argc,wchar_t** argv){
   const bool native=argc==3&&std::wstring(argv[2])==L"native";
   moving_case(bridge,argv[1],640,360);
   moving_case(bridge,argv[1],3840,2160);
+  const auto blocking=moving_case(bridge,argv[1],3840,2160,false,9);
+  const auto queued=moving_case(bridge,argv[1],3840,2160,true,9);
+  require(blocking==queued,"Queued 4K x10 output differs from blocking pixels");
+  std::cout<<"PASS 4K x10 queued/blocking pixel-exact comparison\n";
   for(bool queued:{false,true}){
    test_case(bridge,argv[1],1024,64,80,22,queued,native);
    test_case(bridge,argv[1],1920,1080,1152,22,queued,native);

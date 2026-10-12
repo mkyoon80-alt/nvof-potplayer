@@ -42,6 +42,7 @@ bool require_services=false;
 bool cpu_gpu_output=false;
 bool p010_fixture=false;
 bool p010_media=false;
+bool reject_p010_media=false;
 unsigned hdr_transfer=0;
 bool dovi_fixture=false;
 std::function<void(IMediaSample*,ID3D11Device*,ID3D11DeviceContext*)> inspect_gpu_output;
@@ -165,6 +166,7 @@ public:
         return index == 0 ? type->Set(type_) : VFW_S_NO_MORE_ITEMS;
     }
     HRESULT CheckMediaType(const CMediaType* type) override {
+        if(reject_p010_media && type->subtype==nvof::p010_subtype)return VFW_E_TYPE_NOT_ACCEPTED;
         return type->majortype == MEDIATYPE_Video && (type->subtype == MEDIASUBTYPE_NV12 || type->subtype==nvof::p010_subtype) ? S_OK : VFW_E_TYPE_NOT_ACCEPTED;
     }
     HRESULT DecideBufferSize(IMemAllocator* allocator, ALLOCATOR_PROPERTIES* properties) override {
@@ -342,6 +344,7 @@ public:
     STDMETHODIMP_(UINT) GetD3D11AdapterIndex() override {return 0;}
     bool borrowed_mutex_valid()const {DWORD flags=0;return !borrowed_mutex_ || GetHandleInformation(borrowed_mutex_,&flags)!=FALSE;}
     void hold_all(){std::lock_guard<std::mutex> guard(results_lock_);hold_all_=true;}
+    long allocator_capacity()const{return allocator_capacity_;}
     size_t gpu_count()const{return gpu_count_;}
     size_t cpu_count()const{return cpu_count_;}
     void require_native_allocator(){require_native_allocator_=true;}
@@ -358,6 +361,9 @@ public:
         if(require_native_allocator_ && !native_active_)return VFW_E_NO_ALLOCATOR;
         HRESULT result=CBaseInputPin::NotifyAllocator(allocator,read_only);
         if(FAILED(result))return result;
+        ALLOCATOR_PROPERTIES allocation{};
+        result=allocator->GetProperties(&allocation);if(FAILED(result))return result;
+        allocator_capacity_=allocation.cBuffers;
         result=allocator->Commit();if(FAILED(result))return result;
         ComPtr<IMediaSample> sample;
         result=allocator->GetBuffer(&sample,nullptr,nullptr,0);
@@ -458,6 +464,7 @@ public:
 private:
     std::mutex results_lock_;
     bool advertise_=true,reject_=false,native_active_=false,hold_all_=false,custom_allocator_=false;
+    long allocator_capacity_=0;
     bool require_native_allocator_=false;
     size_t gpu_count_=0,cpu_count_=0;
     ComPtr<ID3D11Device> native_device_;
@@ -571,10 +578,14 @@ void run_case(IClassFactory* factory,ID3D11Device* device,ID3D11DeviceContext* c
     // Retain all renderer samples until the bounded output pool is exhausted.
     check(source->pin().DeliverBeginFlush(),"pool reset");check(source->pin().DeliverEndFlush(),"pool reset end");
     const size_t before=sink->pin().count();sink->pin().hold_all();
-    std::thread producer([&] {push(1000,true);push(1001);push(1002);});
-    for(int spin=0;spin<100 && sink->pin().count()<before+4;++spin)Sleep(20);
+    std::atomic<bool> producer_done{false};
+    std::thread producer([&] {for(int i=0;i<40;++i)if(push(1000+i,i==0)!=S_OK)break;producer_done=true;});
+    const auto capacity=size_t(sink->pin().allocator_capacity());
+    for(int spin=0;spin<100 && sink->pin().count()<before+capacity;++spin)Sleep(20);
+    const bool exhausted=capacity>0 && sink->pin().count()==before+capacity && !producer_done;
     const auto flush_start=std::chrono::steady_clock::now();
     const HRESULT flushed=source->pin().DeliverBeginFlush();producer.join();check(flushed,"exhausted-pool flush");
+    if(!exhausted)throw std::runtime_error("Flush test did not exhaust the negotiated output pool");
     if(std::chrono::steady_clock::now()-flush_start>std::chrono::seconds(2))throw std::runtime_error("GPU allocator cancellation timeout");
     check(source->pin().DeliverEndFlush(),"exhausted-pool end flush");check(push(1,true),"resume after pool cancellation");
     check(source->pin().DeliverEndOfStream(),"EOS");
@@ -589,10 +600,13 @@ void run_case(IClassFactory* factory,ID3D11Device* device,ID3D11DeviceContext* c
     check(control->Stop(),"graph Stop");
     check(control->Run(),"restart after direct Stop");
     const size_t before_stop=sink->pin().count();sink->pin().hold_all();
-    std::thread pool_producer([&]{push(10,true);push(11);push(12);});
-    for(int spin=0;spin<100 && sink->pin().count()<before_stop+4;++spin)Sleep(20);
+    producer_done=false;
+    std::thread pool_producer([&]{for(int i=0;i<40;++i)if(push(10+i,i==0)!=S_OK)break;producer_done=true;});
+    for(int spin=0;spin<100 && sink->pin().count()<before_stop+capacity;++spin)Sleep(20);
+    const bool stop_exhausted=capacity>0 && sink->pin().count()==before_stop+capacity && !producer_done;
     const auto pool_stop_start=std::chrono::steady_clock::now();
     const HRESULT pool_stopped=filter->Stop();pool_producer.join();check(pool_stopped,"direct Stop during allocator wait");
+    if(!stop_exhausted)throw std::runtime_error("Stop test did not exhaust the negotiated output pool");
     if(std::chrono::steady_clock::now()-pool_stop_start>std::chrono::seconds(2))
         throw std::runtime_error("exhausted allocator Stop did not cancel promptly");
     check(control->Stop(),"final graph Stop");
@@ -675,6 +689,13 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
     }
     const auto actual_duration=tagged->AvgTimePerFrame;
     if(std::llabs(actual_duration-expected_duration)>1)throw std::runtime_error("rate policy negotiated incorrect output FPS");
+    if((gpu || cpu_gpu_output) && interpolate && header_duration<0 && source_num>0 &&
+       expected_num*source_den%(expected_den*source_num)==0) {
+        const int multiple=int(expected_num*source_den/(expected_den*source_num));
+        const long capacity=sink->pin().allocator_capacity();
+        if(capacity<std::clamp(2L*multiple,4L,32L) || capacity>32)
+            throw std::runtime_error("native output cannot retain two bounded source intervals");
+    }
     ComPtr<IMediaControl> control;check(graph.As(&control),"policy control");check(control->Run(),"policy Run");
     wchar_t local[32768]{};GetEnvironmentVariableW(L"LOCALAPPDATA",local,_countof(local));
     std::ifstream state(std::filesystem::path(local)/L"NvofPotPlayer"/L"status.json");
@@ -720,6 +741,32 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
     const size_t before_seek=sink->pin().count();check(push(100),"policy seek original");
     if(sink->pin().count()!=before_seek+1 || sink->pin().times.back()!=100*kDuration || !sink->pin().discontinuities.back())
         throw std::runtime_error("policy seek did not deliver immediate clean original");
+    if((gpu || cpu_gpu_output) && interpolate && expected_num>200*expected_den) {
+        // Exercise the larger high-rate pool, not only the x2/default pool.
+        // Both seek and Stop must cancel an upstream producer even when the
+        // renderer retains every negotiated sample and blocks further output.
+        const size_t capacity=size_t(sink->pin().allocator_capacity());
+        for(bool stop_pool:{false,true}) {
+            check(source->pin().DeliverBeginFlush(),"high-rate pool reset");
+            check(source->pin().DeliverEndFlush(),"high-rate pool reset end");
+            const size_t before=sink->pin().count();sink->pin().hold_all();
+            std::atomic<bool> done{false};
+            std::thread producer([&]{for(int i=0;i<40;++i)if(push(200+i)!=S_OK)break;done=true;});
+            for(int spin=0;spin<100 && sink->pin().count()<before+capacity;++spin)Sleep(20);
+            const bool exhausted=sink->pin().count()==before+capacity && !done;
+            const auto begin=std::chrono::steady_clock::now();
+            const HRESULT cancelled=stop_pool?filter->Stop():source->pin().DeliverBeginFlush();
+            producer.join();check(cancelled,"high-rate pool cancellation");
+            if(!exhausted || std::chrono::steady_clock::now()-begin>std::chrono::seconds(2))
+                throw std::runtime_error("high-rate pool did not exhaust or cancel promptly");
+            if(stop_pool) {check(control->Stop(),"high-rate graph Stop");check(control->Run(),"high-rate graph restart");}
+            else check(source->pin().DeliverEndFlush(),"high-rate pool end flush");
+            const size_t resumed=sink->pin().count();check(push(100),"high-rate pool resume original");
+            if(sink->pin().count()!=resumed+1 || sink->pin().times.back()!=100*kDuration || !sink->pin().discontinuities.back())
+                throw std::runtime_error("high-rate pool did not resume with an immediate clean original");
+        }
+        std::cout<<"high-rate retained pool="<<capacity<<" cancellation/seek/restart=OK\n";
+    }
     // The tested 24-only mask must reject 24<->25 dynamic changes instead of
     // silently retaining incompatible output-FPS negotiation.
     if(!color_fixture && ((reason=="source-rate" && source_num==25 && source_den==1) ||

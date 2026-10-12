@@ -5,6 +5,27 @@
 #include "nvof/gpu_phase_pipeline.hpp"
 #include <d3d10_1.h>
 #include <fstream>
+// Comparison files use NV12 for both input formats. Read every 16-bit P010
+// component before reducing it to 8 bits; copying only width bytes would
+// interleave low/high bytes and discard half of each row. Full 10-bit precision
+// is tested separately by gpu_p010_conversion and the DirectShow fixtures.
+std::vector<uint8_t> readback_nv12(ID3D11Device* device,ID3D11DeviceContext* context,const GpuFrame& frame) {
+ D3D11_TEXTURE2D_DESC d{};frame.texture->GetDesc(&d);
+ const bool ten=d.Format==DXGI_FORMAT_P010;
+ require(ten||d.Format==DXGI_FORMAT_NV12,"Unsupported comparison readback format");
+ d.ArraySize=1;d.Usage=D3D11_USAGE_STAGING;d.BindFlags=0;d.MiscFlags=0;d.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+ ComPtr<ID3D11Texture2D> staging;check(device->CreateTexture2D(&d,nullptr,&staging),"Comparison staging texture");
+ context->CopySubresourceRegion(staging.Get(),0,0,0,0,frame.texture.Get(),frame.array_slice,nullptr);
+ D3D11_MAPPED_SUBRESOURCE mapped{};check(context->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped),"Comparison readback");
+ std::vector<uint8_t> result(size_t(frame.width)*frame.height*3/2);
+ for(int y=0;y<frame.height*3/2;++y) {
+  const auto* row=static_cast<const uint8_t*>(mapped.pData)+size_t(y)*mapped.RowPitch;
+  auto* dst=result.data()+size_t(y)*frame.width;
+  if(ten)for(int x=0;x<frame.width;++x)dst[x]=uint8_t(reinterpret_cast<const uint16_t*>(row)[x]>>8);
+  else memcpy(dst,row,frame.width);
+ }
+ context->Unmap(staging.Get(),0);return result;
+}
 int wmain(int argc,wchar_t** argv){try{
  require(argc>=5,"video_x2_repro <runtime> <raw nv12> <timestamps> <output folder> [baseline|native] [nominal-duration-100ns] [nv12|p010] [width height] [flow-dimension] [cost-mode: 0=off 1=blend 2=fusion] [grid: 0=auto 4 2 1] [medium|slow] [fresh|reuse] [limit: 0=legacy-x2 60 120]");
  const int w=argc>8?std::stoi(argv[8]):1920,h=argc>9?std::stoi(argv[9]):1080;
@@ -53,7 +74,7 @@ int wmain(int argc,wchar_t** argv){try{
   return batch;
  },canonical_source_rate(duration));
  GpuFrame captured;bool capturedChecked=false;std::vector<uint8_t> capturedBytes;int64_t previousStop=-1;
- const auto emit=[&](const GpuOutputFrame& f){auto image=readback(device.Get(),context.Get(),f.frame);raw.write(reinterpret_cast<const char*>(image.data()),image.size());
+ const auto emit=[&](const GpuOutputFrame& f){auto image=readback_nv12(device.Get(),context.Get(),f.frame);raw.write(reinterpret_cast<const char*>(image.data()),image.size());
   require(f.stop>f.frame.pts&&(previousStop<0||f.frame.pts==previousStop),"Output clock gap/overlap");previousStop=f.stop;
   if(f.frame.texture.Get()==captured.texture.Get()) {require(image==capturedBytes,"Original GPU capture changed");if(!capturedChecked){++originals;capturedChecked=true;}}
   outtimes<<output_index<<','<<f.frame.pts<<','<<f.stop<<','<<f.discontinuity<<'\n';++output_index;return bool(raw);
@@ -62,7 +83,10 @@ int wmain(int argc,wchar_t** argv){try{
  while(timestamps>>pts){input.read(reinterpret_cast<char*>(current.data()),bytes);require(input.gcount()==bytes,"Short raw frame");
   D3D11_TEXTURE2D_DESC d{};d.Width=w;d.Height=h;d.MipLevels=d.ArraySize=1;d.Format=p010?DXGI_FORMAT_P010:DXGI_FORMAT_NV12;d.SampleDesc.Count=1;d.Usage=D3D11_USAGE_DEFAULT;d.BindFlags=D3D11_BIND_SHADER_RESOURCE;
   D3D11_SUBRESOURCE_DATA initial{current.data(),UINT(w*(p010?2:1)),UINT(bytes)};ComPtr<ID3D11Texture2D> texture;check(device->CreateTexture2D(&d,&initial,&texture),"input frame");
-  captured=engine.copy({texture,0,w,h,pts});capturedChecked=false;capturedBytes=readback(device.Get(),context.Get(),captured);
+  captured=engine.copy({texture,0,w,h,pts});capturedChecked=false;capturedBytes=readback_nv12(device.Get(),context.Get(),captured);
+  if(p010) {
+   for(size_t i=0;i<capturedBytes.size();++i)require(capturedBytes[i]==current[i*2+1],"P010 comparison readback changed component order or value");
+  } else require(capturedBytes==current,"NV12 capture changed the decoded original");
   pipeline.push(captured,source_index==0,emit);++source_index;
  }
  pipeline.finish(duration,emit);engine.reset();require(bool(raw),"Output write failure");

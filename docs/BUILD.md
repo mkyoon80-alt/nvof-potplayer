@@ -8,30 +8,30 @@ Visual Studio 2022 C++, Windows SDK, CMake 3.20+, Git and official NVIDIA Optica
 
 ~~~powershell
 .\tools\fetch-build-deps.ps1
-.\tools\build.ps1 -BuildDirectory build\release044\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
-.\ui\build-ui.ps1 -OutputDirectory ui\staging-release044
+.\tools\build.ps1 -BuildDirectory build\release047\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
+.\ui\build-ui.ps1 -OutputDirectory ui\staging-release047
 ~~~
 
 The filter and register helper use static MSVC /MT. Shader bytecode is generated at build time. CMake never finds CUDA or builds the old FRUC bridge in this profile. Historical FRUC-specific research tests remain as source references but are not active build targets.
 
-The legacy system-memory adapter uploads NV12 and reads back output. Supported CPU 10-bit samples use the new upload path and return GPU P010 textures without full-frame readback; see [CPU-10BIT.md](CPU-10BIT.md). GPU texture playback uses the decoder/renderer device directly. Both use the same motion synthesizer.
+Supported CPU NV12 SDR and 10-bit samples upload to the GPU and return GPU surfaces without full-frame readback; see [CPU-10BIT.md](CPU-10BIT.md). GPU texture playback uses the decoder/renderer device directly. Both use the same motion synthesizer.
 
 ## Package and manual
 
 ~~~powershell
-.\tools\build-local-package.ps1 -Version 0.4.4 -NativeDirectory build\release044\native\Release -UiDirectory ui\staging-release044
-python tools/build-manual-site.py --output build/release044/manual-site
-python tools/build-manual-assets.py --site-dir build/release044/manual-site --version 0.4.4 --language ko --output dist
-python tools/build-manual-assets.py --site-dir build/release044/manual-site --version 0.4.4 --language en --output dist
+.\tools\build-local-package.ps1 -Version 0.4.7 -NativeDirectory build\release047\native\Release -UiDirectory ui\staging-release047
+python tools/build-manual-site.py --output build/release047/manual-site
+python tools/build-manual-assets.py --site-dir build/release047/manual-site --version 0.4.7 --language ko --output dist
+python tools/build-manual-assets.py --site-dir build/release047/manual-site --version 0.4.7 --language en --output dist
 ~~~
 
-The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. v0.4.4 is distributed as a standalone ZIP. The optional developer tool tools/build-installer.ps1 still supports Inno Setup 7.1.0; the compiler is not shipped.
+The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. v0.4.7 is distributed as a standalone ZIP. The optional developer tool tools/build-installer.ps1 still supports Inno Setup 7.1.0; the compiler is not shipped.
 
 Old runtime acquisition scripts are unnecessary. tools/install-phase-upgrade.ps1 is retired to prevent accidental installation of FRUC. Earlier acquisition evidence remains in config/legacy-runtime-manifest.json and Git history, not in the current package.
 
 ## Validation
 
-tools/build.ps1 runs seventeen core, parser, conversion and shader validation tests. Explicit GPU tests include native_cost_map, native_motion_layers, native_motion_guard, native_cpu_transport, gpu_interop_stress and NV12/P010 DirectShow tests. Use an absent runtime path for native engine tests.
+tools/build.ps1 runs eighteen core, parser, conversion and shader validation tests. Explicit GPU tests include native_cost_map, native_motion_layers, native_motion_guard, native_cpu_transport, gpu_interop_stress and NV12/P010 DirectShow tests. Use an absent runtime path for native engine tests.
 
 runtime_dependencies.exe audits a package for removed FRUC/CUDA/driver files and loads its filter. Import-table inspection verifies that product binaries do not depend on CUDA or FRUC.
 
@@ -56,3 +56,7 @@ replays 48 tightly packed decoded NV12 frames. Keep test `LOCALAPPDATA` isolated
 from the real player's logs. See [SW-DECODING.md](SW-DECODING.md).
 
 The CPU NV12 fixture requires renderer device activation before the initial allocator notification, matching the failing startup order. The v0.4.5 baseline fails that connection; v0.4.6 passes. Native decoder activation before and after output connection is covered by `directshow_gpu_smoke`.
+
+## v0.4.7 regression coverage
+
+See [PLAYBACK-PERFORMANCE.md](PLAYBACK-PERFORMANCE.md), [SOFTWARE-HDR-TRIAL.md](SOFTWARE-HDR-TRIAL.md), and [THIN-OVERLAY-TRIAL.md](THIN-OVERLAY-TRIAL.md) for shared-context, HDR allocator, and thin-line controls. Stop player/GPU workloads before GPU tests. Keep test logs and source media out of release packages.

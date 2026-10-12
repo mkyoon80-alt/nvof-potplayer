@@ -1,10 +1,21 @@
-# Software decoding and GPU delivery — v0.4.6
+# Software decoding and GPU delivery — v0.4.7
 
 Native DXVA is recommended when available, but is not required. With a
 compatible D3D11 renderer, software-decoded NV12 SDR frames now upload to the
 NVIDIA GPU, use the common interpolation pipeline, and reach the renderer as
 GPU surfaces. This path does not read the synthesized full frames back to CPU
 memory. Existing P010/P016/P210/Y210 input support is retained.
+
+## v0.4.7: HDR precision after switching
+
+Software HDR startup and HW-to-SW returns now request actual P010 from a
+supporting decoder. Repeated switches keep the legacy native contract intact
+until transport is known; P010 requests on SW returns wait for confirmed host
+allocation. Actual-player Dune logs confirmed P010 on all five HW-to-SW returns.
+SW samples supplied no Dolby side data, so this confirms HDR10/10-bit delivery,
+not software Dolby Vision metadata or display output.
+See [SOFTWARE-HDR-TRIAL.md](SOFTWARE-HDR-TRIAL.md).
+Playback wait changes: [PLAYBACK-PERFORMANCE.md](PLAYBACK-PERFORMANCE.md).
 
 ## Why switching could freeze playback
 
@@ -101,11 +112,10 @@ timestamps. Some spans overlap. `deliveredFps` counts successful downstream
 delivery, not frames actually displayed. Pause and seek windows must be
 separated from uninterrupted playback before interpreting long waits.
 
-## Separate fullscreen HDR report
+## Separate HDR appearance reports
 
-Oversaturated/red HDR in fullscreen has been reported on another setup but
-has not been reproduced locally. No cause or fix is claimed in v0.4.6. Compare
-the same scene windowed/fullscreen, then uncheck NVOF in PotPlayer's Global
-Filter Priority and reopen the video before repeating the comparison. Include
-Tab playback information, renderer, Windows HDR setting and monitor model.
-Disabling interpolation alone may leave the filter connected.
+The local HDR-to-SDR overbrightness report also occurred with NVOF excluded.
+The cause of this and other fullscreen red/oversaturated reports is not yet
+confirmed; v0.4.7 does not claim a color-management fix. Compare the same scene
+with the filter excluded (not just interpolation disabled), then check player,
+Windows, driver, and monitor display settings. Record original values.

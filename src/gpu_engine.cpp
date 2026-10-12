@@ -38,10 +38,9 @@ DXGI_FORMAT plane_format(DXGI_FORMAT format,unsigned plane) {
 
 struct GpuFrucEngine::Impl {
     std::mutex mutex;
+    bool trace_timing=false;
+    GpuPairTiming timing{};
     GpuCompletionMode completion_mode=GpuCompletionMode::blocking;
-    // P010 decoder interoperability uses explicit completion boundaries until
-    // queued conversion is validated with the real host decoder and renderer.
-    std::atomic<bool> p010_completion{false};
     bool skip_identical_warp=true;
     bool stabilize_midpoint=true;
     bool protect_appearance=true;
@@ -76,7 +75,10 @@ struct GpuFrucEngine::Impl {
 
     struct DeviceScope {
         Impl& owner;bool owns_mutex=false,owns_multithread=false;ComPtr<ID3DDeviceContextState> old_state;
-        explicit DeviceScope(Impl& o):owner(o){
+        bool released=true;
+        explicit DeviceScope(Impl& o):owner(o){acquire();}
+        void acquire(){
+            if(!released)return;
             if(owner.decoder_mutex){const DWORD wait=WaitForSingleObject(owner.decoder_mutex,10000);if(wait!=WAIT_OBJECT_0&&wait!=WAIT_ABANDONED)throw std::runtime_error("Timed out acquiring decoder D3D11 mutex");owns_mutex=true;}
             // MF decoders know the device manager, not our renderer mutex.
             // Hold the protected D3D context for the complete save/work/restore
@@ -85,8 +87,17 @@ struct GpuFrucEngine::Impl {
                 owner.multithread->Enter();owns_multithread=true;
             }
             owner.context1->SwapDeviceContextState(owner.private_state.Get(),&old_state);
+            released=false;
         }
-        ~DeviceScope(){owner.context1->SwapDeviceContextState(old_state.Get(),nullptr);if(owns_multithread)owner.multithread->Leave();if(owns_mutex)ReleaseMutex(owner.decoder_mutex);}
+        void release() noexcept {
+            if(released)return;
+            owner.context1->SwapDeviceContextState(old_state.Get(),nullptr);
+            old_state.Reset();
+            if(owns_multithread){owner.multithread->Leave();owns_multithread=false;}
+            if(owns_mutex){ReleaseMutex(owner.decoder_mutex);owns_mutex=false;}
+            released=true;
+        }
+        ~DeviceScope(){release();}
     };
 
     Impl(const std::filesystem::path& directory,ID3D11Device* d,ID3D11DeviceContext* c,HANDLE shared_mutex,GpuCompletionMode mode,bool skip,bool stabilize,bool protect,GpuInterpolationBackend backend,unsigned flow_dimension,MotionCostMode costMode,MotionFlowOptions flowOptions):completion_mode(mode),skip_identical_warp(skip),stabilize_midpoint(stabilize),protect_appearance(protect),decoder_mutex(shared_mutex),device(d),context(c){
@@ -150,15 +161,39 @@ struct GpuFrucEngine::Impl {
         if((desc.Format!=DXGI_FORMAT_NV12&&!(allow_p010&&desc.Format==DXGI_FORMAT_P010))||desc.Width<UINT(f.width)||desc.Height<UINT(f.height)||desc.ArraySize<=f.array_slice||desc.SampleDesc.Count!=1||desc.MipLevels!=1)throw std::invalid_argument("GPU NV12 texture format, dimensions or array slice invalid");
         ComPtr<ID3D11Device> source_device;f.texture->GetDevice(&source_device);if(source_device.Get()!=device.Get())throw std::invalid_argument("GPU input texture belongs to another D3D11 device");
     }
-    void wait_gpu(){
+    // A terminal completion wait needs the shared context only to submit its
+    // fence/query. Restore the host's state before releasing the device locks,
+    // then keep waiting for exactly the same GPU completion boundary. The
+    // engine mutex and output leases remain held; neither samples nor mutable
+    // engine state can be reused while the renderer prepares unrelated work.
+    void wait_gpu(DeviceScope* terminal_scope=nullptr){
         if(completion_fence&&completion_event){
             const auto value=++fence_value;hr_check(context4->Signal(completion_fence.Get(),value),"Signal D3D11 completion fence");context->Flush();
+            if(terminal_scope)terminal_scope->release();
             if(completion_fence->GetCompletedValue()<value){hr_check(completion_fence->SetEventOnCompletion(value,completion_event),"Set D3D11 completion event");
                 if(WaitForSingleObject(completion_event,10000)!=WAIT_OBJECT_0)throw std::runtime_error("D3D11 completion fence timeout");}
             hr_check(device->GetDeviceRemovedReason(),"D3D11 completion device state");return;
         }
-        context->End(completion.Get());context->Flush();const auto begin=GetTickCount64();BOOL ready=FALSE;
-        for(;;){const HRESULT hr=context->GetData(completion.Get(),&ready,sizeof(ready),D3D11_ASYNC_GETDATA_DONOTFLUSH);hr_check(hr,"D3D11 GPU completion");if(hr==S_OK&&ready)return;if(GetTickCount64()-begin>10000)throw std::runtime_error("D3D11 GPU completion timeout");SwitchToThread();}
+        context->End(completion.Get());context->Flush();
+        if(terminal_scope)terminal_scope->release();
+        const auto begin=GetTickCount64();BOOL ready=FALSE;
+        for(;;){
+            HRESULT hr;
+            if(terminal_scope){DeviceScope poll(*this);hr=context->GetData(completion.Get(),&ready,sizeof(ready),D3D11_ASYNC_GETDATA_DONOTFLUSH);}
+            else hr=context->GetData(completion.Get(),&ready,sizeof(ready),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            hr_check(hr,"D3D11 GPU completion");if(hr==S_OK&&ready)return;
+            if(GetTickCount64()-begin>10000)throw std::runtime_error("D3D11 GPU completion timeout");
+            SwitchToThread();
+        }
+    }
+    void wait_and_resume(DeviceScope& scope){
+        const auto begin=trace_timing?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+        // Only the device/context locks are released. The engine mutex keeps
+        // analysis resources, NVOFA session, sources and output leases private.
+        // Resume captures the renderer's NEW state, not the pre-wait snapshot.
+        try {wait_gpu(&scope);}catch(...){scope.acquire();throw;}
+        scope.acquire();
+        if(trace_timing)timing.shared_wait_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
     }
     ComPtr<ID3D11Texture2D> make_texture(DXGI_FORMAT format,int w,int h){
         D3D11_TEXTURE2D_DESC desc{};desc.Width=w;desc.Height=h;desc.MipLevels=1;desc.ArraySize=1;desc.Format=format;desc.SampleDesc.Count=1;desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
@@ -182,8 +217,8 @@ struct GpuFrucEngine::Impl {
         return {slot->texture,0,w,h,pts,slot};
     }
     struct SceneAnalysis {SceneDecision decision;bool identical=false;};
-    SceneAnalysis scene(const GpuFrame& a,const GpuFrame& b){
-        DeviceScope scope(*this);auto ta=shader_source_texture(a),tb=shader_source_texture(b);
+    SceneAnalysis scene(const GpuFrame& a,const GpuFrame& b,DeviceScope& scope){
+        auto ta=shader_source_texture(a),tb=shader_source_texture(b);
         const auto format=texture_format(a);
         auto va=source_view(ta.Get(),plane_format(format,0)),vb=source_view(tb.Get(),plane_format(format,0));
         auto ua=source_view(ta.Get(),plane_format(format,1)),ub=source_view(tb.Get(),plane_format(format,1));
@@ -193,7 +228,15 @@ struct GpuFrucEngine::Impl {
         context->CSSetShader(scene_compute.Get(),nullptr,0);context->CSSetConstantBuffers(0,1,&constants);context->CSSetShaderResources(0,4,views);context->CSSetUnorderedAccessViews(0,1,&uav,nullptr);context->Dispatch(((std::max)(UINT(a.width),64U)+15)/16,((std::max)(UINT(a.height),36U)+15)/16,1);
         ID3D11ShaderResourceView* empty[4]={};uav=nullptr;context->CSSetShaderResources(0,4,empty);context->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
         context->CopyResource(scene_readback.Get(),scene_buffer.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
-        hr_check(context->Map(scene_readback.Get(),0,D3D11_MAP_READ,0,&mapped),"Read aggregate scene statistics");
+        const bool shared=completion_mode==GpuCompletionMode::context_ordered;
+        HRESULT mappedResult=context->Map(scene_readback.Get(),0,D3D11_MAP_READ,shared?D3D11_MAP_FLAG_DO_NOT_WAIT:0,&mapped);
+        const ULONGLONG deadline=GetTickCount64()+1000;
+        while(shared && mappedResult==DXGI_ERROR_WAS_STILL_DRAWING) {
+            if(GetTickCount64()>=deadline)throw std::runtime_error("Scene statistics readback timed out");
+            wait_and_resume(scope);
+            mappedResult=context->Map(scene_readback.Get(),0,D3D11_MAP_READ,D3D11_MAP_FLAG_DO_NOT_WAIT,&mapped);
+        }
+        hr_check(mappedResult,"Read aggregate scene statistics");
         SceneStats statistics{};memcpy(&statistics,mapped.pData,sizeof(statistics));uint32_t difference=0;memcpy(&difference,static_cast<const uint8_t*>(mapped.pData)+sizeof(statistics),sizeof(difference));context->Unmap(scene_readback.Get(),0);return {classify_scene(statistics),difference==0};
     }
     ComPtr<ID3D11Texture2D> shader_source_texture(const GpuFrame& frame){
@@ -246,8 +289,10 @@ MotionAnalysisInfo GpuFrucEngine::analysis_info() const {
     return impl_->native_synthesizer?impl_->native_synthesizer->analysis_info():MotionAnalysisInfo{};
 }
 GpuFrucEngine::~GpuFrucEngine()=default;
+void GpuFrucEngine::enable_timing(bool enabled){std::lock_guard<std::mutex> lock(impl_->mutex);impl_->trace_timing=enabled;}
+GpuPairTiming GpuFrucEngine::pair_timing()const{std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->timing;}
 std::string GpuFrucEngine::device_name()const{return impl_->name;}
-bool GpuFrucEngine::queued_completion()const{return impl_->completion_mode==GpuCompletionMode::context_ordered&&!impl_->p010_completion.load();}
+bool GpuFrucEngine::queued_completion()const{return impl_->completion_mode==GpuCompletionMode::context_ordered;}
 void GpuFrucEngine::reset()noexcept{
     std::lock_guard<std::mutex> lock(impl_->mutex);
     try{
@@ -263,12 +308,12 @@ GpuFrame GpuFrucEngine::copy(const GpuFrame& input){
     D3D11_TEXTURE2D_DESC desc{};input.texture->GetDesc(&desc);
     auto result=impl_->make_output(input.width,input.height,input.pts,desc.Format);
     result.hdr=input.hdr;
-    if(desc.Format==DXGI_FORMAT_P010){impl_->p010_completion.store(true);impl_->normalize_p010(input,result);}
+    if(desc.Format==DXGI_FORMAT_P010)impl_->normalize_p010(input,result);
     else {
         D3D11_BOX box{0,0,0,UINT(input.width),UINT(input.height),1};
         impl_->context->CopySubresourceRegion(result.texture.Get(),0,0,0,0,input.texture.Get(),input.array_slice,&box);
     }
-    if(!queued_completion())impl_->wait_gpu();return result;
+    if(!queued_completion())impl_->wait_gpu(&device);return result;
 }
 GpuFrame GpuFrucEngine::midpoint(const GpuFrame& previous,const GpuFrame& current){
     const auto time=previous.pts+(current.pts-previous.pts)/2;auto batch=interpolate_pair(previous,current,{time});
@@ -277,6 +322,10 @@ GpuFrame GpuFrucEngine::midpoint(const GpuFrame& previous,const GpuFrame& curren
 }
 PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,const GpuFrame& current,const std::vector<int64_t>& timestamps){
     std::lock_guard<std::mutex> lock(impl_->mutex);impl_->validate(previous);impl_->validate(current);
+    using Clock=std::chrono::steady_clock;
+    auto tick=impl_->trace_timing?Clock::now():Clock::time_point{};
+    impl_->timing={};
+    auto mark=[&](double& stage){if(impl_->trace_timing){auto now=Clock::now();stage=std::chrono::duration<double,std::milli>(now-tick).count();tick=now;}};
     if(texture_format(previous)!=texture_format(current)||previous.width!=current.width||previous.height!=current.height||previous.pts<0||current.pts<=previous.pts||current.pts-previous.pts>100000000LL)throw std::invalid_argument("GPU phase interpolation requires matching adjacent frames");
     if(timestamps.size()>32)throw std::invalid_argument("More than 32 motion phases per source pair are unsupported");
     int64_t last=previous.pts;for(auto pts:timestamps){if(pts<=last||pts>=current.pts)throw std::invalid_argument("Motion timestamps must increase inside source pair");last=pts;}
@@ -286,10 +335,12 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
         // duration and actual PTS differ, or when input is VFR. Synthesize the
         // requested time; never label a midpoint as a different phase.
         Impl::DeviceScope scope(*impl_);
+        mark(impl_->timing.context_wait_ms);
         try {
             if(impl_->cached_texture.Get()!=previous.texture.Get()||impl_->cached_pts!=previous.pts||
                impl_->cached_slice!=previous.array_slice)impl_->native_synthesizer->invalidate_history();
-            const auto analysis=impl_->scene(previous,current);
+            const auto analysis=impl_->scene(previous,current,scope);
+            mark(impl_->timing.scene_ms);
             if(analysis.decision.cut) {
                 impl_->native_synthesizer->invalidate_history();
                 result.quality.scene_cut=true;impl_->cached_texture.Reset();impl_->cached_lease.reset();return result;
@@ -299,7 +350,10 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
                 result.quality.identical_warp_skipped=true;impl_->native_synthesizer->invalidate_history();
             }else{
                 auto a=impl_->shader_source_texture(previous),b=impl_->shader_source_texture(current);
-                impl_->native_synthesizer->prepare(a.Get(),b.Get(),previous.width,previous.height);
+                MotionSynthesizer::GpuWait wait;
+                if(queued_completion())wait=[&]{impl_->wait_and_resume(scope);};
+                impl_->native_synthesizer->prepare(a.Get(),b.Get(),previous.width,previous.height,wait);
+                mark(impl_->timing.prepare_ms);
                 result.quality.repetition_known=true;
                 for(size_t i=0;i<timestamps.size();++i) {
                     if(!impl_->native_synthesizer->reliable()) {
@@ -315,11 +369,13 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
                     result.frames.push_back(std::move(output));result.quality.native_synthesized_mask|=uint32_t(1)<<i;
                 }
             }
+            mark(impl_->timing.submit_ms);
             impl_->cached_texture=current.texture;impl_->cached_lease=current.lease;
             impl_->cached_pts=current.pts;impl_->cached_slice=current.array_slice;
-            if(!queued_completion())impl_->wait_gpu();
+            if(!queued_completion())impl_->wait_gpu(&scope);
+            mark(impl_->timing.completion_ms);
             return result;
-        }catch(...){impl_->native_synthesizer->invalidate_history();throw;}
+        }catch(...){if(!scope.released)impl_->native_synthesizer->invalidate_history();throw;}
     }
     throw std::logic_error("Native synthesizer unavailable");
 }
@@ -338,6 +394,6 @@ GpuFrame GpuFrucEngine::blend(const GpuFrame& previous,const GpuFrame& current,i
         auto first=impl_->source_view(a.Get(),format),second=impl_->source_view(b.Get(),format);auto target=impl_->target_view(result.texture.Get(),format);
         impl_->draw_plane(target.Get(),first.Get(),second.Get(),plane?previous.width/2:previous.width,plane?previous.height/2:previous.height,weight,nullptr,texture_format(previous)==DXGI_FORMAT_P010);
     }
-    if(!queued_completion())impl_->wait_gpu();return result;
+    if(!queued_completion())impl_->wait_gpu(&device);return result;
 }
 }

@@ -61,7 +61,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.4.6";
+constexpr char kFilterBuild[]="0.4.7";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -105,7 +105,15 @@ void write_log(const std::string& message) noexcept {
             now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
             now.wSecond, now.wMilliseconds, GetCurrentProcessId());
         std::ofstream stream(path, std::ios::app);
-        stream << prefix << message << '\n';
+        stream << prefix << message;
+        if(message.compare(0,12,"performance ")==0) {
+            // Sample focus only once per diagnostic window; never log the
+            // other application's identity or title. -1 means unavailable.
+            DWORD foreground=0;
+            GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
+            stream << " playerForeground=" << (foreground?int(foreground==GetCurrentProcessId()):-1);
+        }
+        stream << '\n';
     } catch (...) { /* Diagnostics must never break a player shutdown. */ }
 }
 
@@ -348,7 +356,9 @@ public:
     STDMETHODIMP ActivateD3D11Decoding(ID3D11Device*,ID3D11DeviceContext*,HANDLE,UINT) override;
     STDMETHODIMP GetService(REFGUID service,REFIID requested,LPVOID* value) override;
     STDMETHODIMP GetAllocator(IMemAllocator** allocator) override;
+    STDMETHODIMP NotifyAllocator(IMemAllocator* allocator,BOOL read_only) override;
     STDMETHODIMP ReceiveConnection(IPin* connector,const AM_MEDIA_TYPE* type) override;
+    HRESULT BreakConnect() override;
     IPin* candidate=nullptr; // borrowed only during the synchronous base call
     STDMETHODIMP_(UINT) GetD3D11AdapterIndex() override;
     STDMETHODIMP_(UINT) GetD3D11TextureBindFlags() override {return D3D11_BIND_SHADER_RESOURCE;}
@@ -357,6 +367,8 @@ private:
     NvofFilter* owner_;
     std::atomic<unsigned> observed_queries_{0};
     DiagnosticServiceProbe service_probe_;
+    Microsoft::WRL::ComPtr<IMemAllocator> offered_host_allocator_;
+    bool first_allocator_pending_=false;
 };
 
 class NvofFilter final : public CTransformFilter, public ISpecifyPropertyPages, public IMFGetService,
@@ -385,6 +397,30 @@ public:
 
     bool service_probe_enabled() const noexcept {return probe_services_ || native_feature_enabled_;}
     unsigned instance_id() const noexcept {return instance_id_;}
+    void trace_input_allocator(const char* stage,bool offered=false) {
+        if(!probe_services_)return;
+        write_log(std::string("input allocator stage=")+stage+" nativeCommitted="+std::to_string(native_input_committed())+
+            " nativeRequested="+std::to_string(native_input_requested_.load())+" cpuUpload="+std::to_string(cpu_upload_active_)+
+            " state="+std::to_string(m_State)+" input10="+std::to_string(input_.ten_bit)+
+            " outputConnected="+std::to_string(m_pOutput && m_pOutput->IsConnected())+
+            " offered="+std::to_string(offered));
+    }
+    HRESULT prefer_confirmed_cpu_hdr_input() {
+        // Called once from NotifyAllocator, only when this new connection
+        // selected the ordinary host allocator that our input pin created.
+        // Native selection precedes this callback in PotPlayer. Unknown or
+        // decoder-owned allocators never enter here, even with deferred HW.
+        if(native_input_committed() || m_State!=State_Stopped || !m_pOutput ||
+           !m_pOutput->IsConnected() || !output_.ten_bit || !output_.hdr_transfer || input_.ten_bit)return S_OK;
+        CMediaType preferred;
+        if(!cpu_hdr_input_type(preferred,true))return S_OK;
+        Microsoft::WRL::ComPtr<IFilterGraph2> graph;
+        if(!m_pGraph || FAILED(m_pGraph->QueryInterface(IID_PPV_ARGS(&graph))))return E_NOINTERFACE;
+        write_log("CPU allocator confirmed; requesting P010 decoder output for retained HDR renderer");
+        // Still on the decoder's connection thread, before streaming. Never
+        // reconnect from Receive/Run or infer SW from a missing native probe.
+        return graph->ReconnectEx(m_pInput,&preferred);
+    }
     STDMETHODIMP GetService(REFGUID service,REFIID requested,LPVOID* value) override {
         return get_native_service("filter",service,requested,value);
     }
@@ -697,6 +733,24 @@ public:
         }
         const HRESULT completed=CTransformFilter::CompleteConnect(direction,connected);
         if(FAILED(completed))write_log("CompleteConnect allocator failed HRESULT="+std::to_string(uint32_t(completed)));
+        // A retained output does not identify the new decoder transport.
+        // PotPlayer can select native surfaces AFTER the input pin connects.
+        // Reconnecting that input here forced P010 onto its pending HW path
+        // and repeated switches stopped delivering samples (hdrsw.3).
+        if(SUCCEEDED(completed) && direction==PINDIR_OUTPUT && cpu_upload_active_ && output_.hdr_transfer &&
+           output_.ten_bit && !input_.ten_bit && !native_input_requested_.load(std::memory_order_acquire)) {
+            CMediaType preferred;
+            if(cpu_hdr_input_type(preferred)) {
+                Microsoft::WRL::ComPtr<IFilterGraph2> graph;
+                if(!m_pGraph || FAILED(m_pGraph->QueryInterface(IID_PPV_ARGS(&graph))))return E_NOINTERFACE;
+                // DirectShow queues this reconnection until the current output
+                // Connect returns. Request it on the connection thread, only
+                // after the decoder has explicitly accepted the proposed type.
+                write_log("CPU HDR requesting P010 decoder output before streaming");
+                return graph->ReconnectEx(m_pInput,&preferred);
+            }
+            return VFW_E_TYPE_NOT_ACCEPTED; // Decoder withdrew its P010 agreement.
+        }
         return completed;
     }
 
@@ -791,7 +845,12 @@ public:
         // connected compressed-video sequence header; no filename/GPU guesses.
         try {
             Microsoft::WRL::ComPtr<IPin> upstream;
-            if(!m_pInput || FAILED(m_pInput->ConnectedTo(&upstream)))return fallback;
+            if(!m_pInput)return fallback;
+            // During an input-only SW/HW reconnect, CheckTransform runs
+            // before ConnectedTo is available. Resolve against the proposing
+            // decoder, not a cached color from the previous connection.
+            if(FAILED(m_pInput->ConnectedTo(&upstream)))upstream=static_cast<ProbeInputPin*>(m_pInput)->candidate;
+            if(!upstream)return fallback;
             PIN_INFO info{};if(FAILED(upstream->QueryPinInfo(&info)) || !info.pFilter)return fallback;
             Microsoft::WRL::ComPtr<IBaseFilter> decoder;decoder.Attach(info.pFilter);
             Microsoft::WRL::ComPtr<IEnumPins> pins;if(FAILED(decoder->EnumPins(&pins)))return fallback;
@@ -893,6 +952,31 @@ public:
         return output.formattype==FORMAT_VideoInfo2 && output.pbFormat && output.cbFormat>=sizeof(VIDEOINFOHEADER2) &&
             reinterpret_cast<const VIDEOINFOHEADER2*>(output.pbFormat)->dwControlFlags==resolved_output_color_flags(input);
     }
+    bool cpu_hdr_input_type(CMediaType& preferred,bool confirmed_host_allocator=false) const noexcept {
+        // Native decoders may legitimately advertise NV12 over P010 textures.
+        // Do not renegotiate a committed native decoder. During initial graph
+        // building, also let a native-service probe finish before preferring a
+        // host format. An uncommitted input alone does not establish SW mode.
+        // Never promote explicitly tagged SDR to HDR.
+        if(!native_feature_enabled_ || input_.ten_bit || native_input_committed() ||
+           (!confirmed_host_allocator && native_input_requested_.load(std::memory_order_acquire)) ||
+           m_State!=State_Stopped || !m_pInput)return false;
+        try {
+            Microsoft::WRL::ComPtr<IPin> decoder;
+            if(FAILED(m_pInput->ConnectedTo(&decoder)))return false;
+            preferred=m_pInput->CurrentMediaType();
+            if(FAILED(tag_native_output_color(preferred,input_,resolved_output_color_flags(preferred))))return false;
+            Layout tagged;
+            if(!parse_layout(preferred,tagged) || !tagged.hdr_transfer || !tagged.native_color_supported)return false;
+            auto* h=reinterpret_cast<VIDEOINFOHEADER2*>(preferred.pbFormat);
+            preferred.SetSubtype(&nvof::p010_subtype);
+            h->bmiHeader.biCompression=MAKEFOURCC('P','0','1','0');h->bmiHeader.biBitCount=24;
+            const int64_t bytes=int64_t(input_.pitch)*input_.height*3;
+            if(bytes<=0 || bytes>LONG_MAX)return false;
+            h->bmiHeader.biSizeImage=DWORD(bytes);preferred.SetSampleSize(ULONG(bytes));
+            return decoder->QueryAccept(&preferred)==S_OK;
+        }catch(...){return false;}
+    }
     nvof::AvcFormat upstream_avc_format() const noexcept {
         try {
             Microsoft::WRL::ComPtr<IPin> upstream;
@@ -978,6 +1062,8 @@ public:
             hr=tag_native_output_color(*media,input_,resolved_output_color_flags(*media));
             if(FAILED(hr))return hr;
         }
+        CMediaType preferred;
+        const bool output_ten_bit=input_.ten_bit || cpu_hdr_input_type(preferred);
         BITMAPINFOHEADER* bitmap = nullptr;
         RECT* source = nullptr;
         RECT* destination = nullptr;
@@ -999,15 +1085,15 @@ public:
             destination = &video->rcTarget;
             bit_rate = &video->dwBitRate;
         }
-        media->SetSubtype(input_.ten_bit?&nvof::p010_subtype:&MEDIASUBTYPE_NV12);
+        media->SetSubtype(output_ten_bit?&nvof::p010_subtype:&MEDIASUBTYPE_NV12);
         *source = {0, 0, input_.width, input_.height};
         *destination = {0, 0, 0, 0};
         bitmap->biWidth = input_.width;
         bitmap->biHeight = input_.height;
-        bitmap->biSizeImage = static_cast<DWORD>(int64_t(input_.width) * input_.height * 3 / (input_.ten_bit?1:2));
-        bitmap->biBitCount = input_.ten_bit?24:12;
+        bitmap->biSizeImage = static_cast<DWORD>(int64_t(input_.width) * input_.height * 3 / (output_ten_bit?1:2));
+        bitmap->biBitCount = output_ten_bit?24:12;
         bitmap->biPlanes = 1;
-        bitmap->biCompression = input_.ten_bit?MAKEFOURCC('P','0','1','0'):MAKEFOURCC('N','V','1','2');
+        bitmap->biCompression = output_ten_bit?MAKEFOURCC('P','0','1','0'):MAKEFOURCC('N','V','1','2');
         *bit_rate = 0;
         media->SetSampleSize(bitmap->biSizeImage);
         media->SetTemporalCompression(FALSE);
@@ -1018,6 +1104,15 @@ public:
         if (!allocator || !properties) return E_POINTER;
         if (!output_.size) return VFW_E_NOT_CONNECTED;
         properties->cBuffers = (std::max)(properties->cBuffers, 4L);
+        if(m_pOutput && static_cast<nvof::transport::OutputPin*>(m_pOutput)->gpu_mode() && interpolation_requested()) {
+            // Delivery back-pressure must leave room to prepare the next
+            // source pair while the renderer consumes the current pair.
+            // A fixed four/ten samples loses this lead at large multipliers.
+            // Bound GPU sample retention to two source intervals (32 slots
+            // maximum). Preserve larger renderer requests and CPU allocation.
+            const long lead=std::clamp(2L*selected_multiple(input_.duration),4L,32L);
+            properties->cBuffers=(std::max)(properties->cBuffers,lead);
+        }
         // A decoder may advertise NV12 while exposing P010 native surfaces.
         const long capacity=native_feature_enabled_?(std::max)(output_.size,long(output_.width*output_.height*3)):output_.size;
         properties->cbBuffer = (std::max)(properties->cbBuffer, capacity);
@@ -1066,6 +1161,13 @@ public:
             std::to_string(input_.height) + " target=" + std::to_string(target_.num) +
             "/" + std::to_string(target_.den) + " inputRateGroup="+input_rate_group()+
             " InputRateMask="+std::to_string(input_rate_mask_)+" DoubleRate="+std::to_string(selected_multiple(input_.duration)==2)+" bypassReason="+bypass_reason());
+        if(performance_.enabled && m_pOutput) {
+            ALLOCATOR_PROPERTIES allocation{};
+            const HRESULT allocated=static_cast<nvof::transport::OutputPin*>(m_pOutput)->allocator_properties(&allocation);
+            write_log("output allocation result="+std::to_string(uint32_t(allocated))+
+                " buffers="+std::to_string(allocation.cBuffers)+" capacity="+std::to_string(allocation.cbBuffer)+
+                " gpu="+std::to_string(static_cast<nvof::transport::OutputPin*>(m_pOutput)->surface_allocator()));
+        }
         return S_OK;
     }
 
@@ -1084,6 +1186,11 @@ public:
         write_log("stream stop: GPU resources released after receive quiesced");
         write_status("stopped", "Playback stopped");
         return S_OK;
+    }
+
+    HRESULT AlterQuality(Quality quality) override {
+        performance_.note_quality(quality.Type==Famine,quality.Late,quality.Proportion);
+        return CTransformFilter::AlterQuality(quality);
     }
 
     STDMETHODIMP Stop() override {
@@ -1282,6 +1389,15 @@ public:
     }
 
 private:
+    std::shared_ptr<const nvof::HdrMetadata> capture_sample_hdr(IMediaSample* sample) {
+        auto hdr=nvof::capture_hdr(sample);
+        if(hdr && hdr_trace_)for(size_t i=0;i<hdr->data.size();++i)if(!hdr->data[i].empty()) {
+            const unsigned bit=1u<<i;
+            if(!(hdr_trace_->input_mask.fetch_or(bit)&bit) && i>=2)
+                write_log("Dolby Vision side data received: slot="+std::to_string(i)+" bytes="+std::to_string(hdr->data[i].size()));
+        }
+        return hdr;
+    }
     HRESULT ensure_native_output_format(bool tenBit) {
         if(output_.ten_bit==tenBit)return S_OK;
         // Establish the true decoder storage before the first delivered frame.
@@ -1309,12 +1425,7 @@ private:
         if(output_.hdr_transfer && !p010)return report_error("Native HDR requires a 10-bit P010 decoder surface",VFW_E_TYPE_NOT_ACCEPTED);
         // Metadata is a sample contract, not conditional on a possibly untagged
         // decoder media type. Capture every sample without stale-frame caching.
-        input.hdr=nvof::capture_hdr(sample);
-        if(input.hdr && hdr_trace_)for(size_t i=0;i<input.hdr->data.size();++i)if(!input.hdr->data[i].empty()) {
-            const unsigned bit=1u<<i;
-            if(!(hdr_trace_->input_mask.fetch_or(bit)&bit) && i>=2)
-                write_log("Dolby Vision side data received: slot="+std::to_string(i)+" bytes="+std::to_string(input.hdr->data[i].size()));
-        }
+        input.hdr=capture_sample_hdr(sample);
         const HRESULT agreed=ensure_native_output_format(p010);if(FAILED(agreed))return agreed;
         const std::string format=p010?"P010":"NV12";
         if(input_surface_format_!=format) {
@@ -1341,7 +1452,15 @@ private:
         if(!gpu_pipeline_)gpu_pipeline_=std::make_unique<nvof::GpuPhasePipeline>(target_,
             [this](const nvof::GpuFrame& a,const nvof::GpuFrame& b,const std::vector<int64_t>& times) {
                 nvof::PlaybackTimer synthesis_timer(performance_.enabled,performance_.synthesis);
-                auto batch=gpu_engine_->interpolate_pair(a,b,times);record_quality(batch.quality,times.size());record_endpoints(a.pts,b.pts,times);return batch;
+                gpu_engine_->enable_timing(performance_.enabled);
+                auto batch=gpu_engine_->interpolate_pair(a,b,times);
+                if(performance_.enabled) {
+                    const auto timing=gpu_engine_->pair_timing();
+                    performance_.context_wait.add(timing.context_wait_ms);performance_.scene.add(timing.scene_ms);
+                    performance_.prepare.add(timing.prepare_ms);performance_.submit.add(timing.submit_ms);performance_.completion.add(timing.completion_ms);
+                    performance_.shared_wait.add(timing.shared_wait_ms);
+                }
+                record_quality(batch.quality,times.size());record_endpoints(a.pts,b.pts,times);return batch;
             },nvof::canonical_source_rate(input_.duration));
         HRESULT delivery=S_OK;
         gpu_pipeline_->push(std::move(owned),discontinuity,[this,&delivery](const nvof::GpuOutputFrame& output) {
@@ -1400,7 +1519,7 @@ private:
         if(!cpu_upload_)cpu_upload_=std::make_unique<nvof::CpuUpload>(native_device_.Get(),native_context_.Get(),native_mutex_);
         cpu_upload_->begin(data,size_t(sample->GetActualDataLength()),
             {input_.width,input_.height,input_.pitch,input_.cpu_format},discontinuity);
-        const auto hdr=nvof::capture_hdr(sample);
+        const auto hdr=capture_sample_hdr(sample);
         bool top_first=input_.top_first;
         bool weave=false;
         if(input_.interlaced) {
@@ -1477,7 +1596,7 @@ private:
             pending_gpu_media_type_=false;
             gpu_delivery_verified_=true;
             ++output_frames_;
-            if(performance_.enabled)++performance_.output;
+            if(performance_.enabled)performance_.note_output();
             write_status(!interpolation_requested()?"bypass":engine_active_?"active":"waiting",
                 !interpolation_requested()?bypass_message():engine_active_?"NVIDIA Optical Flow / Motion phases (D3D11 GPU)":
                     "Waiting for the next adjacent GPU frame");
@@ -1807,7 +1926,13 @@ STDMETHODIMP ProbeInputPin::NonDelegatingQueryInterface(REFIID id,void** value) 
 STDMETHODIMP ProbeInputPin::ReceiveConnection(IPin* connector,const AM_MEDIA_TYPE* type) {
     candidate=connector;
     const HRESULT hr=CTransformInputPin::ReceiveConnection(connector,type);
-    candidate=nullptr;return hr;
+    candidate=nullptr;
+    if(SUCCEEDED(hr)){CAutoLock lock(m_pLock);first_allocator_pending_=true;}
+    return hr;
+}
+HRESULT ProbeInputPin::BreakConnect() {
+    first_allocator_pending_=false;offered_host_allocator_.Reset();
+    return CTransformInputPin::BreakConnect();
 }
 
 STDMETHODIMP ProbeInputPin::GetService(REFGUID service,REFIID requested,LPVOID* value) {
@@ -1815,11 +1940,28 @@ STDMETHODIMP ProbeInputPin::GetService(REFGUID service,REFIID requested,LPVOID* 
 }
 STDMETHODIMP ProbeInputPin::GetAllocator(IMemAllocator** allocator) {
     if(!allocator)return E_POINTER;
+    owner_->trace_input_allocator("GetAllocator");
     if(owner_->native_input_committed()) {
         *allocator=nullptr;
         return E_NOTIMPL; // A native decoder must provide its own GPU allocator.
     }
-    return CTransformInputPin::GetAllocator(allocator);
+    CAutoLock lock(m_pLock);
+    const bool creating=m_pAllocator==nullptr;
+    const HRESULT hr=CTransformInputPin::GetAllocator(allocator);
+    if(SUCCEEDED(hr) && creating)offered_host_allocator_=*allocator;
+    return hr;
+}
+STDMETHODIMP ProbeInputPin::NotifyAllocator(IMemAllocator* allocator,BOOL read_only) {
+    bool confirmed_host=false;
+    {
+        CAutoLock lock(m_pLock);
+        confirmed_host=first_allocator_pending_ && allocator && allocator==offered_host_allocator_.Get();
+        first_allocator_pending_=false;
+    }
+    owner_->trace_input_allocator("NotifyAllocator",confirmed_host);
+    const HRESULT hr=CTransformInputPin::NotifyAllocator(allocator,read_only);
+    if(FAILED(hr) || !confirmed_host)return hr;
+    return owner_->prefer_confirmed_cpu_hdr_input();
 }
 STDMETHODIMP ProbeInputPin::ActivateD3D11Decoding(ID3D11Device* device,ID3D11DeviceContext* context,HANDLE mutex,UINT flags) {
     return owner_->activate_native(device,context,mutex,flags);

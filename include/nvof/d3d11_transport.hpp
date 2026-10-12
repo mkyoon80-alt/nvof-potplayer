@@ -163,6 +163,12 @@ public:
     OutputPin(CTransformFilter* owner,HRESULT* result)
         : CTransformOutputPin(NAME("NV12 CPU or D3D11 output"),owner,result,L"Output") { }
     bool surface_allocator() const noexcept {return surface_allocator_;}
+    bool gpu_mode() const noexcept {return gpu_;}
+    HRESULT allocator_properties(ALLOCATOR_PROPERTIES* properties) const noexcept {
+        if(!properties)return E_POINTER;
+        *properties={};
+        return m_pAllocator?m_pAllocator->GetProperties(properties):VFW_E_NO_ALLOCATOR;
+    }
     HRESULT set_gpu_mode(bool gpu) {
         if(gpu==gpu_ && (!m_pAllocator || surface_allocator_==gpu))return S_OK;
         if(m_pAllocator) {

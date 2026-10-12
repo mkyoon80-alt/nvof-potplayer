@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <functional>
 #include <d3d11.h>
 namespace nvof {
 // Standalone NVOFA synthesis: no FRUC fallback and no CUDA transfer.
@@ -25,7 +26,11 @@ public:
     ~MotionSynthesizer();
     MotionSynthesizer(const MotionSynthesizer&) = delete;
     MotionSynthesizer& operator=(const MotionSynthesizer&) = delete;
-    void prepare(ID3D11Texture2D*, ID3D11Texture2D*, int width, int height);
+    // Optional synchronous completion boundary. It may restore/release the
+    // caller's shared context while waiting, but must reacquire it and restore
+    // our exact pipeline state before returning (also on failure).
+    using GpuWait = std::function<void()>;
+    void prepare(ID3D11Texture2D*, ID3D11Texture2D*, int width, int height, const GpuWait& wait = {});
     // False means the pair has widespread inconsistent, photometrically wrong motion.
     bool reliable() const noexcept;
     // Diagnostic: true only after a pair executed with hardware 8-bit costs.

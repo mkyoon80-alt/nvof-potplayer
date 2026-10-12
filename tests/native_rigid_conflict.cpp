@@ -13,7 +13,7 @@ int wmain(){try {
         D3D11_SUBRESOURCE_DATA data{pixels,UINT(pitch),0};ComPtr<ID3D11Texture2D> t;
         check(device->CreateTexture2D(&d,pixels?&data:nullptr,&t),"Texture");return t;
     };
-    std::vector<float> luma(w*h,16.f/255.f),uv(w*h*2,128.f/255.f),mask(w*h,0),offsets(aw*ah*4),weights(aw*ah*4),models(8*6*4);
+    std::vector<float> luma(w*h,16.f/255.f),uv(w*h*2,128.f/255.f),mask(w*h*4,0),offsets(aw*ah*4),weights(aw*ah*4),models(8*6*4);
     for(int i=0;i<aw*ah;++i){weights[i*4]=weights[i*4+1]=.5f;weights[i*4+2]=weights[i*4+3]=1.f;}
     std::array<ComPtr<ID3D11Texture2D>,14> input;
     std::array<ComPtr<ID3D11ShaderResourceView>,14> views;
@@ -21,7 +21,7 @@ int wmain(){try {
         if(slot<2)input[slot]=texture(DXGI_FORMAT_R32_FLOAT,w,h,w*4,luma.data(),D3D11_BIND_SHADER_RESOURCE);
         else if(slot<4)input[slot]=texture(DXGI_FORMAT_R32G32_FLOAT,w,h,w*8,uv.data(),D3D11_BIND_SHADER_RESOURCE);
         else if(slot==13)input[slot]=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,8,6,8*16,models.data(),D3D11_BIND_SHADER_RESOURCE);
-        else if(slot==8)input[slot]=texture(DXGI_FORMAT_R32_FLOAT,w,h,w*4,mask.data(),D3D11_BIND_SHADER_RESOURCE);
+        else if(slot==8)input[slot]=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,w,h,w*16,mask.data(),D3D11_BIND_SHADER_RESOURCE);
         else input[slot]=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,aw,ah,aw*16,slot==6?offsets.data():weights.data(),D3D11_BIND_SHADER_RESOURCE);
         check(device->CreateShaderResourceView(input[slot].Get(),nullptr,&views[slot]),"SRV");
     }

@@ -63,16 +63,17 @@ std::vector<uint8_t> readback(ID3D11Device* device, ID3D11DeviceContext* context
     ComPtr<ID3D11Texture2D> staging;
     check(device->CreateTexture2D(&description, nullptr, &staging), "Create readback surface");
     context->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, frame.texture.Get(), frame.array_slice, nullptr);
-    std::vector<uint8_t> result(size_t(frame.width) * frame.height * 3 / 2);
+    const int row_bytes=frame.width*(description.Format==DXGI_FORMAT_P010?2:1);
+    std::vector<uint8_t> result(size_t(row_bytes) * frame.height * 3 / 2);
     D3D11_MAPPED_SUBRESOURCE mapped{};
     check(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Read retained output");
     for (int y = 0; y < frame.height * 3 / 2; ++y)
-        std::memcpy(result.data() + size_t(y) * frame.width, static_cast<uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch, frame.width);
+        std::memcpy(result.data() + size_t(y) * row_bytes, static_cast<uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch, row_bytes);
     context->Unmap(staging.Get(), 0);
     return result;
 }
-// Uses unrelated resources on the exact immediate context shared by FRUC.
-// Per-call D3D protection cannot protect CUDA's internal map/unmap context use.
+// Uses unrelated resources on the exact immediate context shared by synthesis.
+// Verify both pixel lifetime and context state across mid-analysis lock yields.
 class ConcurrentRenderer {
 public:
     ConcurrentRenderer(ID3D11Device* device, ID3D11DeviceContext* context,
@@ -156,7 +157,7 @@ private:
 }
 int wmain(int argc, wchar_t** argv) {
     try {
-        if (argc < 2) { std::cerr << "gpu_interop_stress <runtime> [seconds=30] [resets=100] [width=320] [height=180] [protected|mutex] [x2|native]\n"; return 2; }
+        if (argc < 2) { std::cerr << "gpu_interop_stress <runtime> [seconds=30] [resets=100] [width=320] [height=180] [protected|mutex] [x2|native] [phases=1] [nv12|p010]\n"; return 2; }
         const int seconds = argc > 2 ? _wtoi(argv[2]) : 30;
         const int requested_resets = argc > 3 ? _wtoi(argv[3]) : 100;
         const int width = argc > 4 ? _wtoi(argv[4]) : 320, height = argc > 5 ? _wtoi(argv[5]) : 180;
@@ -167,8 +168,9 @@ int wmain(int argc, wchar_t** argv) {
         const bool x2=argc>7;
         const bool native=argc>7&&std::wstring(argv[7])==L"native";
         const int phase_count=argc>8?_wtoi(argv[8]):x2?1:4;
-        require(phase_count>=1&&phase_count<=4,"Stress phase count must be 1..4");
+        require(phase_count>=1&&phase_count<=9,"Stress phase count must be 1..9");
         const auto options=x2?nvof::GpuCompletionMode::context_ordered:nvof::GpuCompletionMode::blocking;
+        const bool p010=argc>9 && std::wstring(argv[9])==L"p010";
         MutexHandle shared_mutex;
         const HANDLE mutex = lock_mode == L"mutex" ? shared_mutex.value : nullptr;
         ComPtr<IDXGIFactory1> factory; check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "Create DXGI factory");
@@ -191,12 +193,14 @@ int wmain(int argc, wchar_t** argv) {
         ConcurrentRenderer renderer(device.Get(), context.Get(), protected_context.Get(), mutex);
         std::unique_ptr<GpuFrucEngine> engine;
         uint64_t pairs = 0, recreations = 0, skipped = 0; int resets = 0;
+        double shared_wait_ms=0;
         const auto start = std::chrono::steady_clock::now();
         try {
             const auto create_engine = [&] {
                 renderer.stage("engine constructor");
                 std::cout << "GPU_INTEROP_STAGE constructor_begin" << std::endl;
                 auto result = std::make_unique<GpuFrucEngine>(std::filesystem::path(argv[1]), device.Get(), context.Get(), mutex,options,true,!native,!native,native?nvof::GpuInterpolationBackend::native_experimental:nvof::GpuInterpolationBackend::fruc);
+                result->enable_timing(true);
                 renderer.stage("constructor complete");
                 renderer.rethrow_failure();
                 std::cout << "GPU_INTEROP_STAGE constructor_complete" << std::endl;
@@ -206,11 +210,13 @@ int wmain(int argc, wchar_t** argv) {
             const auto upload = [&](int shift, int64_t pts) {
                 renderer.stage("source creation");
                 const auto data = pixels(width, height, shift);
+                std::vector<uint16_t> words;
+                if(p010){words.resize(data.size());for(size_t i=0;i<data.size();++i)words[i]=uint16_t((unsigned(data[i])*4+unsigned(i%4))<<6);}
                 D3D11_TEXTURE2D_DESC description{};
                 description.Width = width; description.Height = height; description.MipLevels = 1; description.ArraySize = 1;
-                description.Format = DXGI_FORMAT_NV12; description.SampleDesc.Count = 1;
+                description.Format = p010?DXGI_FORMAT_P010:DXGI_FORMAT_NV12; description.SampleDesc.Count = 1;
                 description.Usage = D3D11_USAGE_DEFAULT; description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                const D3D11_SUBRESOURCE_DATA initial{data.data(), UINT(width), UINT(data.size())};
+                const D3D11_SUBRESOURCE_DATA initial{p010?static_cast<const void*>(words.data()):data.data(), UINT(width*(p010?2:1)), UINT(data.size()*(p010?2:1))};
                 ComPtr<ID3D11Texture2D> texture;
                 check(device->CreateTexture2D(&description, &initial, &texture), "Create moving NV12 source");
                 renderer.stage("input snapshot");
@@ -221,6 +227,9 @@ int wmain(int argc, wchar_t** argv) {
             auto previous = upload(0, 0);
             GpuFrame retained;
             std::vector<uint8_t> retained_bytes;
+            GpuFrame first_previous,first_current;
+            std::vector<int64_t> first_times;
+            std::vector<std::vector<uint8_t>> first_pixels;
             while (resets < requested_resets || std::chrono::steady_clock::now() - start < std::chrono::seconds(seconds)) {
                 renderer.rethrow_failure();
                 if (resets < requested_resets) {
@@ -236,16 +245,20 @@ int wmain(int argc, wchar_t** argv) {
                 for (int phase = 1; phase <= phase_count; ++phase) times.push_back(previous.pts + int64_t(phase) * 1000000/(phase_count+1));
                 renderer.stage("interpolate pair");
                 const auto batch = engine->interpolate_pair(previous, current, times);
+                shared_wait_ms+=engine->pair_timing().shared_wait_ms;
                 renderer.stage("interpolation complete"); renderer.rethrow_failure();
                 skipped+=batch.quality.identical_warp_skipped;
                 require((batch.quality.repetition_known||batch.quality.identical_warp_skipped||(native&&batch.quality.native_synthesized_mask==1)) && !batch.quality.scene_cut && batch.frames.size() == size_t(phase_count), "Interpolation failed under contention");
                 if (pairs == 0) {
+                    first_previous=previous;first_current=current;first_times=times;
                     require(!batch.quality.repeated_mask, "Initial phases unexpectedly repeated");
                     retained = batch.frames.front();
                     retained_bytes = readback(device.Get(), context.Get(), protected_context.Get(), mutex, retained);
+                    first_pixels.push_back(retained_bytes);
                     auto prior_phase = retained_bytes;
                     for (size_t phase = 1; phase < batch.frames.size(); ++phase) {
                         auto bytes = readback(device.Get(), context.Get(), protected_context.Get(), mutex, batch.frames[phase]);
+                        first_pixels.push_back(bytes);
                         require(bytes != prior_phase, "Independent phases produced identical images");
                         prior_phase = std::move(bytes);
                     }
@@ -260,6 +273,17 @@ int wmain(int argc, wchar_t** argv) {
             require(readback(device.Get(), context.Get(), protected_context.Get(), mutex, retained) == retained_bytes,
                 "Engine teardown corrupted a retained renderer frame");
             renderer.stop(); renderer.rethrow_failure();
+            if(native) {
+                require(shared_wait_ms>0,"Shared analysis wait was not exercised");
+                GpuFrucEngine reference(std::filesystem::path(argv[1]),device.Get(),context.Get(),mutex,
+                    nvof::GpuCompletionMode::blocking,true,false,false,nvof::GpuInterpolationBackend::native_experimental);
+                const auto expected=reference.interpolate_pair(first_previous,first_current,first_times);
+                require(expected.frames.size()==first_pixels.size(),"Contended phase count differs from isolated reference");
+                for(size_t i=0;i<first_pixels.size();++i)
+                    require(readback(device.Get(),context.Get(),protected_context.Get(),mutex,expected.frames[i])==first_pixels[i],
+                        "Shared-wait output pixels differ from isolated blocking reference");
+                std::cout<<"CONTENDED_REFERENCE_PIXEL_EXACT phases="<<first_pixels.size()<<std::endl;
+            }
             require(renderer.iterations() >= 100, "Competing renderer did not execute enough context work");
             check(device->GetDeviceRemovedReason(), "Final D3D11 device state");
         } catch (...) {
@@ -271,6 +295,7 @@ int wmain(int argc, wchar_t** argv) {
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         std::cout << "GPU_INTEROP_STRESS_PASS pairs=" << pairs << " phases=" << pairs * phase_count
             << " resets=" << resets << " recreations=" << recreations << " renderer_iterations=" << renderer.iterations()
+            << " shared_wait_ms=" << shared_wait_ms
             << " seconds=" << elapsed << " lock=" << (mutex ? "mutex+protected" : "protected") << '\n';
         return 0;
     } catch (const std::exception& error) {

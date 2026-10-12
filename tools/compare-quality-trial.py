@@ -2,12 +2,17 @@
 Metrics on real 2x synthesis are diagnostics, not an invented ground-truth score.
 Only F1 90/130 holdouts have known intermediate source frames for full-reference errors.
 """
-import argparse,csv,hashlib,json,subprocess,sys
+import argparse,csv,ctypes,hashlib,json,subprocess,sys
 from pathlib import Path
 import numpy as np
 root=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(root/'build/analysis-pylibs'))
 import cv2
+ctypes.windll.kernel32.SetErrorMode(0x8003)
+def require_idle():
+ check=subprocess.run(['powershell','-NoProfile','-Command',
+  "@(Get-Process -ErrorAction Stop | Where-Object { $_.ProcessName -match 'PotPlayer|repro|native_motion|native_synthesis|gpu_interop' }).Count"],capture_output=True,text=True,check=True)
+ if check.stdout.strip()!='0':raise RuntimeError('Close PotPlayer and other GPU tests before comparing quality')
 p=argparse.ArgumentParser();p.add_argument('--baseline',type=Path,required=True);p.add_argument('--candidate',type=Path,required=True);p.add_argument('--output',type=Path,required=True);args=p.parse_args()
 outroot=args.output.resolve();assert outroot.is_relative_to(root/'build') and not outroot.exists();outroot.mkdir(parents=True)
 executables={'baseline':args.baseline.resolve(),'candidate':args.candidate.resolve()}
@@ -17,6 +22,7 @@ for name,base,fmt,w,h,held in cases:
  folder=root/'build/native-synthesis'/base;raw=folder/(('holdout' if held else 'input')+'.'+fmt);times=folder/('holdout-times.txt' if held else 'timestamps.txt')
  paths={};arrays={};events={};record={}
  for version in ['baseline','candidate']:
+  require_idle()
   dest=outroot/name/version;dest.mkdir(parents=True)
   cmd=[str(executables[version]),str(root/'build/quality1/absent-runtime'),str(raw),str(times),str(dest),'native',str(834167 if held else 417083),fmt,str(w),str(h),'1920','0','4','medium']
   with (dest/'run.log').open('w') as log:subprocess.run(cmd,stdout=log,stderr=subprocess.STDOUT,check=True)
@@ -31,8 +37,13 @@ for name,base,fmt,w,h,held in cases:
  assert all(int(e['cost_buffers'])==0 for e in events['candidate'])
  record.update(originals_exact=True,timing_exact=True,decisions_exact=True,pairs=len(events['candidate']),output_frames=len(a))
  if held:
-  truth_path=root/'build/native-synthesis'/('f1-boundaries/lab5' if name=='f1-90' else 'f1-occlusion/delivery')/'output.nv12'
-  truth=np.memmap(truth_path,np.uint8,mode='r').reshape(-1,h*3//2,w)[::2,:h]
+  # Held-out reference frames come directly from the supplied decoder output,
+  # not from a saved interpolation run with a potentially different format.
+  full_source=np.memmap(folder/('input.'+fmt),np.uint16 if fmt=='p010' else np.uint8,mode='r').reshape(-1,h*3//2,w)
+  sampled=np.memmap(raw,np.uint16 if fmt=='p010' else np.uint8,mode='r').reshape(-1,h*3//2,w)
+  assert np.array_equal(full_source[::2],sampled),'Holdout is not every second original frame'
+  truth=(full_source[:,:h]>>8).astype(np.uint8) if fmt=='p010' else full_source[:,:h]
+  del sampled
   roi=(slice(80,1550),slice(650,2850)) if name=='f1-90' else (slice(120,1550),slice(1550,3750))
   for version,result in arrays.items():
    values=[]
@@ -44,7 +55,7 @@ for name,base,fmt,w,h,held in cases:
     values.append(row)
    record[version]['reference_errors']=np.mean(values,0).tolist();record[version]['per_pair_errors']=values
   record['error_columns']=['full_mae','full_mse','full_laplacian_mse','roi_mae','roi_mse','roi_laplacian_mse']
-  del truth
+  del truth,full_source
  else:
   indices={'jishou-320':[48,60,96,99],'f1-title':[24,36,60,84],'kokoore-80':[0,3,6,12,24],'jishou-hair':[12,24,36]}.get(name,[12,24])
   for i in indices:

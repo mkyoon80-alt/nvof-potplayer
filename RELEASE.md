@@ -1,3 +1,33 @@
+# v0.4.7 — Playback scheduling, software HDR, and thin fixed lines
+
+## 한국어
+
+- **HW 재생 대기 개선:** 디코더·보간·렌더러가 공유하는 GPU 장치를 기다리는 동안 잠금을 오래 잡지 않도록 했습니다. P010의 불필요한 완료 대기와 높은 배수에서의 출력 버퍼 대기도 줄였습니다. 저지연 모드 켜기 상태의 실제 재생으로 확인했습니다.
+- **SW HDR·10bit 연결 개선:** HDR 영상을 처음부터 SW로 열거나 HW에서 SW로 전환할 때, 지원되는 디코더에서 실제 P010을 받아 10bit를 유지합니다. 반복 전환 중 멈추던 연결 문제도 수정했습니다.
+- **고정 조준선 개선:** 가는 가로·세로 선이 움직이는 배경을 따라 갈라지는 현상을 줄였습니다. 움직이는 총 주변 등 가려짐 경계의 깨짐은 아직 남아 있습니다.
+- **한·영 매뉴얼 업데이트:** 재생 성능, SW HDR 확인법과 HDR 색상 비교 방법을 반영했습니다. [전체 변경 내역](RELEASE.md)
+
+설정과 출력 배수 정책은 그대로입니다. 업데이트 전에 팟플레이어와 설정창을 닫고 기존 폴더를 백업한 뒤, **기존 NvofPotPlayer.ini를 보존**해 교체하세요.
+
+## English
+
+- Reduced shared-device lock retention during GPU waits. P010 uses ordered GPU delivery, and output buffering scales with the interpolation multiple to reduce renderer back-pressure.
+- Software HDR startup and HW-to-SW transitions request real P010 from supporting decoders. Repeated HW/SW switching preserves the pending native contract and confirmed software 10-bit precision.
+- Protects thin stationary horizontal/vertical strokes, improving fixed reticles over moving backgrounds. Original frames, timing, and the Newton synthesis method are unchanged.
+- Updated Korean and English online, offline ZIP, and standalone HTML manuals.
+
+Close PotPlayer and the controller, back up the existing folder, and **keep your NvofPotPlayer.ini** when replacing files.
+
+## Validation and limits / 검증과 한계
+
+The accepted candidates were verified with shared-context/resource-lifetime stress, NV12/P010 precision, repeated HW/SW allocator negotiation, HDR signaling/metadata tests, and thin-line controls. Actual-player checks confirmed foreground HW 240fps playback with NVIDIA Low Latency Mode On on an RTX 5090, repeated P010 software returns, and improved reticles. Background drops and real-time 4K performance depend on the display, driver, source, and GPU.
+
+Software Dune playback supplied no Dolby sample side data: confirmed HDR10/10-bit delivery does not mean full Dolby Vision processing or display output. The filter forwards Dolby metadata only when supplied. Red/oversaturated HDR is not claimed fixed. Lupin gun/occlusion artifacts remain unresolved; rejected experiments are not included.
+
+Thin-line protection adds two mask channels (about 33.2 MB at 3840×2160). A short local 4K synthetic midpoint comparison measured about +0.15 ms per pair; this is not a general playback overhead estimate. See docs/PLAYBACK-PERFORMANCE.md, docs/SOFTWARE-HDR-TRIAL.md, and docs/THIN-OVERLAY-TRIAL.md for scope and evidence.
+
+---
+
 # 0.4.6 — SW 최초 재생 보간 수정
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**

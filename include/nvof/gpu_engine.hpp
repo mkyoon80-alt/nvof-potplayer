@@ -22,6 +22,10 @@ struct GpuFrame {
 enum class GpuCompletionMode { blocking, context_ordered };
 // Native synthesis is the only playback backend. The old enum value is rejected.
 enum class GpuInterpolationBackend { fruc, native_experimental };
+// Wall-clock API/lock/wait measurements, not GPU timestamp durations.
+struct GpuPairTiming {
+    double context_wait_ms=0,scene_ms=0,prepare_ms=0,submit_ms=0,completion_ms=0,shared_wait_ms=0;
+};
 // NV12/P010 GPU-only image path. Native Y/UV processing preserves stored
 // channel values; the caller remains responsible for supported color metadata.
 // Input textures must remain unchanged until
@@ -47,7 +51,8 @@ public:
     GpuFrucEngine(const GpuFrucEngine&) = delete;
     GpuFrucEngine& operator=(const GpuFrucEngine&) = delete;
     // Preserves NV12 or P010 in owned snapshots (P010 low six bits are cleared).
-    // P010 selects conservative GPU completion for the engine lifetime.
+    // Both formats honor the selected completion contract. Native D3D11 plane
+    // draws/copies use the same context ordering; no CUDA interop is involved.
     // No range, transfer-function, gamut conversion or tone mapping is performed.
     GpuFrame copy(const GpuFrame& input);
     GpuFrame midpoint(const GpuFrame& previous, const GpuFrame& current);
@@ -59,6 +64,8 @@ public:
     std::string device_name() const;
     bool queued_completion() const;
     MotionAnalysisInfo analysis_info() const;
+    void enable_timing(bool enabled);
+    GpuPairTiming pair_timing() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

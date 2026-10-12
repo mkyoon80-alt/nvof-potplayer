@@ -170,7 +170,8 @@ struct MotionSynthesizer::Impl {
             }
             for(unsigned i=0;i<2;++i) {
                 D3D11_TEXTURE2D_DESC d{};d.Width=w;d.Height=h;d.MipLevels=d.ArraySize=1;
-                d.Format=DXGI_FORMAT_R8G8_UNORM;d.SampleDesc.Count=1;d.Usage=D3D11_USAGE_DEFAULT;
+                // xy: stationary/opaque layers; zw: fixed thin strokes by axis.
+                d.Format=DXGI_FORMAT_R8G8B8A8_UNORM;d.SampleDesc.Count=1;d.Usage=D3D11_USAGE_DEFAULT;
                 d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;
                 check(device->CreateTexture2D(&d,nullptr,&layerTextures[i]),"Stationary mask texture");
                 check(device->CreateRenderTargetView(layerTextures[i].Get(),nullptr,&layerTargets[i]),"Stationary mask RTV");
@@ -258,7 +259,7 @@ struct MotionSynthesizer::Impl {
             }
         }catch(...){reset();throw;}
     }
-    void assess_motion() {
+    void assess_motion(const MotionSynthesizer::GpuWait& wait) {
         const UINT zero[4]{};context->ClearUnorderedAccessViewUint(riskUav.Get(),zero);
         float data[8]={float(w),float(h),float(aw),float(ah),float(grid),0,0,0};
         context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
@@ -270,7 +271,14 @@ struct MotionSynthesizer::Impl {
         ID3D11ShaderResourceView* empty[6]{};ID3D11UnorderedAccessView* none=nullptr;
         context->CSSetShaderResources(0,6,empty);context->CSSetUnorderedAccessViews(0,1,&none,nullptr);context->CSSetShader(nullptr,nullptr,0);
         context->CopyResource(riskReadback.Get(),riskBuffer.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
-        check(context->Map(riskReadback.Get(),0,D3D11_MAP_READ,0,&mapped),"Read motion assessment");
+        HRESULT mappedResult=context->Map(riskReadback.Get(),0,D3D11_MAP_READ,wait?D3D11_MAP_FLAG_DO_NOT_WAIT:0,&mapped);
+        const ULONGLONG deadline=GetTickCount64()+1000;
+        while(wait && mappedResult==DXGI_ERROR_WAS_STILL_DRAWING) {
+            if(GetTickCount64()>=deadline)throw std::runtime_error("Motion assessment readback timed out");
+            wait();
+            mappedResult=context->Map(riskReadback.Get(),0,D3D11_MAP_READ,D3D11_MAP_FLAG_DO_NOT_WAIT,&mapped);
+        }
+        check(mappedResult,"Read motion assessment");
         const uint32_t bad=*static_cast<const uint32_t*>(mapped.pData);context->Unmap(riskReadback.Get(),0);
         inconsistentSamples=bad;trustworthy=bad<=uint32_t(128*72*2*0.08);
     }
@@ -340,7 +348,7 @@ void MotionSynthesizer::reset() noexcept {impl_->reset();}
 // Seek, cut, skipped/identical pair, source discontinuity, or recovery still
 // destroys the session. Normal playback alone takes the persistent path.
 void MotionSynthesizer::invalidate_history() noexcept {impl_->reset();}
-void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int h) {
+void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int h,const GpuWait& wait) {
 #ifdef NVOF_SESSION_DIAGNOSTICS
     using Clock=std::chrono::steady_clock;
     auto tick=Clock::now();
@@ -373,7 +381,8 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
     // before EVERY execute. Session reuse alone does not establish interop
     // ordering. Rotate disjoint input pairs (0,1), (2,3), (4,5), and upload both
     // sources: texture identity never implies unchanged content.
-    {
+    if(wait)wait();
+    else {
         auto done=impl_->inputDone;
         impl_->context->End(done.Get());impl_->context->Flush();
         const ULONGLONG deadline=GetTickCount64()+1000;
@@ -394,7 +403,7 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
     out.outputCostBuffer=impl_->ch[0];out.bwdOutputCostBuffer=impl_->ch[1];
     impl_->of(impl_->api.nvOFExecute(impl_->handle,&in,&out),"Estimate motion");
     mark(3);
-    impl_->assess_motion();
+    impl_->assess_motion(wait);
     mark(4);
     if(impl_->trustworthy) {
         impl_->draw(impl_->repairScratchTargets[0].Get(),0,false,0,0.5f,false,0,true);
@@ -414,7 +423,11 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
     }
     mark(5);
     impl_->prepared=impl_->hasPair=true;
-    }catch(...){impl_->reset();throw;}
+    }catch(...){
+        // With a shared wait callback, the owning engine handles cleanup only
+        // after verifying that it still owns the device lock.
+        impl_->prepared=false;if(!wait)impl_->reset();throw;
+    }
 }
 void MotionSynthesizer::render_phase(ID3D11RenderTargetView* y,ID3D11RenderTargetView* uv,float fraction) {
     if(!impl_->prepared)throw std::logic_error("Prepare a pair before synthesis");

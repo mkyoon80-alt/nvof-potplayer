@@ -7,7 +7,7 @@ Texture2D<int2> fw:register(t4);
 Texture2D<int2> bw:register(t5);
 Texture2D<float4> inverseOffsets:register(t6);
 Texture2D<float4> inverseWeights:register(t7);
-Texture2D<float2> layerMask:register(t8);
+Texture2D<float4> layerMask:register(t8);
 Texture2D<uint> forwardCost:register(t9);
 Texture2D<uint> backwardCost:register(t10);
 Texture2D<int2> rawForward:register(t11);
@@ -497,6 +497,36 @@ bool fixedOpaqueSpan(float2 p,float2 direction) {
     }
     return false;
 }
+// A fixed thin stroke may be translucent: its center color changes with
+// the moving background, while its narrow cross-section remains aligned.
+float thinStrokeAgreement(float2 p,float2 normal) {
+    if(!inside(p-normal*3.0)||!inside(p+normal*3.0))return 0;
+    float a=yAt(p,false)*255.0,b=yAt(p,true)*255.0;
+    float al=yAt(p-normal*3.0,false)*255.0,ar=yAt(p+normal*3.0,false)*255.0;
+    float bl=yAt(p-normal*3.0,true)*255.0,br=yAt(p+normal*3.0,true)*255.0;
+    float ca=a-(al+ar)*0.5,cb=b-(bl+br)*0.5;
+    if(ca*cb<=0||(a-al)*(a-ar)<=0||(b-bl)*(b-br)<=0)return 0;
+    if(min(abs(ca),abs(cb))<4.0)return 0;
+    if(abs(al-ar)>max(8.0,abs(ca)*0.75)||abs(bl-br)>max(8.0,abs(cb)*0.75))return 0;
+    float pa=(yAt(p+normal,false)-yAt(p-normal,false))*255.0/ca;
+    float pb=(yAt(p+normal,true)-yAt(p-normal,true))*255.0/cb;
+    return 1.0-smoothstep(0.12,0.35,abs(pa-pb));
+}
+float2 fixedThinStroke(float2 p) {
+    float2 result=0;
+    [unroll]for(int axis=0;axis<2;++axis) {
+        float2 normal=axis==0?float2(1,0):float2(0,1),tangent=normal.yx;
+        float center=thinStrokeAgreement(p,normal);
+        if(center<0.9)continue;
+        float support=0;
+        [loop]for(int k=-3;k<=3;++k) {
+            float2 q=p+tangent*float(k*32);
+            support+=thinStrokeAgreement(q,normal);
+        }
+        if(axis==0)result.x=center*smoothstep(5.5,6.5,support);else result.y=center*smoothstep(5.5,6.5,support);
+    }
+    return result;
+}
 float2 stationaryLayer(float2 p) {
     float centerA=yAt(p,false),centerB=yAt(p,true);
     float error=0,weight=0;
@@ -571,7 +601,7 @@ float2 stationaryLayer(float2 p) {
     return float2(still,plate);
 }
 float4 stationaryMask(float4 screen:SV_Position):SV_Target {
-    return float4(stationaryLayer(screen.xy),0,1);
+    return float4(stationaryLayer(screen.xy),fixedThinStroke(screen.xy));
 }
 float4 expandStationaryMask(float4 screen:SV_Position):SV_Target {
     float2 mask=0;float2 p=screen.xy;
@@ -579,20 +609,32 @@ float4 expandStationaryMask(float4 screen:SV_Position):SV_Target {
     bool opaque=min(centerA,centerB)*255.0>208.0&&abs(centerA-centerB)*255.0<1.5;
     [unroll]for(int offset=-4;offset<=4;++offset) {
         int2 d=mode.z==0?int2(offset,0):int2(0,offset);
-        float2 candidate=layerMask.Load(int3(clamp(int2(p)+d,0,int2(size.xy)-1),0));
+        float2 candidate=layerMask.Load(int3(clamp(int2(p)+d,0,int2(size.xy)-1),0)).xy;
         mask.x=max(mask.x,candidate.x);
         // The extra plate layer never expands into the moving background.
         if(opaque&&abs(yAt(p+d,false)-centerA)*255.0<2.0&&abs(yAt(p+d,true)-centerB)*255.0<2.0)
             mask.y=max(mask.y,candidate.y);
     }
-    return float4(mask,0,1);
+    float2 thin=layerMask.Load(int3(int2(p),0)).zw;
+    return float4(mask,thin);
+}
+float2 withoutThinStroke(float2 p,float2 destination,bool next) {
+    float2 mask=layerMask.SampleLevel(linearClamp,p/size.xy,0).zw;
+    float confidence=max(mask.x,mask.y);
+    if(confidence<0.02)return color(p,next);
+    float2 normal=mask.x>=mask.y?float2(1,0):float2(0,1);
+    // A sample still inside the original stroke footprint is not a ghost.
+    // Do not erase weakly classified edge pixels for subpixel/along-line motion.
+    if(abs(dot(p-destination,normal))<3.0)return color(p,next);
+    float2 background=0.5*(color(p-normal*4.0,next)+color(p+normal*4.0,next));
+    return lerp(color(p,next),background,smoothstep(0.02,0.2,confidence));
 }
 float2 mappedColor(float2 p,float4 offsets,float4 weights) {
     float2 a=p+offsets.xy,b=p+offsets.zw;
     // Retain baseline evidence in xy for stationary-background protection.
     // Hardware cost in zw changes only the moving-source blend.
     float ta=weights.x*weights.z,tb=weights.y*weights.w;
-    float2 ca=color(a,false),cb=color(b,true);
+    float2 ca=withoutThinStroke(a,p,false),cb=withoutThinStroke(b,p,true);
     float2 warped=ta+tb>0.0?(ca*ta+cb*tb)/(ta+tb):lerp(ca,cb,mode.w);
     float still=layerMask.SampleLevel(linearClamp,p/size.xy,0).x;
     float sa=layerMask.SampleLevel(linearClamp,a/size.xy,0).x*smoothstep(1.0,3.0,length(a-p));
@@ -613,6 +655,12 @@ float2 mappedColor(float2 p,float4 offsets,float4 weights) {
     float useA=sb*(1.0-sa)*validA,useB=sa*(1.0-sb)*validB;
     float2 protectedBackground=fixed*(1.0-useA-useB)+ca*useA+cb*useB;
     float2 result=lerp(warped,protectedBackground,sourceStatic);
+    float2 thin=layerMask.SampleLevel(linearClamp,p/size.xy,0).zw;
+    // Along-line motion preserves the stroke and should keep the ordinary
+    // moving background, rather than replacing it with an endpoint crossfade.
+    float2 across=max(abs(offsets.xy),abs(offsets.zw));
+    thin*=smoothstep(0.5,1.5,across);
+    still=max(still,smoothstep(0.02,0.2,max(thin.x,thin.y)));
     return lerp(result,fixed,still);
 }
 
