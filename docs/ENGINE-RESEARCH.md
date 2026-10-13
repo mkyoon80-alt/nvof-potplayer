@@ -1,5 +1,7 @@
 # Engine quality research — 2026-10-13
 
+[한국어 보고서](ENGINE-RESEARCH.ko.md)
+
 This is development evidence and an execution plan, not a released engine change.
 The baseline is **v0.4.8, `47bb73b74039538e16ab63e98934ce21e39bc48b`**.
 Research is on `codex/engine-quality-research`; installations and user INIs are
