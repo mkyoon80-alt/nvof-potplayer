@@ -212,6 +212,89 @@ float2 repairNearStaticAlias(float2 p,float2 original,bool next) {
     if(error<49.0*3.0&&error<oldError*0.35&&peak<16.0)return v;
     return original;
 }
+float movingStrokeCost(float2 p,float2 v,float2 normal,bool next) {
+    float scale=max(size.x/size.z,size.y/size.w),error=0;
+    float2 tangent=normal.yx;
+    [unroll]for(int y=-3;y<=3;++y)[unroll]for(int x=-2;x<=2;++x) {
+        float2 q=p+(normal*float(x*8)+tangent*float(y*32))*scale;
+        if(!inside(q)||!inside(q+v))return 255.0;
+        error+=abs(yAt(q,next)-yAt(q+v,!next))*255.0;
+    }
+    return error/35.0;
+}
+// Require several alternating parallel edges on both sides of the point.
+// One object silhouette or a narrow opening is not a repeated surface.
+bool periodicStroke(float2 p,bool next,out float2 normal) {
+    float scale=max(size.x/size.z,size.y/size.w);normal=0;
+    float xx=0,yy=0,lo=255,hi=0;
+    [unroll]for(int y=-1;y<=1;++y)[unroll]for(int x=-2;x<=2;++x) {
+        float2 q=p+float2(x*16,y*12)*scale;
+        float a=yAt(q,next)*255.0;lo=min(lo,a);hi=max(hi,a);
+        xx+=abs(yAt(q+float2(1,0)*scale,next)-yAt(q-float2(1,0)*scale,next))*255.0;
+        yy+=abs(yAt(q+float2(0,1)*scale,next)-yAt(q-float2(0,1)*scale,next))*255.0;
+    }
+    if(max(xx,yy)<3.0*min(xx,yy)+8.0||hi-lo<32.0)return false;
+    normal=xx>yy?float2(1,0):float2(0,1);
+
+    [unroll]for(int side=0;side<2;++side) {
+        int previous=0,changes=0;float direction=side==0?-1.0:1.0;
+        float last=yAt(p,next)*255.0;
+        [loop]for(int k=1;k<=32;++k) {
+            float2 q=p+normal*(direction*float(k*4)*scale);
+            if(!inside(q))return false;
+            float current=yAt(q,next)*255.0,delta=current-last;last=current;
+            int sign=delta>8.0?1:delta<-8.0?-1:0;
+            if(sign!=0){if(previous!=0&&sign!=previous)++changes;previous=sign;}
+        }
+        if(changes<2)return false;
+    }
+    return true;
+}
+
+// The proposed jump must correspond to another copy of this source patch.
+// A thin foreground line over a repeating background fails the peak check.
+float periodicSurfaceMatch(float2 p,float2 period,bool next) {
+    float scale=max(size.x/size.z,size.y/size.w),error=0,peak=0;
+    [unroll]for(int y=-2;y<=2;++y)[unroll]for(int x=-2;x<=2;++x) {
+        float2 q=p+float2(x,y)*2.0*scale;
+        if(!inside(q)||!inside(q+period))return 0.0;
+        float delta=abs(yAt(q,next)-yAt(q+period,next))*255.0;
+        error+=delta;peak=max(peak,delta);
+    }
+    float2 chroma=abs(uvAt(p,next)-uvAt(p+period,next))*255.0;
+    return error<25.0*8.0&&peak<24.0&&max(chroma.x,chroma.y)<6.0?1.0:0.0;
+}
+
+// Restrict the additional search to large motion across vertical repetitions.
+// Slow/orthogonal glyph strokes retain their established recovery path.
+float2 repairMovingPattern(float2 p,float2 original,bool next) {
+    float scale=max(size.x/size.z,size.y/size.w);
+    if(length(original)<2.0*scale||length(original)>256.0*scale)return original;
+    float2 normal;
+    if(!periodicStroke(p,next,normal)||normal.x<0.5)return original;
+    float2 tangent=normal.yx;
+    float oldCost=movingStrokeCost(p,original,normal,next);
+    if(oldCost<6.0)return original;
+    float bestCost=oldCost;float2 best=original;
+    [loop]for(int k=0;k<5;++k) {
+        float radius=k<4?32.0*float(k+1):192.0;
+        float2 a=p-tangent*radius*scale,b=p+tangent*radius*scale;
+        if(!inside(a)||!inside(b))continue;
+        float2 va=flow(a,next),vb=flow(b,next),v=0.5*(va+vb);
+        if(length(v)<32.0*scale||length(original-v)<4.0*scale)continue;
+        if(length(va-vb)>max(1.5*scale,0.2*length(v)))continue;
+        if(matchCost(a,va,next)>8.0||matchCost(b,vb,next)>8.0)continue;
+        float2 difference=original-v;
+        if(abs(dot(difference,tangent))>0.3*abs(dot(difference,normal))+2.0*scale)continue;
+        // Independent donors must support the same trajectory on both sides.
+        // Both reverse estimates may share the same periodic alias.
+        // Wide image agreement and opposing donors provide independent evidence.
+        float cost=movingStrokeCost(p,v,normal,next);
+        if(cost<10.0&&cost<oldCost*0.85&&cost<oldCost-1.0&&cost<bestCost&&periodicSurfaceMatch(p,original-v,next)>0.5){bestCost=cost;best=v;}
+    }
+    return best;
+}
+
 int2 repairMotion(float4 screen:SV_Position):SV_Target {
     bool next=mode.z!=0;
     float scale=max(size.x/size.z,size.y/size.w);
@@ -225,6 +308,7 @@ int2 repairMotion(float4 screen:SV_Position):SV_Target {
     // broad repair of low-confidence occlusions regresses faces and hands.
     // Propagation additionally needs a large alias and repeated source detail.
     if(length(original)/scale>(mode.w>0.0?32.0:64.0)) {
+        float2 normal;bool periodic=periodicStroke(p,next,normal)&&normal.x>0.5;
         [loop]for(int k=0;k<33;++k) {
             int d=(k-1)%4+1;
             float2 delta=d==1?float2(64,0):(d==2?float2(-64,0):(d==3?float2(0,64):float2(0,-64)));
@@ -239,6 +323,9 @@ int2 repairMotion(float4 screen:SV_Position):SV_Target {
                 float cp=matchCost(p,v,next),cost=cp+2.0*min(cf,8.0);
                 if(cf>=1.5){if(cp>=10.0)continue;cost=cp+2.0+support;}
                 if(cp<12.0&&length(v)+16.0*scale<length(original)&&(cost<bestCost*0.6 || (cost<bestCost+2.0&&length(v)+16.0*scale<length(best)))) {
+                    // A shorter, still-large vector can be another repetition.
+                    // Reverse-flow agreement alone cannot resolve that alias.
+                    if(length(v)>32.0*scale&&periodic&&periodicSurfaceMatch(p,original-v,next)>0.5&&!(cp+0.5<photo&&cp<photo*0.8))continue;
                     if(mode.w==0.0&&!repeatedPatch(p,original-v,next))continue;
                     best=v;bestCost=cost;
                 }
@@ -246,6 +333,7 @@ int2 repairMotion(float4 screen:SV_Position):SV_Target {
         }
     }
     if(mode.w>0.0) {best=repairGlyphAlias(p,best,next);best=repairParallelStrokeAlias(p,best,next);best=repairNearStaticAlias(p,best,next);}
+    best=repairMovingPattern(p,best,next);
     return int2(round(best*size.zw/size.xy*32.0));
 }
 // Reject frame-wide correspondence failure, not isolated occlusion boundaries.

@@ -17,7 +17,7 @@ struct MotionSessionTestAccess {
    s.context->Unmap(copy.Get(),0);
   };
   save(s.glyphTexture.Get(),"glyph.bin",16);
-  save(s.layerTextures[0].Get(),"mask.bin",2);
+  save(s.layerTextures[0].Get(),"mask.bin",4); // RGBA8: fixed/opaque and both thin-line channels.
   save(s.warpMaps[0].Get(),"offsets.bin",16);save(s.warpMaps[1].Get(),"weights.bin",16);
   save(s.flows[0].Get(),"raw-fw.bin",4);save(s.flows[1].Get(),"raw-bw.bin",4);
   save(s.repairedTextures[0].Get(),"fw.bin",4);save(s.repairedTextures[1].Get(),"bw.bin",4);
