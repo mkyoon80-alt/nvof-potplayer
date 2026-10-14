@@ -42,3 +42,9 @@ button,.language-link{min-height:44px}.language-link{display:inline-flex;align-i
 #hdr-display h3{font-size:23px}#diagnostic-logging{scroll-margin-top:100px}
 @media(max-width:600px){.intro-actions{display:grid}.button{text-align:center}.text-links{gap:4px 16px}.quick-path{flex-direction:column;align-items:stretch;gap:8px}.quick-path svg{display:none}.quick-path a{min-height:44px}}
 @media print{.intro-actions{display:none}.release-note{padding-top:0;border:0}.text-links a{min-height:0}.table-wrap{overflow:visible}#performance td{min-width:0}}
+
+/* v0.4.10: requested support headline with nearby verification scope. */
+.intro h1{font-size:clamp(2rem,3.6vw,3rem);line-height:1.25;color:var(--accent);max-width:22ch}
+.support-scope{font-size:14px;color:var(--muted);margin:0 0 24px}
+.support-scope a{display:inline-block}
+@media print{.intro h1{font-size:28pt;color:inherit}}

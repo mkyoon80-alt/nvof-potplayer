@@ -1,3 +1,37 @@
+# v0.4.10 — 8K 60p ×4 지원
+
+## 한국어
+
+**8K HDR 60fps → 240fps 보간을 지원합니다.** RTX 5090과 팟플레이어의 네이티브 D3D11 경로에서 실제 재생을 확인했습니다.
+
+- **최신 실제 재생 결과:** 같은 재생 로직의 로컬 시험 빌드에서 상세 진단을 켠 상태로 1분 재생했을 때, 초기 드랍 이후 추가 증가가 없었다는 사용자 확인을 받았습니다. 시작 15초 이후 로그의 초당 전달량은 239.15~241.17fps였고 출력 시각의 누락·중복은 0건이었습니다.
+- **재생 로직 유지:** v0.4.9의 시작 시 선행 계산 제거, 디코더 입력 분리, 출력 대기열 처리와 화질 수치를 그대로 유지합니다. 이번 버전은 확인된 동작과 안내를 정리한 배포이며 새 보간 알고리즘을 추가하지 않았습니다.
+- **재생 성능 문제 해결:** 팟플레이어의 ‘수직 동기화 기다리지 않기’를 체크(✓) 또는 중간 상태(-)로 바꿔 비교하는 방법과 설정 화면을 매뉴얼에 추가했습니다.
+- **매뉴얼 첫 화면 개편:** 한국어·영어 매뉴얼과 README 앞부분에 8K 60p ×4 지원, RTX 5090 확인 조건, 설정 방법과 남은 제한을 안내합니다.
+- **진단 기본 꺼짐:** 배포 설정은 `TracePerformance=0`, `ProbeServices=0`입니다. 기존 화질 MCP 32개는 실험 빌드에 유지하며, 재생 성능 MCP는 포함하지 않습니다.
+
+**설정:** 원본 FPS에서 60을 선택하고 원본 ×4 또는 최대 240fps를 지정합니다. 8K만 적용하려면 세로 높이 기준 해상도별 설정의 **4320p 이상**을 원본 ×4로 지정하세요. 전체 높이 허용과 프레임 보간 켜기도 확인합니다.
+
+**확인 범위:** 한 차례의 1분 결과는 모든 영상의 무드랍을 보증하지 않습니다. 시작 직후 큰 드랍과 탐색 직후 소량의 드랍은 남아 있습니다. 240fps 처리와 화면 주사율은 별개입니다. 165Hz 화면에서는 실제 감상용으로 120·144fps 등의 상한을 선택할 수 있습니다. RTX 5070에서 같은 성능을 검증한 것은 아닙니다.
+
+팟플레이어와 설정창을 닫고 교체하며, 기존 `NvofPotPlayer.ini`를 보존하세요. 일반 감상은 두 진단 값을 `0`으로 두고 다음 실행부터 적용합니다.
+
+## English
+
+**8K 60p ×4 support: interpolate 8K HDR 60fps to 240fps.** Actual playback was verified on an RTX 5090 using PotPlayer's native D3D11 path.
+
+- In the latest one-minute local test with the same playback logic and detailed diagnostics enabled, the user reported no further drops after startup. Logged delivery after the first 15 seconds was 239.15–241.17fps, with no output timestamp gaps or overlaps.
+- Retains v0.4.9's removal of startup precomputation, separated decoder input, output queue handling and quality values. This release updates versioning, documentation and confirmed scope; it introduces no new interpolation algorithm.
+- Added a troubleshooting guide and screenshot for comparing the checked and intermediate states of PotPlayer’s Do not wait for vertical sync setting.
+- Updated both manual covers and the README with the 8K claim, RTX 5090 scope, setup and remaining limits.
+- Release diagnostics remain off: `TracePerformance=0`, `ProbeServices=0`. Experimental builds retain 32 quality MCP values; playback performance MCP remains removed.
+
+**Setup:** Select the 60fps source group and source ×4 or a 240fps cap. To apply it only to 8K, use source ×4 in the **4320p+** height band. Enable interpolation and allow all source heights.
+
+**Scope:** A single one-minute result does not guarantee zero drops for every source. Large startup drops and a few post-seek drops remain possible. Processing at 240fps does not change the display refresh rate; a 165Hz display can use a 120/144fps cap for viewing. These results do not establish RTX 5070 performance. Preserve your INI when upgrading, and leave diagnostics off for normal viewing.
+
+---
+
 # v0.4.9 — 해상도별 설정과 재생 처리 개선
 
 ## 한국어

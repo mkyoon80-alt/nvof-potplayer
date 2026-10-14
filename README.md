@@ -1,14 +1,20 @@
-# NVOF for PotPlayer
+# NVOF for PotPlayer — 8K 60p ×4 지원
+
+**8K HDR 60fps → 240fps**, RTX 5090 실제 재생 확인. 초기 드랍을 제외한 최신 1분 재생에서 추가 드랍이 없었습니다. 시작 직후 드랍은 남아 있으며, 처리 여유는 영상·GPU·렌더러에 따라 달라집니다.
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
 
-**[Download v0.4.9](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.9)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+**[Download v0.4.10](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.10)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **FPS 상한 또는 원본 배수**를 골라 원본의 정수배로 보간합니다.
 
 압축을 풀어 사용하는 Windows x64 스탠드얼론 ZIP입니다. 필터·등록 도구·설정창과 .NET/WPF 런타임, 한국어·영어 오프라인 매뉴얼을 포함합니다. NVIDIA 드라이버와 팟플레이어는 별도로 필요합니다.
 
-## v0.4.9의 변경 사항
+## v0.4.10의 변경 사항
+
+v0.4.9의 재생 로직과 화질 수치를 유지하며, 8K 60p ×4 지원 안내와 최신 실제 재생 결과를 반영했습니다. 새 알고리즘 변경은 없습니다.
+
+### 포함된 주요 기능
 
 - **해상도별 출력 설정:** 세로 높이에 따라 FPS 상한·원본 배수·보간 끄기를 지정합니다. 새 설정창에서 기본 출력과 구간별 값을 함께 편집합니다.
 - **재생 처리 개선:** 네이티브 GPU 입력의 디코더 수신과 보간·출력을 분리하고 고배수 출력 여유를 확보했습니다. 1080p·4K·8K에 적용하며, 일시정지 후 기존 세션을 유지하고 연속 탐색의 앞뒤 튐을 개선했습니다.
