@@ -8,8 +8,8 @@ Visual Studio 2022 C++, Windows SDK, CMake 3.20+, Git and official NVIDIA Optica
 
 ~~~powershell
 .\tools\fetch-build-deps.ps1
-.\tools\build.ps1 -BuildDirectory build\release0410\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
-.\ui\build-ui.ps1 -OutputDirectory ui\staging-release0410
+.\tools\build.ps1 -BuildDirectory build\release0411\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
+.\ui\build-ui.ps1 -OutputDirectory ui\staging-release0411
 ~~~
 
 The filter and register helper use static MSVC /MT. Shader bytecode is generated at build time. CMake never finds CUDA or builds the old FRUC bridge in this profile. Historical FRUC-specific research tests remain as source references but are not active build targets.
@@ -19,13 +19,13 @@ Supported CPU NV12 SDR and 10-bit samples upload to the GPU and return GPU surfa
 ## Package and manual
 
 ~~~powershell
-.\tools\build-local-package.ps1 -Version 0.4.10 -NativeDirectory build\release0410\native\Release -UiDirectory ui\staging-release0410
-python tools/build-manual-site.py --output build/release0410/manual-site
-python tools/build-manual-assets.py --site-dir build/release0410/manual-site --version 0.4.10 --language ko --output dist
-python tools/build-manual-assets.py --site-dir build/release0410/manual-site --version 0.4.10 --language en --output dist
+.\tools\build-local-package.ps1 -Version 0.4.11 -NativeDirectory build\release0411\native\Release -UiDirectory ui\staging-release0411
+python tools/build-manual-site.py --output build/release0411/manual-site
+python tools/build-manual-assets.py --site-dir build/release0411/manual-site --version 0.4.11 --language ko --output dist
+python tools/build-manual-assets.py --site-dir build/release0411/manual-site --version 0.4.11 --language en --output dist
 ~~~
 
-The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. v0.4.10 is distributed as a standalone ZIP. The optional developer tool tools/build-installer.ps1 still supports Inno Setup 7.1.0; the compiler is not shipped.
+The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. v0.4.11 is distributed as a standalone ZIP. The optional developer tool tools/build-installer.ps1 still supports Inno Setup 7.1.0; the compiler is not shipped.
 
 Old runtime acquisition scripts are unnecessary. tools/install-phase-upgrade.ps1 is retired to prevent accidental installation of FRUC. Earlier acquisition evidence remains in config/legacy-runtime-manifest.json and Git history, not in the current package.
 
@@ -36,7 +36,7 @@ or CMake `-DNVOF_EXPERIMENTAL_TUNING=ON` in a separate build directory. The defa
 is OFF. See [TUNING.md](TUNING.md) for the parameter inventory,
 pair-boundary application, local MCP/CLI controller and verification commands.
 
-tools/build.ps1 runs 23 core, parser, conversion and shader validation tests in the standard build. Experimental builds add tuning-channel checks. Explicit GPU tests include native_cost_map, native_motion_layers, native_motion_guard, native_cpu_transport, gpu_interop_stress and NV12/P010 DirectShow tests. Use an absent runtime path for native engine tests.
+tools/build.ps1 runs 24 core, parser, conversion and shader validation tests in the standard build. Experimental builds add tuning-channel checks. Explicit GPU tests include native_cost_map, native_motion_layers, native_motion_guard, native_cpu_transport, gpu_interop_stress and NV12/P010 DirectShow tests. Use an absent runtime path for native engine tests.
 
 runtime_dependencies.exe audits a package for removed FRUC/CUDA/driver files and loads its filter. Import-table inspection verifies that product binaries do not depend on CUDA or FRUC.
 
@@ -45,7 +45,7 @@ tools/test-release-installer.ps1 tests installation without NVIDIA assent parame
 Session lifetime optimization and local regression commands: [SESSION-REUSE.md](SESSION-REUSE.md). This optimization is included in v0.4.4.
 
 Repeated-seek preview and resume regression: `directshow_gpu_smoke <filter.ax> --scrub-preview`.
-The filter forwards originals for 200 ms after a seek before resuming interpolation.
+The filter bounds the post-seek original-only window by both 100 ms of wall time and 100 ms of source timestamps. Frame boundaries round the source span up (about 125 ms at 24p, 100 ms at 60p). This is not a display-latency guarantee. The first original remains immediate.
 See [SEEK-PREVIEW.ko.md](SEEK-PREVIEW.ko.md) for scope, validation and playback acceptance status.
 
 ## Native P010 / HDR checks

@@ -17,10 +17,10 @@
     <RootNamespace>NvofControl</RootNamespace>
     <StartupObject>NvofControl.Program</StartupObject>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.4.10</Version>
-    <ApplicationVersion>0.4.10</ApplicationVersion>
-    <AssemblyVersion>0.4.10.0</AssemblyVersion>
-    <FileVersion>0.4.10.0</FileVersion>
+    <Version>0.4.11</Version>
+    <ApplicationVersion>0.4.11</ApplicationVersion>
+    <AssemblyVersion>0.4.11.0</AssemblyVersion>
+    <FileVersion>0.4.11.0</FileVersion>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
     <Deterministic>true</Deterministic>

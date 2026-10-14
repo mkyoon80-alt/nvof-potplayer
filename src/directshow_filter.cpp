@@ -8,6 +8,7 @@
 #include "nvof/input_height_policy.hpp"
 #include "nvof/resolution_policy.hpp"
 #include "nvof/playback_timing.hpp"
+#include "nvof/seek_preview.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -69,7 +70,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.4.10";
+constexpr char kFilterBuild[]="0.4.11";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -1214,7 +1215,7 @@ public:
         cancelled_.store(false, std::memory_order_release);
         cpu_prepare_ms_=cpu_gpu_ms_=0;cpu_upload_fields_=0;cpu_field_override_logged_=false;
         last_pts_.reset();
-        seek_preview_until_=0;seen_segment_=false;seek_preview_frame_=false;seek_trace_count_=0;
+        seek_preview_.clear();seen_segment_=false;seek_preview_frame_=false;seek_trace_count_=0;
         last_duration_ = input_.duration > 0 ? input_.duration :
             nvof::supported_output_rate(target_)?rate_duration(target_):kUnits/24;
         failed_ = false;
@@ -1350,7 +1351,7 @@ public:
             // A slider drag can issue another seek before the previous pair's
             // phases have reached the renderer. Keep the short settling window
             // at source cadence, without retaining an interpolation endpoint.
-            seek_preview_until_=GetTickCount64()+nvof::playback::seek_preview_ms;
+            seek_preview_.begin(GetTickCount64(),nvof::playback::seek_preview_ms);
         }
         if(m_pOutput) {
             const HRESULT recommitted=static_cast<nvof::transport::OutputPin*>(m_pOutput)->resume_allocation();
@@ -1373,11 +1374,11 @@ public:
         reset_history(true);
         last_pts_.reset();
         failed_ = false;
-        if(seen_segment_ || seek_preview_until_)seek_preview_until_=GetTickCount64()+nvof::playback::seek_preview_ms;
+        if(seen_segment_ || seek_preview_.armed())seek_preview_.begin(GetTickCount64(),nvof::playback::seek_preview_ms);
         seen_segment_=true;
         if(performance_.enabled && seek_trace_count_++<32)
             write_log("seek segment start="+std::to_string(start)+" previewMs="+
-                std::to_string(seek_preview_until_?200:0));
+                std::to_string(seek_preview_.armed()?nvof::playback::seek_preview_ms:0));
         return CTransformFilter::NewSegment(start, stop, rate);
     }
 
@@ -1466,7 +1467,7 @@ public:
             if (timing == S_OK && stop > start) last_duration_ = stop - start;
             if (discontinuity) reset_history(true);
             const int64_t end=timing==S_OK && stop>start?stop:start+last_duration_;
-            seek_preview_frame_=interpolation_requested() && GetTickCount64()<seek_preview_until_;
+            seek_preview_frame_=interpolation_requested() && seek_preview_.active(GetTickCount64(),start);
             if(seek_preview_frame_)quality_state_="seek-preview";
             ++source_frames_;
             if(cpu_upload_active_) {
@@ -2293,7 +2294,7 @@ private:
     std::atomic<bool> cancelled_{false};
     bool failed_ = false;
     bool preroll_ = false;
-    ULONGLONG seek_preview_until_=0;
+    nvof::SeekPreviewWindow seek_preview_;
     bool seen_segment_=false,seek_preview_frame_=false;
     unsigned seek_trace_count_=0;
     std::optional<int64_t> last_pts_;

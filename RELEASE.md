@@ -1,3 +1,35 @@
+# v0.4.11 — 탐색 후 보간 재개 단축
+
+## 한국어
+
+**8K 60p ×4 지원을 유지하며, 방향키·재생바로 이동한 뒤 보간이 더 빨리 재개되도록 개선했습니다.**
+
+- 탐색 보호 구간을 200ms에서 100ms로 줄이고, 실제 시간뿐 아니라 입력 영상의 시각으로도 원본 프레임 구간을 제한합니다. 빠른 디코딩으로 원본이 과하게 쌓이는 현상을 줄입니다.
+- 자동 검사에서 원본 FPS로 지나간 영상 구간은 24p 약 0.125초, 60p 약 0.10초였습니다. 화면 표시 지연이나 사용자 체감 시간을 직접 측정한 값은 아닙니다.
+- 첫 원본은 즉시 전달합니다. 반복 탐색은 새 위치에서 보호 구간과 이력을 다시 시작하며, 일시정지·입력 분리·고배수 출력 처리 및 화질 수치는 유지합니다.
+- 한국어·영어 온라인/오프라인 매뉴얼에 탐색 동작과 검증 범위를 추가했습니다. 수직 동기화 설정 비교 안내도 유지합니다.
+- 배포본 진단은 기본 꺼짐(`TracePerformance=0`, `ProbeServices=0`)입니다. 화질 MCP 32개는 실험 빌드에 유지하고, 폐기한 재생 성능 MCP는 포함하지 않습니다.
+
+**업데이트:** 팟플레이어와 설정창을 닫고 기존 폴더를 백업한 뒤 교체하세요. 기존 `NvofPotPlayer.ini`를 보존하고 플레이어를 다시 실행합니다. 기존 INI의 진단 설정은 자동으로 변경하지 않습니다.
+
+**남은 제한:** 시작 직후 큰 드랍과 탐색 직후 소량의 드랍, 반복 무늬·할로·가림 경계의 어려운 장면은 남아 있습니다. RTX 5090에서 확인한 8K 60p ×4 지원은 모든 소스의 무드랍을 보증하지 않습니다. 실제 감상용 출력은 모니터 주사율과 GPU 여유에 맞추세요.
+
+## English
+
+**Retains 8K 60p ×4 support and resumes interpolation sooner after arrow-key seeks and scrubbing.**
+
+- Shortens the settling window from 200 ms to 100 ms and bounds it by source timestamps as well as elapsed time, preventing fast decoding from queuing an excessive source-rate interval.
+- Automated checks measured about 125 ms of source-rate video at 24p and 100 ms at 60p. These are media-timeline measurements, not on-screen latency guarantees.
+- Keeps the first picture immediate. Repeated seeks reset the window and interpolation history; pause/resume, separated decoder input, high-rate output handling and quality values are retained.
+- Updates Korean and English online, offline ZIP and standalone HTML guides. The vertical-sync troubleshooting guide remains available.
+- Detailed diagnostics default off. Existing INI settings are preserved. The 32 quality MCP parameters remain experimental-only; playback performance MCP remains removed.
+
+Close PotPlayer and the controller, back up the folder, replace the files while preserving `NvofPotPlayer.ini`, and restart the player. Startup/post-seek drops and difficult repeated-pattern, halo and occlusion scenes remain outside this fix. RTX 5090 8K 60p ×4 verification does not guarantee zero drops for every source.
+
+See [seek validation / 탐색 검증](docs/SEEK-PREVIEW.ko.md) for scope.
+
+---
+
 # v0.4.10 — 8K 60p ×4 지원
 
 ## 한국어

@@ -4,15 +4,15 @@
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
 
-**[Download v0.4.10](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.10)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+**[Download v0.4.11](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.11)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **FPS 상한 또는 원본 배수**를 골라 원본의 정수배로 보간합니다.
 
 압축을 풀어 사용하는 Windows x64 스탠드얼론 ZIP입니다. 필터·등록 도구·설정창과 .NET/WPF 런타임, 한국어·영어 오프라인 매뉴얼을 포함합니다. NVIDIA 드라이버와 팟플레이어는 별도로 필요합니다.
 
-## v0.4.10의 변경 사항
+## v0.4.11의 변경 사항
 
-v0.4.9의 재생 로직과 화질 수치를 유지하며, 8K 60p ×4 지원 안내와 최신 실제 재생 결과를 반영했습니다. 새 알고리즘 변경은 없습니다.
+방향키·재생바로 이동한 뒤 보간이 더 빨리 재개되도록 개선했습니다. 빠른 입력으로 원본 프레임이 과하게 쌓이는 것을 제한하고, 탐색 보호 구간을 200ms에서 100ms로 줄였습니다. 첫 화면 전 대기는 추가하지 않았으며 기존 화질과 고배수 재생 처리를 유지합니다. [탐색 개선과 검증 범위](docs/SEEK-PREVIEW.ko.md)
 
 ### 포함된 주요 기능
 

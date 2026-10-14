@@ -1,4 +1,5 @@
 #include "nvof/video_format.hpp"
+#include "nvof/playback_limits.hpp"
 #include "hevc_color_fixture.hpp"
 #include "av1_color_fixture.hpp"
 #define WIN32_LEAN_AND_MEAN
@@ -49,6 +50,7 @@ bool dovi_fixture=false;
 bool async_lifecycle=false;
 bool stream_bench=false;
 bool cached_stream=false;
+bool cached_seek=false;
 bool preview_separation=false;
 bool preroll_prepare=false,output_ahead=false,wait_output=false,wait_output_error=false;
 uint64_t output_digest=14695981039346656037ULL;
@@ -212,7 +214,7 @@ public:
         // Avoid CPU construction/upload starving the input worker in the
         // completion-gate test. Two immutable alternating GPU inputs model a
         // decoder that already has pictures ready; no slice is overwritten.
-        ComPtr<ID3D11Texture2D> texture=(wait_output||cached_stream)?gate_sources_[index&1]:nullptr;
+        ComPtr<ID3D11Texture2D> texture=(wait_output||cached_stream||cached_seek)?gate_sources_[index&1]:nullptr;
         if(!texture) {
         const int coded_height=kHeight+8;
         std::vector<BYTE> pixels(kWidth*coded_height*3/2,128);
@@ -230,7 +232,7 @@ public:
             for(size_t i=0;i<pixels.size();++i)words[i]=uint16_t(pixels[i])<<8;
             context->UpdateSubresource(texture.Get(),1,nullptr,words.data(),kWidth*2,0);
         } else context->UpdateSubresource(texture.Get(),1,nullptr,pixels.data(),kWidth,0);
-        if(wait_output||cached_stream)gate_sources_[index&1]=texture;
+        if(wait_output||cached_stream||cached_seek)gate_sources_[index&1]=texture;
         }
         REFERENCE_TIME start=index*kDuration,stop=start+kDuration;
         surface->assign({texture,1,kWidth,kHeight,start});
@@ -935,7 +937,8 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
         return;
     }
     if(scrub_preview) {
-        // Repeated slider requests must not start a new batch of five phases
+        const REFERENCE_TIME preview_span=REFERENCE_TIME(nvof::playback::seek_preview_ms)*10000;
+        // Repeated slider requests must not start a new batch of phases
         // between requests. Also cover backward seeks and segment-relative PTS.
         for(int position:{102,104,3,1,0}) {
             Sleep(120); // Each new request must extend the settling window.
@@ -970,6 +973,30 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
             if(sink->pin().times[i]!=sink->pin().ends[i-1])
                 throw std::runtime_error("scrub resume timestamps overlap or leave a gap");
         std::cout<<"scrub previews=15 originals, preroll=0, fresh resume/continuous timestamps=OK\n";
+        // Decoder bursts must not fill output headroom with a long run of
+        // source-rate originals. Test both segment-relative and absolute PTS.
+        for(int origin:{0,100}) {
+            check(source->pin().DeliverBeginFlush(),"burst seek flush");
+            check(source->pin().DeliverEndFlush(),"burst seek end");
+            check(source->pin().DeliverNewSegment(origin*kDuration,INT64_MAX,1),"burst seek segment");
+            const size_t begin=sink->pin().count();
+            const int preview_frames=int((preview_span+kDuration-1)/kDuration);
+            for(int i=0;i<preview_frames+4;++i)check(push(origin+i),"burst seek input");
+            check(source->pin().DeliverEndOfStream(),"burst seek drain");
+            size_t first_short=begin;
+            while(first_short<sink->pin().count() &&
+                  sink->pin().ends[first_short]-sink->pin().times[first_short]>=kDuration-1)++first_short;
+            if(first_short==sink->pin().count() ||
+               sink->pin().times[first_short]-origin*kDuration>preview_span+kDuration)
+                throw std::runtime_error("burst seek queued too much source-rate video before interpolation");
+            if(sink->pin().times[begin]!=origin*kDuration || !sink->pin().discontinuities[begin])
+                throw std::runtime_error("burst seek lost the immediate clean original");
+            for(size_t i=begin+1;i<sink->pin().count();++i)
+                if(sink->pin().times[i]!=sink->pin().ends[i-1])
+                    throw std::runtime_error("burst seek output timestamps overlap or leave a gap");
+            std::cout<<"SEEK_BURST origin="<<origin<<" originals="<<first_short-begin
+                     <<" firstShortMs="<<(sink->pin().times[first_short]-origin*kDuration)/10000.0<<'\n';
+        }
     }
     if((gpu || cpu_gpu_output) && interpolate && expected_num>200*expected_den) {
         // Exercise the larger high-rate pool, not only the x2/default pool.
@@ -1288,7 +1315,12 @@ int wmain(int argc,wchar_t** argv) {
         ComPtr<ID3D10Multithread> multithread;
         if(SUCCEEDED(context.As(&multithread)))multithread->SetMultithreadProtected(TRUE);
         if(argc>2 && wcscmp(argv[2],L"--scrub-preview")==0) {
-            run_rate_policy_case(factory.Get(),24000,1001,120000,1001,
+            // Model a decoder burst with prepared GPU surfaces. Generating and
+            // uploading each 8K fixture on the CPU can exceed the preview window,
+            // legitimately expiring the wall deadline before three inputs.
+            cached_seek=true;
+            run_rate_policy_case(factory.Get(),argc>=9?_wtoi64(argv[3]):24000,argc>=9?_wtoi64(argv[4]):1001,
+                argc>=9?_wtoi64(argv[5]):120000,argc>=9?_wtoi64(argv[6]):1001,
                 argc<=7 || wcscmp(argv[7],L"cpu")!=0,"selected",-1,true);
         } else if(argc>2 && (wcscmp(argv[2],L"--rounded-duration")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0)) {
             run_rate_policy_case(factory.Get(),24000,1001,1000,21,true,"selected",420000);
