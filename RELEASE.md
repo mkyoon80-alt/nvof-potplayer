@@ -1,3 +1,38 @@
+# v0.4.9 — 해상도별 설정과 재생 처리 개선
+
+## 한국어
+
+- **해상도별 출력:** 원본의 세로 높이를 기준으로 일곱 구간에 FPS 상한, 원본 배수 또는 보간 끄기를 지정합니다. 1920×800 영상은 720p 구간을 사용합니다. 기본 출력과 구간별 설정을 새 설정창에서 함께 편집합니다.
+- **재생 처리:** 네이티브 GPU 입력의 디코더 수신을 보간·출력 작업에서 분리하고, 고배수 출력에서 준비된 프레임을 보관·전달할 여유를 늘렸습니다. 1080p·4K·8K에 공통 적용됩니다. 첫 화면 전에 버퍼를 채우는 대기는 추가하지 않았습니다.
+- **탐색·일시정지:** 재생바를 연속으로 끌 때 앞뒤로 튀던 현상과 일시정지 후 재개 시 심한 끊김을 개선했습니다. 재개할 때 기존 보간 세션을 유지합니다.
+- **화질 튜닝:** 여러 영상으로 비교한 공통 수치를 내장합니다. 반복 무늬·할로·총 주변 가림 경계는 미해결 장면이 있어 장기 개선 과제로 유지합니다.
+- **진단 기본 꺼짐:** `TracePerformance=0`, `ProbeServices=0`. 상세 성능 측정은 고부하 재생에 영향을 줄 수 있으므로 필요할 때만 켭니다. 설정창 상태와 기본 오류 기록은 유지합니다.
+- **재생 성능 MCP 폐기:** 성능용 도구·프로필·프레임별 설정 확인을 제거하고 채택한 고정값을 유지합니다. 실험 빌드의 기존 화질 MCP 32개 수치는 유지합니다.
+- **한·영 매뉴얼:** 해상도별 설정, 성능과 남은 제한, HDR 출력, 진단 켜기·끄기를 추가했습니다. 온라인, 오프라인 ZIP, 단일 HTML을 제공합니다.
+
+**남은 제한:** 시작 직후 큰 드랍과 탐색 직후 소량의 드랍이 남을 수 있습니다. 연속 재생은 개선됐지만 모든 소스에서 드랍 0을 보장하지 않습니다. 240fps 처리는 화면 주사율과 별개이며, 실제 감상은 화면과 GPU에 맞는 상한을 선택하세요. RTX 5070 목표치는 실제 장치로 검증하지 않았습니다.
+
+팟플레이어와 설정창을 닫고 기존 폴더를 백업한 뒤 교체하세요. **기존 `NvofPotPlayer.ini`는 보존**하고, `[Nvof]`의 `TracePerformance`와 `ProbeServices`가 `0`인지 확인하세요. 설정은 다음 실행부터 적용됩니다. 해상도별 설정은 직접 선택하기 전까지 기존 공통 출력을 유지합니다.
+
+## English
+
+- Added seven output rules based on source height, with an FPS cap, source multiplier, bypass or common-output inheritance for each band. A 1920×800 source uses the 720p band. The refined controller edits common output and band rules together.
+- Separated native GPU decoder input from interpolation/output work at 1080p, 4K and 8K. Prepared-output capacity and delivery during GPU waits improve high-rate playback without adding a prefill wait before the first picture.
+- Improved repeated scrubbing and severe stutter after pause/resume while retaining the interpolation session on resume.
+- Built in shared quality tuning compared across multiple videos. Repeated-pattern, halo and gun-edge occlusion artifacts remain long-term work for difficult scenes.
+- Detailed diagnostics default off: `TracePerformance=0`, `ProbeServices=0`. Enable them only for short investigations; measurement can affect high-load playback. Controller status and basic error records remain available.
+- Updated Korean and English online, offline ZIP and standalone HTML guides.
+
+**Remaining limits:** Large startup drops and a few post-seek drops can remain. Continuous playback is improved, but zero drops across all sources is not guaranteed. Processing at 240fps does not make a lower-refresh display show 240 distinct frames. RTX 5070 targets have not been validated on that GPU.
+
+Close PotPlayer and the controller, back up the folder, and **preserve `NvofPotPlayer.ini`** when updating. Check that both diagnostic values are `0` in `[Nvof]`; changes apply on the next launch. Resolution rules remain opt-in.
+
+The standard release embeds quality/scheduling defaults. Playback performance MCP tools, profiles and polling have been removed; accepted scheduling limits remain fixed. The existing quality MCP tools retain 32 parameters in experimental builds and are not required for normal playback.
+
+**Validation:** 23 standard-build and 24 experimental-build checks, the controller self-test, and 21 isolated GPU checks passed. GPU checks covered 1080p ×10, 4K ×10 and 8K ×4 output, pause/resume, seeking, immediate first-original delivery and opt-in diagnostics. Quality MCP changes affected the next pair and reset to identical output. Bounded pixel comparisons against the prior experimental binary preserved originals exactly; the normal release differed by one code value in three interpolated components across the captured 4K/8K samples. These are regression checks, not a real-player zero-drop guarantee.
+
+---
+
 # v0.4.8 — GPU selection when switching HW/SW decoding
 
 ## 한국어

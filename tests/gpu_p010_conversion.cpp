@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <d3d10_1.h>
+#include <d3d11_3.h>
 #include <cmath>
 using Microsoft::WRL::ComPtr;
 using namespace nvof;
@@ -43,7 +44,7 @@ void test_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int w,
   bridge.context()->UpdateSubresource(source.Get(),arrays-1,nullptr,input.data(),w*2,0);
  };
  fill(0);auto firstExpected=expected;
- auto first=engine.copy({source,UINT(arrays-1),w,h,100});
+ auto first=engine.copy({source,UINT(arrays-1),w,h,100},true);
  require(engine.queued_completion()==queued,"P010 changed the requested completion contract");
  // Reuse the decoder array immediately, before any readback wait. Shared
  // context command order must preserve both captured pictures in queued mode.
@@ -58,7 +59,7 @@ void test_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int w,
  auto batch=engine.interpolate_pair(second,third,{625724});
  require(batch.quality.identical_warp_skipped,"Converted identical inputs changed content");
  auto bypass=engine.copy(second);require(download(bridge.device(),bridge.context(),bypass)==expected,"P010 recopy regression");
- engine.reset();auto afterSeek=engine.copy({source,UINT(arrays-1),w,h,0});
+ engine.reset();auto afterSeek=engine.copy({source,UINT(arrays-1),w,h,0},true);
  require(download(bridge.device(),bridge.context(),afterSeek)==expected,"P010 conversion failed after seek reset");
  std::cout<<"PASS P010 "<<w<<'x'<<h<<" codedHeight="<<padded<<" array="<<arrays<<" queued="<<queued<<" all-1024-codes/crop/UV/decoder-reuse/state/native/seek=OK\n";
 }
@@ -82,6 +83,7 @@ double error10(const std::vector<uint16_t>& a,const std::vector<uint16_t>& b,int
 }
 std::vector<std::vector<uint16_t>> moving_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime,int w,int h,bool queued=false,int phases=4) {
  GpuFrucEngine engine(runtime,bridge.device(),bridge.context(),bridge.mutex(),queued?GpuCompletionMode::context_ordered:GpuCompletionMode::blocking);
+ engine.enable_timing(true);
  auto upload=[&](double shift,int64_t pts) {
   auto pixels=moving10(w,h,shift);D3D11_TEXTURE2D_DESC desc{};
   desc.Width=w;desc.Height=h;desc.MipLevels=1;desc.ArraySize=1;desc.Format=DXGI_FORMAT_P010;desc.SampleDesc.Count=1;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
@@ -96,6 +98,13 @@ std::vector<std::vector<uint16_t>> moving_case(MfD3d11Bridge& bridge,const std::
  std::vector<int64_t> times;for(int i=1;i<=phases;++i)times.push_back(400000LL*i/(phases+1));
  auto batch=engine.interpolate_pair(previous,current,times);
  require(!batch.quality.scene_cut && batch.frames.size()==size_t(phases) && batch.quality.native_synthesized_mask==((1u<<phases)-1),"Moving P010 phases were not synthesized");
+ require(engine.pair_timing().queued_output_flushes==unsigned(queued),"Output submission did not follow the queued completion contract");
+ ComPtr<ID3D11DeviceContext3> context3;
+ if(queued&&SUCCEEDED(bridge.context()->QueryInterface(IID_PPV_ARGS(&context3)))) {
+  const auto timing=engine.pair_timing();
+  require(timing.flush_event_wait_calls==2&&timing.flush_event_wait_calls==timing.shared_wait_calls&&timing.combined_scene_pairs==1,
+      "Cold moving pair did not combine scene/input completion into two waits");
+ }
  std::vector<std::vector<uint16_t>> retained;
  const auto left=moving10(w,h,0),right=moving10(w,h,20);
  for(int i=0;i<phases;++i) {
@@ -112,11 +121,58 @@ std::vector<std::vector<uint16_t>> moving_case(MfD3d11Bridge& bridge,const std::
  require(download(bridge.device(),bridge.context(),previous)==left && download(bridge.device(),bridge.context(),current)==right,"Synthesis modified original 10-bit pixels");
  require(engine.copy(current).hdr==nextHdr,"Copy lost HDR metadata");
  engine.reset();auto fresh=upload(0,0);require(!fresh.hdr,"Seek leaked old HDR metadata");
+ if(queued&&w>=3840) {
+  auto next=upload(20,400000);
+  auto restarted=engine.interpolate_pair(fresh,next,times);
+  require(restarted.frames.size()==retained.size(),"Seek changed the requested phase count");
+  for(int i=0;i<phases;++i) {
+   require(download(bridge.device(),bridge.context(),restarted.frames[i])==retained[i],"Resource reuse after seek changed P010 synthesis");
+   require(!restarted.frames[i].hdr,"Resource reuse after seek retained previous HDR metadata");
+  }
+ }
  for(int i=0;i<phases;++i)require(download(bridge.device(),bridge.context(),batch.frames[i])==retained[i],"Retained phase changed after reset/reuse");
  std::cout<<"PASS P010 moving x"<<phases+1<<" queued="<<queued<<" originals/precision/HDR lifetime/seek\n";
  return retained;
 }
 
+// A cold session now uploads analysis inputs before reading the scene gate.
+// Cover a static opening and a hard cut, then ensure the first accepted moving
+// pair matches a fresh session; rejected inputs must not become flow history.
+void cold_gate_case(MfD3d11Bridge& bridge,const std::filesystem::path& runtime) {
+ const int w=640,h=360;
+ auto upload=[&](const std::vector<uint16_t>& pixels,int64_t pts) {
+  D3D11_TEXTURE2D_DESC d{};d.Width=w;d.Height=h;d.MipLevels=d.ArraySize=1;
+  d.Format=DXGI_FORMAT_P010;d.SampleDesc.Count=1;d.Usage=D3D11_USAGE_DEFAULT;d.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+  D3D11_SUBRESOURCE_DATA initial{pixels.data(),UINT(w*2),0};ComPtr<ID3D11Texture2D> texture;
+  check(bridge.device()->CreateTexture2D(&d,&initial,&texture),"Cold gate source");
+  return GpuFrame{texture,0,w,h,pts};
+ };
+ const auto pixels=moving10(w,h,0);auto a=upload(pixels,0),b=upload(moving10(w,h,20),400000);
+ std::vector<uint16_t> dark(size_t(w)*h*3/2,512u<<6),bright=dark;
+ std::fill_n(dark.begin(),size_t(w)*h,64u<<6);
+ // A uniform black-to-white change is intentionally classified as a flash.
+ // Use a changed distribution with non-uniform residual for a genuine cut.
+ for(int y=0;y<h;++y)for(int x=0;x<w;++x)bright[size_t(y)*w+x]=uint16_t(x<w/2?940:512)<<6;
+ std::vector<uint16_t> reference;
+ for(int opening=0;opening<3;++opening) {
+  GpuFrucEngine engine(runtime,bridge.device(),bridge.context(),bridge.mutex(),GpuCompletionMode::context_ordered,true,false,false,GpuInterpolationBackend::native_experimental);
+  engine.enable_timing(true);
+  if(opening) {
+   auto first=upload(opening==1?pixels:dark,0),second=upload(opening==1?pixels:bright,400000);
+   const auto gate=engine.interpolate_pair(first,second,{200000});
+   if(opening==1) {
+    require(gate.quality.identical_warp_skipped&&gate.frames.size()==1,"Cold static gate was bypassed");
+    require(download(bridge.device(),bridge.context(),gate.frames[0])==pixels,"Cold static gate changed pixels");
+   }else require(gate.quality.scene_cut&&gate.frames.empty(),"Cold cut executed synthesis instead of holding");
+   require(engine.pair_timing().shared_wait_calls==1,"Cold rejected pair performed unnecessary motion wait");
+  }
+  auto result=engine.interpolate_pair(a,b,{200000});
+  require(result.frames.size()==1&&result.quality.native_synthesized_mask==1,"First accepted pair did not synthesize");
+  auto actual=download(bridge.device(),bridge.context(),result.frames[0]);
+  if(!opening)reference=actual;else require(actual==reference,"Rejected opening changed subsequent motion pixels");
+ }
+ std::cout<<"PASS cold static/cut gates, first accepted motion pixel-exact\n";
+}
 }
 int wmain(int argc,wchar_t** argv){
  if(argc<2||argc>3){std::cerr<<"Usage: gpu_p010_conversion <runtime-directory> [native]\n";return 2;}
@@ -124,12 +180,19 @@ int wmain(int argc,wchar_t** argv){
  int result=0;try{
   MfD3d11Bridge bridge;
   const bool native=argc==3&&std::wstring(argv[2])==L"native";
+  cold_gate_case(bridge,argv[1]);
   moving_case(bridge,argv[1],640,360);
   moving_case(bridge,argv[1],3840,2160);
   const auto blocking=moving_case(bridge,argv[1],3840,2160,false,9);
   const auto queued=moving_case(bridge,argv[1],3840,2160,true,9);
   require(blocking==queued,"Queued 4K x10 output differs from blocking pixels");
   std::cout<<"PASS 4K x10 queued/blocking pixel-exact comparison\n";
+  {
+   const auto blocking8k=moving_case(bridge,argv[1],7680,4320,false,1);
+   const auto queued8k=moving_case(bridge,argv[1],7680,4320,true,1);
+   require(blocking8k==queued8k,"Asynchronous 8K output submission changed P010 pixels");
+   std::cout<<"PASS 8K x2 queued/blocking pixel-exact comparison\n";
+  }
   for(bool queued:{false,true}){
    test_case(bridge,argv[1],1024,64,80,22,queued,native);
    test_case(bridge,argv[1],1920,1080,1152,22,queued,native);

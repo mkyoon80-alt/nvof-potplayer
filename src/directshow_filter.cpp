@@ -6,10 +6,12 @@
 #include "nvof/av1_color.hpp"
 #include "nvof/vp9_color.hpp"
 #include "nvof/input_height_policy.hpp"
+#include "nvof/resolution_policy.hpp"
 #include "nvof/playback_timing.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include "nvof/status_writer.hpp"
 #include <streams.h>
 #include <dvdmedia.h>
 #include <mfidl.h>
@@ -31,9 +33,13 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 #include <new>
 #include <numeric>
 #include <cstddef>
@@ -49,6 +55,7 @@
 #include "nvof/mf_bridge.hpp"
 #include "nvof/input_rate_policy.hpp"
 #include "nvof/output_rate_policy.hpp"
+#include "nvof/output_buffer_policy.hpp"
 #include "nvof/adapter_selection.hpp"
 
 // Independent identity: never replaces the Smootter/VapourSynth filter.
@@ -62,7 +69,7 @@ const CLSID CLSID_NvofPropertyPage =
 
 namespace {
 constexpr REFERENCE_TIME kUnits = 10000000;
-constexpr char kFilterBuild[]="0.4.8";
+constexpr char kFilterBuild[]="0.4.9";
 // Public LAV/renderer COM contracts. Probing them never advertises support.
 // https://github.com/Nevcairiel/LAVFilters/blob/master/include/ID3DVideoMemoryConfiguration.h
 const IID kD3D11DecoderConfiguration =
@@ -96,8 +103,12 @@ void write_log(const std::string& message) noexcept {
         const auto path = directory / L"filter.log";
         if (std::filesystem::exists(path, error) &&
             std::filesystem::file_size(path, error) > 2 * 1024 * 1024) {
-            // Bound diagnostics without retaining a playback history.
-            std::ofstream truncate(path, std::ios::trunc);
+            // Keep only two bounded chunks so a short startup/seek comparison
+            // does not lose its initial control events when the file rolls.
+            const auto previous=directory/L"filter.previous.log";
+            std::filesystem::remove(previous,error);error.clear();
+            std::filesystem::rename(path,previous,error);
+            if(error){std::ofstream truncate(path,std::ios::trunc);}
         }
         SYSTEMTIME now{};
         GetLocalTime(&now);
@@ -504,12 +515,15 @@ public:
     NvofFilter(LPUNKNOWN outer, HRESULT* result)
         : CTransformFilter(NAME("NVIDIA Optical Flow for PotPlayer"), outer, CLSID_NvofPotPlayer) {
         *result = S_OK;
+        status_writer_=nvof::acquire_status_writer();
         try {
             directory_ = module_directory();
             const auto ini = directory_ / L"NvofPotPlayer.ini";
             probe_services_ = GetPrivateProfileIntW(L"Nvof", L"ProbeServices", 0, ini.c_str()) != 0;
             performance_.enabled = GetPrivateProfileIntW(L"Nvof", L"TracePerformance", 0, ini.c_str()) != 0;
+            trace_every_gpu_pair_ = GetPrivateProfileIntW(L"Nvof", L"TracePerformance", 0, ini.c_str()) >= 2;
             native_feature_enabled_ = GetPrivateProfileIntW(L"Nvof", L"NativeD3D11", 0, ini.c_str()) != 0;
+            async_input_enabled_ = GetPrivateProfileIntW(L"Nvof", L"AsyncNativeInput", 1, ini.c_str()) != 0;
             enabled_ = GetPrivateProfileIntW(L"Nvof", L"Enabled", 1, ini.c_str()) != 0;
             // Historical INI keys cannot re-enable the removed FRUC backend.
             gpu_correction_=false;appearance_protection_=false;native_synthesis_=true;
@@ -520,6 +534,12 @@ public:
             output_limit_=nvof::normalize_output_limit(int(GetPrivateProfileIntW(L"Nvof",L"OutputFpsLimit",60,ini.c_str())));
             output_mode_=nvof::normalize_output_mode(int(GetPrivateProfileIntW(L"Nvof",L"OutputMode",0,ini.c_str())));
             output_multiplier_=nvof::normalize_output_multiplier(int(GetPrivateProfileIntW(L"Nvof",L"OutputMultiplier",2,ini.c_str())));
+            resolution_rules_enabled_=GetPrivateProfileIntW(L"Nvof",L"ResolutionRulesEnabled",0,ini.c_str())!=0;
+            wchar_t resolution_text[256]{};
+            GetPrivateProfileStringW(L"Nvof",L"ResolutionRules",L"",resolution_text,_countof(resolution_text),ini.c_str());
+            std::string resolution_ascii;
+            for(wchar_t c:resolution_text){if(!c)break;resolution_ascii.push_back(c<128?char(c):'?');}
+            resolution_rules_=nvof::parse_resolution_rules(resolution_ascii);
             target_ = {0, 1};
             write_log("filter created instance="+std::to_string(instance_id_)+" NativeD3D11="+
                 std::to_string(native_feature_enabled_)+" ProbeServices="+std::to_string(probe_services_));
@@ -531,6 +551,8 @@ public:
 
     ~NvofFilter() override {
         cancelled_.store(true, std::memory_order_release);
+        cancel_async_input();
+        join_async_input();
         // Graph ownership must already have stopped streaming before Release.
         // Keep a final serialized cleanup for partially connected graphs.
         CAutoLock receive(&m_csReceive);
@@ -809,11 +831,20 @@ public:
     bool rate_selected(REFERENCE_TIME duration) const noexcept {
         return nvof::input_rate_selected(source_rate(duration),input_rate_mask_);
     }
+    nvof::ResolutionOutput resolution_output(int height) const {
+        return nvof::resolve_resolution_output(height,resolution_rules_enabled_,resolution_rules_,output_mode_,output_limit_,output_multiplier_);
+    }
+    nvof::Rate requested_target(REFERENCE_TIME duration,int height) const {
+        const auto output=resolution_output(height);
+        return output.disabled?nvof::canonical_source_rate(duration):
+            nvof::selected_output_rate(duration,output.mode,output.limit,output.multiplier);
+    }
     nvof::Rate requested_target(REFERENCE_TIME duration) const {
-        return nvof::selected_output_rate(duration,output_mode_,output_limit_,output_multiplier_);
+        return requested_target(duration,input_.height);
     }
     int selected_multiple(REFERENCE_TIME duration) const {
-        return nvof::selected_output_multiple(duration,output_mode_,output_limit_,output_multiplier_);
+        const auto output=resolution_output(input_.height);
+        return output.disabled?1:nvof::selected_output_multiple(duration,output.mode,output.limit,output.multiplier);
     }
     bool same_target(REFERENCE_TIME duration) const {
         const auto incoming=requested_target(duration);
@@ -821,33 +852,36 @@ public:
         // AvgTimePerFrame match alone is insufficient for the x2 clock.
         return incoming.num*target_.den==target_.num*incoming.den;
     }
-    bool target_available(REFERENCE_TIME duration) const {
-        return nvof::supported_output_rate(requested_target(duration));
+    bool target_available(REFERENCE_TIME duration,int height) const {
+        return nvof::supported_output_rate(requested_target(duration,height));
     }
-    bool source_reaches_target(REFERENCE_TIME duration) const {
-        const auto target=requested_target(duration);
+    bool source_reaches_target(REFERENCE_TIME duration,int height) const {
+        const auto target=requested_target(duration,height);
         return duration>0 && nvof::supported_output_rate(target) && duration<=rate_duration(target)+1;
     }
     bool interpolate_source(REFERENCE_TIME duration,int height) const {
-        return enabled_ && nvof::input_height_selected(height,input_height_limit_) && rate_selected(duration) && target_available(duration) && !source_reaches_target(duration);
+        return enabled_ && nvof::input_height_selected(height,input_height_limit_) && rate_selected(duration) &&
+            !resolution_output(height).disabled && target_available(duration,height) && !source_reaches_target(duration,height);
     }
     bool interpolation_requested() const {return interpolate_source(input_.duration,input_.height);}
     REFERENCE_TIME negotiated_duration(REFERENCE_TIME duration,int height) const {
-        return interpolate_source(duration,height)?rate_duration(requested_target(duration)):duration;
+        return interpolate_source(duration,height)?rate_duration(requested_target(duration,height)):duration;
     }
     const char* bypass_reason() const {
         if(!enabled_)return "disabled";
         if(!input_rate_selected_)return "source-rate";
         if(!nvof::input_height_selected(input_.height,input_height_limit_))return "source-height";
-        if(!target_available(input_.duration))return input_.duration<=0?"unknown-source-rate":"output-rate-unsupported";
-        if(source_reaches_target(input_.duration))return "at-or-above-target";
+        if(resolution_output(input_.height).disabled)return "resolution-rule";
+        if(!target_available(input_.duration,input_.height))return input_.duration<=0?"unknown-source-rate":"output-rate-unsupported";
+        if(source_reaches_target(input_.duration,input_.height))return "at-or-above-target";
         return "";
     }
     const char* bypass_message() const {
         if(!enabled_)return "Interpolation disabled";
         if(!input_rate_selected_)return "Source frame rate excluded; original frames preserved";
         if(!nvof::input_height_selected(input_.height,input_height_limit_))return "Source height excluded; original frames preserved";
-        if(!target_available(input_.duration))return input_.duration<=0?
+        if(resolution_output(input_.height).disabled)return "Resolution rule disabled interpolation; original frames preserved";
+        if(!target_available(input_.duration,input_.height))return input_.duration<=0?
             "Source frame rate is unknown; original frames preserved":
             "Output frame rate exceeds supported timing bounds; original frames preserved";
         return "No integer multiple fits the selected limit; original frames preserved";
@@ -1136,18 +1170,16 @@ public:
     HRESULT DecideBufferSize(IMemAllocator* allocator, ALLOCATOR_PROPERTIES* properties) override {
         if (!allocator || !properties) return E_POINTER;
         if (!output_.size) return VFW_E_NOT_CONNECTED;
-        properties->cBuffers = (std::max)(properties->cBuffers, 4L);
-        if(m_pOutput && static_cast<nvof::transport::OutputPin*>(m_pOutput)->gpu_mode() && interpolation_requested()) {
-            // Delivery back-pressure must leave room to prepare the next
-            // source pair while the renderer consumes the current pair.
-            // A fixed four/ten samples loses this lead at large multipliers.
-            // Bound GPU sample retention to two source intervals (32 slots
-            // maximum). Preserve larger renderer requests and CPU allocation.
-            const long lead=std::clamp(2L*selected_multiple(input_.duration),4L,32L);
-            properties->cBuffers=(std::max)(properties->cBuffers,lead);
-        }
         // A decoder may advertise NV12 while exposing P010 native surfaces.
         const long capacity=native_feature_enabled_?(std::max)(output_.size,long(output_.width*output_.height*3)):output_.size;
+        properties->cBuffers = (std::max)(properties->cBuffers, 4L);
+        if(m_pOutput && static_cast<nvof::transport::OutputPin*>(m_pOutput)->gpu_mode() && interpolation_requested()) {
+            properties->cBuffers=nvof::gpu_output_buffer_count(properties->cBuffers,
+                selected_multiple(input_.duration),target_,uint64_t(capacity));
+            write_log("output headroom samples="+std::to_string(properties->cBuffers)+
+                " capacityMs="+std::to_string(properties->cBuffers*1000.0*target_.den/target_.num)+
+                " surfaceBytes="+std::to_string(capacity)+" prefill=0");
+        }
         properties->cbBuffer = (std::max)(properties->cbBuffer, capacity);
         properties->cbAlign = (std::max)(properties->cbAlign, 1L);
         properties->cbPrefix = (std::max)(properties->cbPrefix, 0L);
@@ -1159,6 +1191,11 @@ public:
     }
 
     HRESULT StartStreaming() override {
+        reopen_async_input();
+        async_first_input_=true;
+        async_queued_=async_peak_=0;async_backpressure_ms_=0;
+        pending_gpu_outputs_.clear();output_ahead_peak_=output_ahead_pairs_=0;
+        wait_output_frames_=0;wait_delivery_result_=S_OK;
         performance_.reset();
         // Wait until upstream has had its opportunity to activate native decode.
         // A software NV12 decoder must still feed GPU surfaces to a renderer
@@ -1177,6 +1214,7 @@ public:
         cancelled_.store(false, std::memory_order_release);
         cpu_prepare_ms_=cpu_gpu_ms_=0;cpu_upload_fields_=0;cpu_field_override_logged_=false;
         last_pts_.reset();
+        seek_preview_until_=0;seen_segment_=false;seek_preview_frame_=false;seek_trace_count_=0;
         last_duration_ = input_.duration > 0 ? input_.duration :
             nvof::supported_output_rate(target_)?rate_duration(target_):kUnits/24;
         failed_ = false;
@@ -1205,6 +1243,11 @@ public:
     }
 
     HRESULT StopStreaming() override {
+        write_log("input worker queued="+std::to_string(async_queued_)+" peakPending="+std::to_string(async_peak_)+
+            " capacity="+std::to_string(nvof::playback::input_queue_frames)+" producerWaitMs="+std::to_string(async_backpressure_ms_));
+        write_log("output ahead peak="+std::to_string(output_ahead_peak_)+" pairs="+std::to_string(output_ahead_pairs_)+
+            " limit="+std::to_string(output_ahead_limit())+" prefill=0");
+        write_log("output during GPU wait delivered="+std::to_string(wait_output_frames_));
         performance_.flush(true,write_log);
         // CTransformFilter::Stop holds m_csReceive after input decommit.
         cancelled_.store(true, std::memory_order_release);
@@ -1226,8 +1269,41 @@ public:
         return CTransformFilter::AlterQuality(quality);
     }
 
+    // Observe graph control without touching receive/history/allocator state.
+    // Pausing may leave a Receive blocked in the renderer: never take
+    // m_csReceive here or flush/reset its live performance window.
+    HRESULT trace_playback_control(bool running,REFERENCE_TIME start=0) {
+        if(!performance_.enabled)return running?CTransformFilter::Run(start):CTransformFilter::Pause();
+        FILTER_STATE before;
+        {CAutoLock filter(&m_csFilter);before=m_State;}
+        const std::string action=running?"run":"pause";
+        const std::string identity=" instance="+std::to_string(instance_id_)+" action="+action;
+        write_log("playback control begin"+identity+" from="+std::to_string(int(before))+
+            " start100ns="+std::to_string(start)+" tickMs="+std::to_string(GetTickCount64()));
+        const auto begin=nvof::PlaybackTimer::Clock::now();
+        const HRESULT hr=running?CTransformFilter::Run(start):CTransformFilter::Pause();
+        const double elapsed=std::chrono::duration<double,std::milli>(nvof::PlaybackTimer::Clock::now()-begin).count();
+        FILTER_STATE after;
+        {CAutoLock filter(&m_csFilter);after=m_State;}
+        write_log("playback control end"+identity+" to="+std::to_string(int(after))+
+            " result="+std::to_string(uint32_t(hr))+" elapsedMs="+std::to_string(elapsed)+" tickMs="+std::to_string(GetTickCount64()));
+        return hr;
+    }
+    STDMETHODIMP Pause() override {
+        set_async_paused(true);
+        const HRESULT hr=trace_playback_control(false);
+        if(FAILED(hr))set_async_paused(false);
+        return hr;
+    }
+    STDMETHODIMP Run(REFERENCE_TIME start) override {
+        const HRESULT hr=trace_playback_control(true,start);
+        if(SUCCEEDED(hr))set_async_paused(false);
+        return hr;
+    }
+
     STDMETHODIMP Stop() override {
         cancelled_.store(true, std::memory_order_release);
+        cancel_async_input();
         CTransformOutputPin* output=nullptr;
         {
             CAutoLock filter(&m_csFilter);
@@ -1242,6 +1318,7 @@ public:
         // must also precede the base class waiting for our streaming lock.
         // Never hold m_csFilter while entering downstream streaming methods.
         const HRESULT flushed=output ? output->DeliverBeginFlush() : S_FALSE;
+        join_async_input();
         const HRESULT result=CTransformFilter::Stop();
         if (output && SUCCEEDED(flushed)) output->DeliverEndFlush();
         return result;
@@ -1249,10 +1326,12 @@ public:
 
     HRESULT BeginFlush() override {
         cancelled_.store(true, std::memory_order_release);
+        cancel_async_input();
         // The input pin has already rejected new Receive calls. Crucially,
         // downstream flush precedes m_csReceive to unblock Deliver/GetBuffer.
         if(m_pOutput)static_cast<nvof::transport::OutputPin*>(m_pOutput)->cancel_allocation_waits();
         const HRESULT hr = CTransformFilter::BeginFlush();
+        join_async_input();
         {
             CAutoLock receive(&m_csReceive);
             reset_history(true);
@@ -1267,13 +1346,21 @@ public:
             reset_history(true);
             last_pts_.reset();
             failed_ = false;
+            async_first_input_=true;
+            // A slider drag can issue another seek before the previous pair's
+            // phases have reached the renderer. Keep the short settling window
+            // at source cadence, without retaining an interpolation endpoint.
+            seek_preview_until_=GetTickCount64()+nvof::playback::seek_preview_ms;
         }
         if(m_pOutput) {
             const HRESULT recommitted=static_cast<nvof::transport::OutputPin*>(m_pOutput)->resume_allocation();
             if(FAILED(recommitted))return recommitted;
         }
         const HRESULT hr = CTransformFilter::EndFlush();
-        if (SUCCEEDED(hr)) cancelled_.store(false, std::memory_order_release);
+        if (SUCCEEDED(hr)) {
+            reopen_async_input();
+            cancelled_.store(false, std::memory_order_release);
+        }
         // The base input pin unblocks Receive only after this returns.
         return hr;
     }
@@ -1281,18 +1368,46 @@ public:
     HRESULT NewSegment(REFERENCE_TIME start, REFERENCE_TIME stop, double rate) override {
         if (!std::isfinite(rate) || rate <= 0) return E_INVALIDARG;
         CAutoLock receive(&m_csReceive);
+        const HRESULT drained=drain_async_input();if(drained!=S_OK)return drained;
+        async_first_input_=true;
         reset_history(true);
         last_pts_.reset();
         failed_ = false;
+        if(seen_segment_ || seek_preview_until_)seek_preview_until_=GetTickCount64()+nvof::playback::seek_preview_ms;
+        seen_segment_=true;
+        if(performance_.enabled && seek_trace_count_++<32)
+            write_log("seek segment start="+std::to_string(start)+" previewMs="+
+                std::to_string(seek_preview_until_?200:0));
         return CTransformFilter::NewSegment(start, stop, rate);
     }
 
     HRESULT Receive(IMediaSample* sample) override {
         if (!sample) return E_POINTER;
         if (cancelled_.load(std::memory_order_acquire)) return S_FALSE;
+        // SampleProps is overwritten by the next decoder Receive. Capture it
+        // while the input pin owns m_csReceive. Type changes stay synchronous.
+        const AM_SAMPLE2_PROPERTIES properties=*m_pInput->SampleProps();
+        const bool async=async_input_enabled_ && native_gpu_active_ && !cpu_upload_active_ && interpolation_requested();
+        const bool synchronous=!async || async_first_input_ ||
+            (properties.dwSampleFlags & AM_SAMPLE_TYPECHANGED);
+        // The first seek preview stays immediate. Later previews also use the
+        // worker: a renderer wait during the settling window must not stop
+        // decoder input. Preview selection/history remain worker-owned.
+        if(synchronous) {
+            const HRESULT drained=drain_async_input();if(drained!=S_OK)return drained;
+            const HRESULT hr=process_sample(sample,&properties);
+            REFERENCE_TIME start=0,stop=0;
+            if(hr==S_OK && properties.dwStreamId==AM_STREAM_MEDIA && SUCCEEDED(sample->GetTime(&start,&stop)) && start>=0 && sample->IsPreroll()!=S_OK)
+                async_first_input_=false;
+            return hr;
+        }
+        return queue_async_input(sample,properties);
+    }
+
+    HRESULT process_sample(IMediaSample* sample,const AM_SAMPLE2_PROPERTIES* properties) {
+        if (cancelled_.load(std::memory_order_acquire)) return S_FALSE;
         if (failed_) return E_FAIL;
         if(native_pending_)return VFW_E_NOT_CONNECTED;
-        const auto* properties = m_pInput->SampleProps();
         if (properties->dwStreamId != AM_STREAM_MEDIA) return m_pOutput->Deliver(sample);
         struct ReceiveTiming {
             nvof::PlaybackTiming& trace;
@@ -1351,6 +1466,8 @@ public:
             if (timing == S_OK && stop > start) last_duration_ = stop - start;
             if (discontinuity) reset_history(true);
             const int64_t end=timing==S_OK && stop>start?stop:start+last_duration_;
+            seek_preview_frame_=interpolation_requested() && GetTickCount64()<seek_preview_until_;
+            if(seek_preview_frame_)quality_state_="seek-preview";
             ++source_frames_;
             if(cpu_upload_active_) {
                 last_pts_=start;
@@ -1364,7 +1481,7 @@ public:
             if(input_.ten_bit || input_.hdr_transfer)return report_error("CPU 10-bit upload requires a compatible D3D11 renderer",VFW_E_TYPE_NOT_ACCEPTED);
             if(renderer_gpu_committed_ || output_.ten_bit)
                 return report_error("CPU input cannot use the retained native output; reopen the video",VFW_E_TYPE_NOT_ACCEPTED);
-            if (interpolation_requested()) ensure_pipeline();
+            if (interpolation_requested() && !seek_preview_frame_) ensure_pipeline();
             BYTE* data = nullptr;
             HRESULT hr = sample->GetPointer(&data);
             if (FAILED(hr) || !data) return report_error("input NV12 buffer is not CPU accessible; enable decoder Copy-Back", FAILED(hr) ? hr : E_POINTER);
@@ -1381,7 +1498,7 @@ public:
                     data + size_t(row) * input_.pitch, input_.width);
             last_pts_ = start;
             preroll_ = sample->IsPreroll() == S_OK;
-            if (!interpolation_requested()) {
+            if (!interpolation_requested() || seek_preview_frame_) {
                 return deliver(nvof::OutputFrame{std::move(frame), end, discontinuity});
             }
             HRESULT delivery = S_OK;
@@ -1400,6 +1517,7 @@ public:
     }
 
     HRESULT EndOfStream() override {
+        const HRESULT drained=drain_async_input();if(drained!=S_OK)return drained;
         if (cancelled_.load(std::memory_order_acquire)) return S_FALSE;
         if (failed_) return E_FAIL;
         try {
@@ -1422,6 +1540,101 @@ public:
     }
 
 private:
+    struct PendingInput {
+        Microsoft::WRL::ComPtr<IMediaSample> sample;
+        AM_SAMPLE2_PROPERTIES properties{};
+    };
+    // At most two pending decoder samples and one active sample. AddRef keeps
+    // their array slices from being recycled before capture is submitted.
+    // The worker never acquires m_csReceive: a producer may hold it while the
+    // bounded queue is full. Stop/flush cancel producers before joining us.
+    HRESULT queue_async_input(IMediaSample* sample,const AM_SAMPLE2_PROPERTIES& properties) {
+        try {
+            std::unique_lock<std::mutex> lock(async_mutex_);
+            const auto begin=std::chrono::steady_clock::now();
+            async_cv_.wait(lock,[this]{return async_stop_ || async_result_!=S_OK || async_queue_.size()<nvof::playback::input_queue_frames;});
+            async_backpressure_ms_+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+            if(cancelled_.load(std::memory_order_acquire))return S_FALSE;
+            if(async_result_!=S_OK)return async_result_;
+            if(async_stop_)return S_FALSE;
+            if(!async_thread_.joinable())async_thread_=std::thread([this]{async_input_loop();});
+            async_queue_.push_back(PendingInput{sample,properties});
+            ++async_queued_;async_peak_=(std::max)(async_peak_,async_queue_.size());
+            lock.unlock();async_cv_.notify_all();return S_OK;
+        }catch(...) {return E_OUTOFMEMORY;}
+    }
+    void async_input_loop() noexcept {
+        const HRESULT com=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
+        write_log("input worker started instance="+std::to_string(instance_id_)+" pendingLimit="+std::to_string(nvof::playback::input_queue_frames)+"; receive timing now measures worker processing");
+        for(;;) {
+            PendingInput item;
+            {
+                std::unique_lock<std::mutex> lock(async_mutex_);
+                // Initial and subsequent pauses use the same rule. The first
+                // original was already delivered synchronously; no speculative
+                // GPU preparation competes with the paused renderer startup.
+                async_cv_.wait(lock,[this]{return async_stop_ || (!async_paused_ && !async_queue_.empty());});
+                if(async_stop_)break;
+                item=std::move(async_queue_.front());async_queue_.pop_front();async_busy_=true;
+            }
+            async_cv_.notify_all();
+            worker_processing_=true;
+            HRESULT hr=process_sample(item.sample.Get(),&item.properties);
+            if(hr==S_OK && !pending_gpu_outputs_.empty()) {
+                ++output_ahead_pairs_;
+                if(performance_.enabled && output_ahead_pairs_<=2)
+                    write_log("output ahead prepared pending="+std::to_string(pending_gpu_outputs_.size()));
+                bool more_input;
+                {std::lock_guard<std::mutex> lock(async_mutex_);more_input=!async_queue_.empty();}
+                // Never strand the last ready outputs while waiting for a new
+                // input (including EOS). With input available, compute its pair
+                // while the renderer still owns all allocator samples.
+                if(!more_input) {
+                    try {hr=drain_gpu_outputs(false);}
+                    catch(const std::exception& error){hr=report_error(std::string("Queued output failed: ")+error.what(),E_FAIL);}
+                    catch(...){hr=report_error("Queued output failed",E_FAIL);}
+                }
+            }
+            if(hr!=S_OK)pending_gpu_outputs_.clear();
+            worker_processing_=false;
+            item.sample.Reset();
+            {
+                std::lock_guard<std::mutex> lock(async_mutex_);
+                async_busy_=false;
+                if(hr!=S_OK) {async_result_=hr;async_queue_.clear();async_stop_=true;}
+            }
+            async_cv_.notify_all();
+        }
+        if(SUCCEEDED(com))CoUninitialize();
+    }
+    HRESULT drain_async_input() {
+        std::unique_lock<std::mutex> lock(async_mutex_);
+        async_cv_.wait(lock,[this]{return async_stop_ || (!async_busy_ && async_queue_.empty());});
+        if(async_result_!=S_OK)return async_result_;
+        return async_stop_?S_FALSE:S_OK;
+    }
+    void cancel_async_input() {
+        {std::lock_guard<std::mutex> lock(async_mutex_);async_stop_=true;async_queue_.clear();}
+        async_cv_.notify_all();
+    }
+    void join_async_input() {
+        if(async_thread_.joinable())async_thread_.join();
+        pending_gpu_outputs_.clear();
+    }
+    void reopen_async_input() {
+        std::lock_guard<std::mutex> lock(async_mutex_);
+        async_stop_=false;async_result_=S_OK;
+    }
+    void set_async_paused(bool paused) {
+        {std::lock_guard<std::mutex> lock(async_mutex_);async_paused_=paused;}
+        async_cv_.notify_all();
+    }
+    bool wait_async_running() {
+        if(!worker_processing_)return !cancelled_.load(std::memory_order_acquire);
+        std::unique_lock<std::mutex> lock(async_mutex_);
+        async_cv_.wait(lock,[this]{return async_stop_ || !async_paused_;});
+        return !async_stop_;
+    }
     std::shared_ptr<const nvof::HdrMetadata> capture_sample_hdr(IMediaSample* sample) {
         auto hdr=nvof::capture_hdr(sample);
         if(hdr && hdr_trace_)for(size_t i=0;i<hdr->data.size();++i)if(!hdr->data[i].empty()) {
@@ -1465,6 +1678,8 @@ private:
             input_surface_format_=format;
             input_conversion_="none";
             write_log("GPU input surface="+format+" output="+format+" conversion="+input_conversion_+
+                " arraySize="+std::to_string(surface.ArraySize)+" codedWidth="+std::to_string(surface.Width)+
+                " codedHeight="+std::to_string(surface.Height)+" bindFlags="+std::to_string(surface.BindFlags)+
                 " transfer="+std::to_string(output_.hdr_transfer)+" hdrMasteringBytes="+std::to_string(input.hdr?input.hdr->data[0].size():0)+
                 " hdrLightBytes="+std::to_string(input.hdr?input.hdr->data[1].size():0));
         }
@@ -1474,24 +1689,80 @@ private:
         // renderer reads are ordered on this device's shared immediate context;
         // keep an owned output lease without a per-frame CPU completion wait.
         nvof::PlaybackTimer capture_timer(performance_.enabled,performance_.capture);
-        auto owned=gpu_engine_->copy(input);
+        // Deliver the first original without adding analysis allocation or
+        // shader warmup to the time until the first picture is visible.
+        auto owned=gpu_engine_->copy(input,discontinuity || seek_preview_frame_);
         capture_timer.finish();
         sample_transport_="d3d11-texture";
         return push_gpu_frame(std::move(owned),stop,discontinuity);
     }
 
     HRESULT push_gpu_frame(nvof::GpuFrame owned,int64_t stop,bool discontinuity) {
-        if(!interpolation_requested())return deliver_gpu({std::move(owned),stop,discontinuity});
+        wait_delivery_result_=S_OK;
+        if(!interpolation_requested() || seek_preview_frame_)return deliver_gpu({std::move(owned),stop,discontinuity});
         if(!gpu_pipeline_)gpu_pipeline_=std::make_unique<nvof::GpuPhasePipeline>(target_,
             [this](const nvof::GpuFrame& a,const nvof::GpuFrame& b,const std::vector<int64_t>& times) {
                 nvof::PlaybackTimer synthesis_timer(performance_.enabled,performance_.synthesis);
-                gpu_engine_->enable_timing(performance_.enabled);
+                gpu_engine_->enable_timing(performance_.enabled,trace_every_gpu_pair_,trace_every_gpu_pair_);
+                gpu_engine_->set_wait_service(worker_processing_&&output_ahead_limit()?
+                    nvof::GpuFrucEngine::WaitService([this]{return service_waiting_outputs();}):nvof::GpuFrucEngine::WaitService{});
                 auto batch=gpu_engine_->interpolate_pair(a,b,times);
                 if(performance_.enabled) {
                     const auto timing=gpu_engine_->pair_timing();
+                    const double work=timing.context_wait_ms+timing.scene_ms+timing.prepare_ms+timing.submit_ms+timing.completion_ms;
+                    const double budget=double(b.pts-a.pts)/10000.0;
+                    if(trace_every_gpu_pair_ && (source_frames_<=6||work>budget))
+                        write_log("gpu pair instance="+std::to_string(instance_id_)+" pts="+std::to_string(b.pts)+
+                            " sourceFrames="+std::to_string(source_frames_)+" budgetMs="+std::to_string(budget)+
+                            " workMs="+std::to_string(work)+" contextMs="+std::to_string(timing.context_wait_ms)+
+                            " sceneMs="+std::to_string(timing.scene_ms)+" prepareMs="+std::to_string(timing.prepare_ms)+
+                            " outputSubmitMs="+std::to_string(timing.completion_ms)+
+                            " flushEventWaits="+std::to_string(timing.flush_event_wait_calls)+
+                            " wait0Ms="+std::to_string(timing.wait_each_ms[0])+" wait1Ms="+std::to_string(timing.wait_each_ms[1])+
+                            " wait2Ms="+std::to_string(timing.wait_each_ms[2])+
+                            " resume0Ms="+std::to_string(timing.resume_each_ms[0])+" resume1Ms="+std::to_string(timing.resume_each_ms[1])+
+                            " resume2Ms="+std::to_string(timing.resume_each_ms[2])+
+                            " decoderLockMs="+std::to_string(timing.decoder_lock_ms)+" multithreadLockMs="+std::to_string(timing.multithread_lock_ms)+
+                            " stateSwapMs="+std::to_string(timing.state_swap_ms)+" waitServiceMs="+std::to_string(timing.wait_service_ms)+
+                            " tickMs="+std::to_string(GetTickCount64()));
                     performance_.context_wait.add(timing.context_wait_ms);performance_.scene.add(timing.scene_ms);
                     performance_.prepare.add(timing.prepare_ms);performance_.submit.add(timing.submit_ms);performance_.completion.add(timing.completion_ms);
                     performance_.shared_wait.add(timing.shared_wait_ms);
+                    performance_.wait_submit.add(timing.wait_submit_ms);
+                    performance_.wait_completion.add(timing.wait_completion_ms);
+                    performance_.context_resume.add(timing.context_resume_ms);
+                    performance_.shared_wait_calls+=timing.shared_wait_calls;
+                    performance_.queued_output_flushes+=timing.queued_output_flushes;
+                    performance_.combined_scene_pairs+=timing.combined_scene_pairs;
+                    performance_.event_wait_calls+=timing.event_wait_calls;
+                    performance_.query_wait_calls+=timing.query_wait_calls;
+                    for(unsigned i=0;i<timing.capture_sample_count;++i) {
+                        const auto& capture=timing.capture_samples[i];
+                        write_log("gpu capture instance="+std::to_string(instance_id_)+" pts="+std::to_string(capture.pts)+
+                            " copyMs="+std::to_string(capture.copy_ms)+" normalizeMs="+std::to_string(capture.normalize_ms)+
+                            " totalMs="+std::to_string(capture.total_ms));
+                    }
+                    for(unsigned i=0;i<timing.gpu_sample_count;++i) {
+                        const auto& sample=timing.gpu_samples[i];
+                        write_log("gpu timeline instance="+std::to_string(instance_id_)+" pts="+std::to_string(sample.pts)+
+                            " beginTickMs="+std::to_string(sample.begin_tick)+" endTickMs="+std::to_string(sample.end_tick)+
+                            " waits="+std::to_string(sample.waits)+" inputMs="+std::to_string(sample.input_ms)+
+                            " analysisMs="+std::to_string(sample.analysis_ms)+" tailMs="+std::to_string(sample.tail_ms)+
+                            " stageDetail="+std::to_string(sample.stages_measured)+
+                            " repairMs="+std::to_string(sample.repair_ms)+" glyphMs="+std::to_string(sample.glyph_ms)+
+                            " layersMs="+std::to_string(sample.layers_ms)+" phaseMs="+std::to_string(sample.phase_ms)+
+                            " inverseDetail="+std::to_string(sample.inverse_measured)+
+                            " inverseMs="+std::to_string(sample.inverse_ms)+" outputMs="+std::to_string(sample.output_ms)+
+                            " workMs="+std::to_string(sample.work_ms)+" gapMs="+std::to_string(sample.gap_ms)+
+                            " cpuWaitMs="+std::to_string(sample.cpu_wait_ms)+" cpuResumeMs="+std::to_string(sample.cpu_resume_ms)+
+                            " cpuSubmitMs="+std::to_string(sample.cpu_submit_ms)+
+                            " cpuArmMs="+std::to_string(sample.cpu_arm_ms)+" cpuSleepMs="+std::to_string(sample.cpu_sleep_ms)+
+                            " wait0CpuMs="+std::to_string(sample.wait_ms[0])+" wait1CpuMs="+std::to_string(sample.wait_ms[1])+
+                            " gap0Ms="+std::to_string(sample.gap_each_ms[0])+" gap1Ms="+std::to_string(sample.gap_each_ms[1]));
+                    }
+                    if(timing.gpu_samples_invalid||timing.gpu_samples_skipped)
+                        write_log("gpu timeline unavailable invalid="+std::to_string(timing.gpu_samples_invalid)+
+                            " skipped="+std::to_string(timing.gpu_samples_skipped));
                 }
                 record_quality(batch.quality,times.size());record_endpoints(a.pts,b.pts,times);return batch;
             },nvof::canonical_source_rate(input_.duration));
@@ -1599,16 +1870,63 @@ private:
         return S_OK;
     }
 
+    size_t output_ahead_limit() const noexcept {
+        // Cover brief completion stalls with already prepared output, bounded
+        // by frame count and surface memory. Never wait to fill this capacity.
+        if(!async_input_enabled_ || !native_gpu_active_ || cpu_upload_active_ ||
+            !interpolation_requested())return 0;
+        const uint64_t bytes=uint64_t(output_.width)*output_.height*3;
+        return nvof::gpu_ready_output_count(selected_multiple(input_.duration),target_,bytes);
+    }
+    HRESULT drain_gpu_outputs(bool nonblocking) {
+        while(!pending_gpu_outputs_.empty()) {
+            bool unavailable=false;
+            const HRESULT hr=deliver_gpu_now(pending_gpu_outputs_.front(),nonblocking,&unavailable);
+            if(unavailable)return S_OK;
+            if(hr!=S_OK)return hr;
+            pending_gpu_outputs_.pop_front();
+        }
+        return S_OK;
+    }
     HRESULT deliver_gpu(const nvof::GpuOutputFrame& output) {
+        if(wait_delivery_result_!=S_OK)return wait_delivery_result_;
+        const size_t limit=worker_processing_?output_ahead_limit():0;
+        if(!limit) {
+            const HRESULT drained=drain_gpu_outputs(false);
+            return drained==S_OK?deliver_gpu_now(output,false):drained;
+        }
+        // Keep a single owner thread for delivery, metadata and timing. No
+        // output is withheld when the renderer has space; only allocator
+        // exhaustion defers delivery. Samples are never dropped or retimed.
+        HRESULT hr=drain_gpu_outputs(true);if(hr!=S_OK)return hr;
+        if(pending_gpu_outputs_.empty()) {
+            bool unavailable=false;
+            hr=deliver_gpu_now(output,true,&unavailable);
+            if(!unavailable)return hr;
+        }
+        while(pending_gpu_outputs_.size()>=limit) {
+            hr=deliver_gpu_now(pending_gpu_outputs_.front(),false);
+            if(hr!=S_OK)return hr;
+            pending_gpu_outputs_.pop_front();
+        }
+        pending_gpu_outputs_.push_back(output);
+        output_ahead_peak_=(std::max)(output_ahead_peak_,pending_gpu_outputs_.size());
+        return drain_gpu_outputs(true);
+    }
+    HRESULT deliver_gpu_now(const nvof::GpuOutputFrame& output,bool nonblocking,bool* unavailable=nullptr) {
+        if(!ready_for_gpu_output(unavailable))return S_FALSE;
         if(cancelled_.load(std::memory_order_acquire))return S_FALSE;
         if(!output.frame.texture || output.frame.width!=output_.width || output.frame.height!=output_.height ||
             output.stop<=output.frame.pts)return report_error("invalid native GPU output",E_UNEXPECTED);
         IMediaSample* raw=nullptr;
         REFERENCE_TIME start=output.frame.pts,stop=output.stop;
         nvof::PlaybackTimer allocator_timer(performance_.enabled,performance_.allocator);
-        HRESULT result=m_pOutput->GetDeliveryBuffer(&raw,&start,&stop,0);
+        HRESULT result=m_pOutput->GetDeliveryBuffer(&raw,&start,&stop,nonblocking?AM_GBF_NOWAIT:0);
         allocator_timer.finish();
         SamplePtr sample(raw);
+        // A downstream Receive timeout is a real error, never a reason to
+        // retry a sample. Only this allocator's NOWAIT timeout means "full".
+        if(nonblocking && result==VFW_E_TIMEOUT && unavailable)*unavailable=true;
         if(result!=S_OK)return result;
         if(cancelled_.load(std::memory_order_acquire))return S_FALSE;
         auto* surface=dynamic_cast<nvof::transport::SurfaceSample*>(raw);
@@ -1623,18 +1941,52 @@ private:
         sample->SetPreroll(FALSE);
         if(cancelled_.load(std::memory_order_acquire))return S_FALSE;
         nvof::PlaybackTimer delivery_timer(performance_.enabled,performance_.delivery);
+        if(!ready_for_gpu_output(unavailable))return S_FALSE;
         result=m_pOutput->Deliver(sample.get());
         delivery_timer.finish();
         if(result==S_OK) {
             pending_gpu_media_type_=false;
             gpu_delivery_verified_=true;
             ++output_frames_;
-            if(performance_.enabled)performance_.note_output();
-            write_status(!interpolation_requested()?"bypass":engine_active_?"active":"waiting",
+            if(performance_.enabled)performance_.note_output(start,stop,output.discontinuity);
+            if(!wait_service_active_)write_status(!interpolation_requested()?"bypass":engine_active_?"active":"waiting",
                 !interpolation_requested()?bypass_message():engine_active_?"NVIDIA Optical Flow / Motion phases (D3D11 GPU)":
                     "Waiting for the next adjacent GPU frame");
         }
         return result;
+    }
+
+    bool ready_for_gpu_output(bool* unavailable) {
+        if(wait_service_active_) {
+            // Never park an engine completion wait on Run. A paused callback
+            // leaves the prepared output queued; ordinary delivery owns Run.
+            std::lock_guard<std::mutex> lock(async_mutex_);
+            if(async_stop_)return false;
+            if(async_paused_){if(unavailable)*unavailable=true;return false;}
+            return true;
+        }
+        return wait_async_running();
+    }
+    HANDLE service_waiting_outputs() noexcept {
+        if(wait_delivery_result_!=S_OK || pending_gpu_outputs_.empty() || cancelled_.load(std::memory_order_acquire))return nullptr;
+        {std::lock_guard<std::mutex> lock(async_mutex_);if(async_stop_||async_paused_)return nullptr;}
+        // Same worker, same ordered deque. Device locks are released by the
+        // engine, while its private state and all source leases remain owned.
+        // Only already prepared outputs are serviced; no engine re-entry.
+        wait_service_active_=true;
+        const auto before=output_frames_;
+        try {wait_delivery_result_=drain_gpu_outputs(true);}
+        catch(...) {wait_delivery_result_=E_FAIL;}
+        wait_service_active_=false;
+        if(wait_delivery_result_!=S_OK)write_log("output during GPU wait failure="+std::to_string(uint32_t(wait_delivery_result_)));
+        const auto delivered=output_frames_-before;
+        if(delivered) {
+            if(performance_.enabled&&wait_output_frames_==0)write_log("ready outputs delivered during GPU wait count="+std::to_string(delivered));
+            wait_output_frames_+=delivered;
+        }
+        if(wait_delivery_result_!=S_OK || pending_gpu_outputs_.empty() || cancelled_.load(std::memory_order_acquire))return nullptr;
+        {std::lock_guard<std::mutex> lock(async_mutex_);if(async_stop_||async_paused_)return nullptr;}
+        return static_cast<nvof::transport::OutputPin*>(m_pOutput)->returned_event();
     }
 
     void probe_sample(IMediaSample* sample) {
@@ -1793,8 +2145,10 @@ private:
 
     void write_status(const std::string& state, const std::string& message) noexcept {
         try {
+            if(!status_writer_)return;
             const ULONGLONG now=GetTickCount64();
-            if (state==last_status_state_ && now-last_status_time_<1000) return;
+            const bool transition=state!=last_status_state_;
+            if (!transition && now-last_status_time_<1000) return;
             nvof::PlaybackTimer status_timer(performance_.enabled,performance_.status);
             last_status_time_=now;
             last_status_state_=state;
@@ -1802,15 +2156,9 @@ private:
             const DWORD length=GetEnvironmentVariableW(L"LOCALAPPDATA",local,_countof(local));
             if (!length || length>=_countof(local)) return;
             const auto directory=std::filesystem::path(local)/L"NvofPotPlayer";
-            std::error_code error;
-            std::filesystem::create_directories(directory,error);
-            const auto destination=directory/L"status.json";
-            const auto temporary=directory/(L"status."+std::to_wstring(GetCurrentProcessId())+L"."+
-                std::to_wstring(GetCurrentThreadId())+L".tmp");
             const double input_fps=input_.duration>0 ? double(kUnits)/input_.duration : 0.0;
             const double output_fps=interpolation_requested() ? double(target_.num)/target_.den : input_fps;
-            {
-                std::ofstream stream(temporary,std::ios::binary|std::ios::trunc);
+            std::ostringstream stream;
                 stream << "{\"processId\":" << GetCurrentProcessId()
                     << ",\"state\":" << json_string(state)
                     << ",\"transport\":" << json_string(gpu_delivery_verified_ ? "d3d11-gpu" : native_input_committed() ? "native-pending" : "system-memory")
@@ -1825,9 +2173,12 @@ private:
                     << ",\"hdrSideDataRendererReadMask\":" << (hdr_trace_?hdr_trace_->returned_mask.load():0)
                     << ",\"inputRateSelected\":" << (input_rate_selected_?"true":"false")
                     << ",\"doubleRate\":" << (selected_multiple(input_.duration)==2?"true":"false")
-                    << ",\"outputFpsLimit\":" << output_limit_
-                    << ",\"outputMode\":" << output_mode_
-                    << ",\"outputMultiplier\":" << output_multiplier_
+                    << ",\"outputFpsLimit\":" << resolution_output(input_.height).limit
+                    << ",\"outputMode\":" << resolution_output(input_.height).mode
+                    << ",\"outputMultiplier\":" << resolution_output(input_.height).multiplier
+                    << ",\"resolutionRulesEnabled\":" << (resolution_rules_enabled_?"true":"false")
+                    << ",\"resolutionBand\":" << nvof::resolution_heights[nvof::resolution_band(input_.height)]
+                    << ",\"resolutionRule\":" << resolution_output(input_.height).rule
                     << ",\"outputMultiple\":" << (interpolation_requested()?selected_multiple(input_.duration):1)
                     << ",\"requestedInterpolationBackend\":\"" << (native_synthesis_?"native-newton-cost":"fruc") << "\""
                     << ",\"nativeSynthesisRevision\":" << (native_synthesis_?11:0)
@@ -1860,19 +2211,34 @@ private:
                     << ",\"gpuCompletion\":" << json_string(gpu_engine_&&gpu_engine_->queued_completion()?"context-ordered":"blocking")
                     << ",\"algorithm\":" << json_string(native_synthesis_?"integer-native-newton-0.4.2":midpoint_pass_frames_?"x2-slow-motion-stabilized":appearance_pass_frames_?"x2-appearance-protected":subpixel_pass_frames_?"independent-motion-phases-subpixel":"independent-motion-phases")
                     << ",\"message\":" << json_string(message) << "}\n";
-                stream.flush();
-                if (!stream) return;
-            }
-            MoveFileExW(temporary.c_str(),destination.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+            // Snapshot mutable counters on their existing owner thread. Only
+            // immutable JSON is passed to the optional disk worker.
+            status_writer_->publish(directory,stream.str());
+            if(transition)status_writer_->drain();
         } catch (...) { /* Status is optional and cannot break decoding. */ }
     }
 
     const unsigned instance_id_=next_filter_instance.fetch_add(1);
+    bool async_input_enabled_=true,async_first_input_=true,worker_processing_=false;
+    std::mutex async_mutex_;
+    std::condition_variable async_cv_;
+    std::deque<PendingInput> async_queue_;
+    std::thread async_thread_;
+    bool async_stop_=false,async_busy_=false,async_paused_=true;
+    std::deque<nvof::GpuOutputFrame> pending_gpu_outputs_;
+    size_t output_ahead_peak_=0,output_ahead_pairs_=0;
+    bool wait_service_active_=false;
+    size_t wait_output_frames_=0;
+    HRESULT wait_delivery_result_=S_OK;
+    HRESULT async_result_=S_OK;
+    size_t async_queued_=0,async_peak_=0;
+    double async_backpressure_ms_=0;
     std::atomic<unsigned> topology_logs_{0};
     DiagnosticServiceProbe service_probe_;
     bool cpu_field_override_logged_=false;
     bool probe_services_=false;
     nvof::PlaybackTiming performance_;
+    bool trace_every_gpu_pair_=false;
     std::filesystem::path directory_;
     Layout input_, output_;
     bool native_feature_enabled_=false;
@@ -1909,6 +2275,8 @@ private:
     int output_limit_=60, output_mode_=0, output_multiplier_=2;
     unsigned input_rate_mask_=nvof::kAllInputRates;
     unsigned input_height_limit_=0;
+    bool resolution_rules_enabled_=false;
+    nvof::ResolutionRules resolution_rules_{};
     mutable bool color_probe_logged_=false;
     bool gpu_correction_=true,appearance_protection_=true,native_synthesis_=false;
     uint64_t appearance_pass_frames_=0;
@@ -1920,10 +2288,14 @@ private:
     std::string quality_state_="waiting";
     ULONGLONG last_status_time_ = 0;
     std::string last_status_state_;
+    std::shared_ptr<nvof::StatusWriter> status_writer_;
     nvof::Rate target_;
     std::atomic<bool> cancelled_{false};
     bool failed_ = false;
     bool preroll_ = false;
+    ULONGLONG seek_preview_until_=0;
+    bool seen_segment_=false,seek_preview_frame_=false;
+    unsigned seek_trace_count_=0;
     std::optional<int64_t> last_pts_;
     int64_t last_duration_ = kUnits / 24;
     std::unique_ptr<nvof::FrucEngine> engine_;

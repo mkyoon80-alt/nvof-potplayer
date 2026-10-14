@@ -1,5 +1,5 @@
 param(
-    [string]$Version='0.4.8',
+    [string]$Version='0.4.9',
     [string]$UiDirectory,
     [string]$NativeDirectory,
     [string]$RuntimeDirectory,
@@ -51,7 +51,7 @@ $manualOutput=Join-Path $destination 'docs/manual'
 New-Item -ItemType Directory -Path $manualOutput -Force | Out-Null
 Copy-Item -Path (Join-Path $project 'docs/manual/*') -Destination $manualOutput -Recurse
 Copy-Item -LiteralPath (Join-Path $project 'RELEASE.md') -Destination $destination
-foreach($note in @('POTPLAYER_SETUP.ko.md','BUILD.md','STANDALONE.md','COST-MAP-TRIAL.md','COST-MAP-FUSION.md','FLOW-PROFILE-TRIAL.md','SESSION-REUSE.md','QUALITY-TRIAL.md','STATIC-OVERLAY-TRIAL.md','CREDIT-SCROLL-TRIAL.md','INTEGER-RATE-TRIAL.md','MOTION-BOUNDARY-TRIAL.md','HDR-NATIVE-TRIAL.md','CPU-10BIT.md','SW-DECODING.md','VP9-HDR.md','DOLBY-VISION-HLG.md','PLAYBACK-PERFORMANCE.md','SOFTWARE-HDR-TRIAL.md','THIN-OVERLAY-TRIAL.md','ADAPTER-SWITCH-TRIAL.md')){
+foreach($note in @('POTPLAYER_SETUP.ko.md','BUILD.md','TUNING.md','STANDALONE.md','COST-MAP-TRIAL.md','COST-MAP-FUSION.md','FLOW-PROFILE-TRIAL.md','SESSION-REUSE.md','QUALITY-TRIAL.md','STATIC-OVERLAY-TRIAL.md','CREDIT-SCROLL-TRIAL.md','INTEGER-RATE-TRIAL.md','MOTION-BOUNDARY-TRIAL.md','HDR-NATIVE-TRIAL.md','CPU-10BIT.md','SW-DECODING.md','VP9-HDR.md','DOLBY-VISION-HLG.md','PLAYBACK-PERFORMANCE.md','SOFTWARE-HDR-TRIAL.md','THIN-OVERLAY-TRIAL.md','ADAPTER-SWITCH-TRIAL.md')){
     Copy-Item -LiteralPath (Join-Path $project ('docs/'+$note)) -Destination (Join-Path $destination 'docs')
 }
 $configOutput=Join-Path $destination 'config'

@@ -2,17 +2,22 @@
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
 
-**[Download v0.4.8](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.8)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+**[Download v0.4.9](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.9)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **FPS 상한 또는 원본 배수**를 골라 원본의 정수배로 보간합니다.
 
 압축을 풀어 사용하는 Windows x64 스탠드얼론 ZIP입니다. 필터·등록 도구·설정창과 .NET/WPF 런타임, 한국어·영어 오프라인 매뉴얼을 포함합니다. NVIDIA 드라이버와 팟플레이어는 별도로 필요합니다.
 
-## v0.4.8의 변경 사항
+## v0.4.9의 변경 사항
 
-- **내장 GPU가 함께 있는 PC의 HW→SW 전환 멈춤 수정:** 렌더러의 GPU 번호를 검증하고, 이미 사용하던 NVIDIA GPU를 유지하도록 했습니다. RTX 5080 + AMD 내장 GPU 환경에서 수정본의 정상 동작을 확인했습니다.
-- **SW 시작 시 GPU 선택 개선:** 잘못된 GPU 번호가 전달되어도 사용 가능한 NVIDIA GPU를 선택합니다. 내장 GPU를 끄는 설정 변경은 필요하지 않습니다.
-- **한·영 매뉴얼 업데이트:** 다중 GPU 환경의 전환 문제와 설정을 보존하는 업데이트 방법을 추가했습니다. 기존 보간·HDR·10bit 처리와 출력 설정은 유지합니다. [전체 변경 내역](RELEASE.md)
+- **해상도별 출력 설정:** 세로 높이에 따라 FPS 상한·원본 배수·보간 끄기를 지정합니다. 새 설정창에서 기본 출력과 구간별 값을 함께 편집합니다.
+- **재생 처리 개선:** 네이티브 GPU 입력의 디코더 수신과 보간·출력을 분리하고 고배수 출력 여유를 확보했습니다. 1080p·4K·8K에 적용하며, 일시정지 후 기존 세션을 유지하고 연속 탐색의 앞뒤 튐을 개선했습니다.
+- **공통 화질 튜닝:** 여러 영상으로 비교한 값을 내장합니다. 가림 경계·반복 무늬·할로는 장기 개선 과제로 남아 있습니다.
+- **상세 진단 기본 꺼짐:** `TracePerformance=0`, `ProbeServices=0`. 기존 INI를 보존해 업데이트했다면 두 값을 확인하세요. 필요한 경우만 켜고 팟플레이어를 다시 실행합니다.
+- **실험 도구 정리:** 재생 성능 MCP를 제거하고 채택한 고정값을 유지합니다. 기존 화질 MCP의 32개 수치는 실험 빌드에서 계속 사용할 수 있습니다.
+- **한·영 매뉴얼 업데이트:** 해상도별 설정, HDR 출력, 재생 성능과 진단 안내를 반영했습니다. [전체 변경 내역](RELEASE.md)
+
+**남은 제한:** 시작 직후 큰 드랍과 탐색 직후 소량의 드랍이 남을 수 있습니다. 연속 재생은 크게 개선됐지만 소량의 누적 드랍도 보고돼 모든 소스의 드랍 0을 보장하지 않습니다. 첫 화면 전 버퍼 채우기 대기는 추가하지 않았습니다.
 
 FPS 상한 **60 / 72 / 75 / 100 / 120 / 144 / 240fps**, 원본 배수 **×2 / ×3 / ×4 / ×5**, 원본 FPS·세로 해상도 조건은 그대로 사용할 수 있습니다.
 

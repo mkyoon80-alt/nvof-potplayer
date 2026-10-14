@@ -1,4 +1,4 @@
-param([ValidateSet('Debug','Release')][string]$Configuration='Release', [string]$BuildDirectory, [string]$OpticalFlowSdkIncludeDirectory)
+param([ValidateSet('Debug','Release')][string]$Configuration='Release', [string]$BuildDirectory, [string]$OpticalFlowSdkIncludeDirectory, [switch]$ExperimentalTuning)
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot -Parent
 if(-not $BuildDirectory){$BuildDirectory=Join-Path $project 'build'}
@@ -17,6 +17,7 @@ if(-not $cmake){
 }
 if(-not $cmake -or -not (Test-Path -LiteralPath $cmake)){throw 'Install CMake or Visual Studio C++ CMake tools.'}
 $configure=@('-S',$project,'-B',$BuildDirectory,'-G','Visual Studio 17 2022','-A','x64')
+$configure+=if($ExperimentalTuning){'-DNVOF_EXPERIMENTAL_TUNING=ON'}else{'-DNVOF_EXPERIMENTAL_TUNING=OFF'}
 if($OpticalFlowSdkIncludeDirectory){$configure+="-DNVOF_API_INCLUDE_DIR=$OpticalFlowSdkIncludeDirectory"}
 & $cmake @configure
 if($LASTEXITCODE -ne 0){throw 'CMake configuration failed'}

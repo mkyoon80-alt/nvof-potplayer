@@ -4,6 +4,7 @@
 #undef wmain
 #include "nvof/motion_synthesizer.hpp"
 #include "motion_shaders.hpp"
+#include "tuning_shader_defaults.hpp"
 int wmain(){try {
     ComPtr<IDXGIFactory1> factory;check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)),"DXGI");
     ComPtr<IDXGIAdapter1> adapter;
@@ -30,6 +31,7 @@ int wmain(){try {
     actual.prepare(a.Get(),b.Get(),640,360);require(actual.cost_map_active(),"Cost path lost after reset");actual.reset();
     std::cout<<"PASS real NVOFA 8-bit bidirectional cost execution and reset"<<std::endl;
 
+    bind_tuning_test_defaults(device.Get(),context.Get());
     ComPtr<ID3D11VertexShader> vs;ComPtr<ID3D11PixelShader> ps;
     check(device->CreateVertexShader(shaders::motion::vs,sizeof(shaders::motion::vs),nullptr,&vs),"VS");
     check(device->CreatePixelShader(shaders::motion::inverseMapBlend,sizeof(shaders::motion::inverseMapBlend),nullptr,&ps),"PS");

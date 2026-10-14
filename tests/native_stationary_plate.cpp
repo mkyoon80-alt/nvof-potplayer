@@ -4,6 +4,7 @@
 #include "gpu_engine_smoke.cpp"
 #undef wmain
 #include "motion_shaders.hpp"
+#include "tuning_shader_defaults.hpp"
 int wmain(){try {
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
     check(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"WARP");
@@ -30,6 +31,7 @@ int wmain(){try {
         else input[slot]=texture(DXGI_FORMAT_R32G32B32A32_FLOAT,aw,ah,aw*16,slot==6?offsets.data():weights.data(),D3D11_BIND_SHADER_RESOURCE);
         check(device->CreateShaderResourceView(input[slot].Get(),nullptr,&views[slot]),"SRV");
     }
+    bind_tuning_test_defaults(device.Get(),context.Get());
     ComPtr<ID3D11VertexShader> vs;ComPtr<ID3D11PixelShader> ps;
     check(device->CreateVertexShader(shaders::motion::vs,sizeof(shaders::motion::vs),nullptr,&vs),"VS");
     check(device->CreatePixelShader(shaders::motion::stationaryMask,sizeof(shaders::motion::stationaryMask),nullptr,&ps),"PS");

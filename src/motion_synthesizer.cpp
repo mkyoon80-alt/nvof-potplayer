@@ -12,6 +12,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#if NVOF_EXPERIMENTAL_TUNING
+#include "nvof/tuning.hpp"
+#endif
 
 namespace nvof {
 namespace {
@@ -64,6 +67,15 @@ struct MotionSynthesizer::Impl {
     ComPtr<ID3D11SamplerState> sampler;
     ComPtr<ID3D11RasterizerState> raster;
     ComPtr<ID3D11Buffer> constants,formatConstants;
+#if NVOF_EXPERIMENTAL_TUNING
+    ComPtr<ID3D11Buffer> tuningConstants;
+    std::unique_ptr<tuning::Channel> tuningChannel;
+    void bind_tuning() {
+        auto buffer=tuningConstants.Get();
+        context->PSSetConstantBuffers(2,1,&buffer);
+        context->CSSetConstantBuffers(2,1,&buffer);
+    }
+#endif
     DXGI_FORMAT sourceFormat=DXGI_FORMAT_NV12;
     unsigned maxDimension,grid=0;
     MotionCostMode costMode;
@@ -114,6 +126,10 @@ struct MotionSynthesizer::Impl {
             D3D11_BUFFER_DESC cb{};cb.ByteWidth=32;cb.Usage=D3D11_USAGE_DEFAULT;cb.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
             check(d->CreateBuffer(&cb,nullptr,&constants),"Motion constants");
             cb.ByteWidth=16;check(d->CreateBuffer(&cb,nullptr,&formatConstants),"Motion pixel format");
+#if NVOF_EXPERIMENTAL_TUNING
+            cb.ByteWidth=sizeof(tuning::Values);check(d->CreateBuffer(&cb,nullptr,&tuningConstants),"Motion tuning constants");
+            tuningChannel=std::make_unique<tuning::Channel>();
+#endif
             D3D11_SAMPLER_DESC sd{};sd.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;
             sd.AddressU=sd.AddressV=sd.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;sd.MaxLOD=D3D11_FLOAT32_MAX;
             check(d->CreateSamplerState(&sd,&sampler),"Motion sampler");
@@ -126,6 +142,9 @@ struct MotionSynthesizer::Impl {
         if(status!=NV_OF_SUCCESS)throw std::runtime_error(std::string(action)+" NVOF="+std::to_string(status));
     }
     void reset() noexcept {
+#if NVOF_EXPERIMENTAL_TUNING
+        if(tuningChannel)tuningChannel->publish(0,0,false);
+#endif
         prepared=hasPair=trustworthy=false;inconsistentSamples=0;
         if(handle){
             for(auto& p:ch)if(p){api.nvOFUnregisterResourceD3D11(p);p=nullptr;}
@@ -260,6 +279,9 @@ struct MotionSynthesizer::Impl {
         }catch(...){reset();throw;}
     }
     void assess_motion(const MotionSynthesizer::GpuWait& wait) {
+#if NVOF_EXPERIMENTAL_TUNING
+        bind_tuning();
+#endif
         const UINT zero[4]{};context->ClearUnorderedAccessViewUint(riskUav.Get(),zero);
         float data[8]={float(w),float(h),float(aw),float(ah),float(grid),0,0,0};
         context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
@@ -272,17 +294,21 @@ struct MotionSynthesizer::Impl {
         context->CSSetShaderResources(0,6,empty);context->CSSetUnorderedAccessViews(0,1,&none,nullptr);context->CSSetShader(nullptr,nullptr,0);
         context->CopyResource(riskReadback.Get(),riskBuffer.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
         HRESULT mappedResult=context->Map(riskReadback.Get(),0,D3D11_MAP_READ,wait?D3D11_MAP_FLAG_DO_NOT_WAIT:0,&mapped);
-        const ULONGLONG deadline=GetTickCount64()+1000;
-        while(wait && mappedResult==DXGI_ERROR_WAS_STILL_DRAWING) {
-            if(GetTickCount64()>=deadline)throw std::runtime_error("Motion assessment readback timed out");
+        if(wait && mappedResult==DXGI_ERROR_WAS_STILL_DRAWING) {
             wait();
-            mappedResult=context->Map(riskReadback.Get(),0,D3D11_MAP_READ,D3D11_MAP_FLAG_DO_NOT_WAIT,&mapped);
+            // wait() completes all preceding GPU work, including this private
+            // staging copy. Do not fence the shared queue again just to finish
+            // the driver's CPU-side mapping of already completed statistics.
+            mappedResult=context->Map(riskReadback.Get(),0,D3D11_MAP_READ,0,&mapped);
         }
         check(mappedResult,"Read motion assessment");
         const uint32_t bad=*static_cast<const uint32_t*>(mapped.pData);context->Unmap(riskReadback.Get(),0);
         inconsistentSamples=bad;trustworthy=bad<=uint32_t(128*72*2*0.08);
     }
     void draw(ID3D11RenderTargetView* target,unsigned plane,bool down,unsigned source=0,float fraction=0.5f,bool mapping=false,unsigned stationaryStage=0,bool repairing=false) {
+#if NVOF_EXPERIMENTAL_TUNING
+        bind_tuning();
+#endif
         float data[8]={float(w),float(h),float(aw),float(ah),float(grid),float(plane),float(source),fraction};
         context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
         // Mapping reads the completed stationary mask from prepare() so inverse
@@ -306,6 +332,9 @@ struct MotionSynthesizer::Impl {
         ID3D11ShaderResourceView* empty[14]{};context->PSSetShaderResources(0,14,empty);context->OMSetRenderTargets(0,nullptr,nullptr);
     }
     void estimate_glyphs() {
+#if NVOF_EXPERIMENTAL_TUNING
+        bind_tuning();
+#endif
         float data[8]={float(w),float(h),float(aw),float(ah),float(grid),0,0,0};
         context->UpdateSubresource(constants.Get(),0,nullptr,data,0,0);
         ID3D11ShaderResourceView* views[]={ys[0].Get(),ys[1].Get(),uvs[0].Get(),uvs[1].Get(),repairedViews[0].Get(),repairedViews[1].Get()};
@@ -345,10 +374,22 @@ MotionAnalysisInfo MotionSynthesizer::analysis_info() const noexcept {
 }
 bool MotionSynthesizer::reliable() const noexcept {return impl_->prepared&&impl_->trustworthy;}
 void MotionSynthesizer::reset() noexcept {impl_->reset();}
-// Seek, cut, skipped/identical pair, source discontinuity, or recovery still
-// destroys the session. Normal playback alone takes the persistent path.
-void MotionSynthesizer::invalidate_history() noexcept {impl_->reset();}
-void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int h,const GpuWait& wait) {
+void MotionSynthesizer::invalidate_history() noexcept {
+    if(impl_->flowOptions.session_mode==MotionSessionMode::fresh){impl_->reset();return;}
+    // Both source pictures and every motion/mask result are overwritten on
+    // prepare(), and temporal hints are disabled for every execute. A seek or
+    // cut needs to invalidate the prepared pair, not reallocate its surfaces.
+    // Keep the input ring advancing across discontinuities: hasPair records
+    // the last executed allocation, not reusable image/history content.
+    impl_->prepared=impl_->trustworthy=false;impl_->inconsistentSamples=0;
+    for(auto& view:impl_->ys)view.Reset();
+    for(auto& view:impl_->uvs)view.Reset();
+    for(auto& source:impl_->sources)source.Reset();
+#if NVOF_EXPERIMENTAL_TUNING
+    if(impl_->tuningChannel)impl_->tuningChannel->publish(impl_->w,impl_->h,false);
+#endif
+}
+void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int h,const GpuWait& wait,const PairReady& ready,const GpuStageMark& trace) {
 #ifdef NVOF_SESSION_DIAGNOSTICS
     using Clock=std::chrono::steady_clock;
     auto tick=Clock::now();
@@ -365,6 +406,11 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
     if(ad.Format!=bd.Format)throw std::invalid_argument("Motion pair bit depths differ");
     if(impl_->sourceFormat!=ad.Format)impl_->reset();
     impl_->sourceFormat=ad.Format;impl_->configure(w,h);
+#if NVOF_EXPERIMENTAL_TUNING
+    impl_->tuningChannel->begin_pair();
+    impl_->tuningChannel->publish(w,h,false);
+    impl_->context->UpdateSubresource(impl_->tuningConstants.Get(),0,nullptr,impl_->tuningChannel->values().data(),0,0);
+#endif
     const UINT formatData[4]={ad.Format==DXGI_FORMAT_P010?1u:0u,0,0,0};
     impl_->context->UpdateSubresource(impl_->formatConstants.Get(),0,nullptr,formatData,0,0);
     mark(1);
@@ -395,6 +441,7 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
         }
     }
     mark(2);
+    if(ready&&!ready())return;
     NV_OF_EXECUTE_INPUT_PARAMS in{};in.inputFrame=impl_->ih[impl_->inputSlot];in.referenceFrame=impl_->ih[impl_->inputSlot+1];
     // Hints would change the vector solution; keep that separate from lifetime
     // optimization. This path retains the fresh-pair quality baseline.
@@ -416,25 +463,39 @@ void MotionSynthesizer::prepare(ID3D11Texture2D* a,ID3D11Texture2D* b,int w,int 
         // to a different vector produced by our repair passes.
         impl_->draw(impl_->repairedTargets[0].Get(),0,false,0,0.0f,false,0,true);
         impl_->draw(impl_->repairedTargets[1].Get(),0,false,1,0.0f,false,0,true);
+        if(trace)trace(MotionGpuStage::repaired);
         impl_->estimate_glyphs();
+        if(trace)trace(MotionGpuStage::glyphs);
         impl_->draw(impl_->layerTargets[0].Get(),0,false,0,0.5f,false,1);
         impl_->draw(impl_->layerTargets[1].Get(),0,false,0,0.5f,false,2);
         impl_->draw(impl_->layerTargets[0].Get(),0,false,1,0.5f,false,3);
+        if(trace)trace(MotionGpuStage::layers);
     }
     mark(5);
     impl_->prepared=impl_->hasPair=true;
+#if NVOF_EXPERIMENTAL_TUNING
+    impl_->tuningChannel->publish(w,h,true);
+#endif
     }catch(...){
         // With a shared wait callback, the owning engine handles cleanup only
         // after verifying that it still owns the device lock.
-        impl_->prepared=false;if(!wait)impl_->reset();throw;
+        impl_->prepared=false;
+#if NVOF_EXPERIMENTAL_TUNING
+        impl_->tuningChannel->publish(w,h,false);
+#endif
+        if(!wait)impl_->reset();throw;
     }
 }
-void MotionSynthesizer::render_phase(ID3D11RenderTargetView* y,ID3D11RenderTargetView* uv,float fraction) {
+void MotionSynthesizer::render_phase(ID3D11RenderTargetView* y,ID3D11RenderTargetView* uv,float fraction,const GpuStageMark& trace) {
     if(!impl_->prepared)throw std::logic_error("Prepare a pair before synthesis");
     if(!std::isfinite(fraction)||fraction<=0||fraction>=1)throw std::invalid_argument("Phase must be inside the source pair");
     impl_->validate_target(y,0);impl_->validate_target(uv,1);
     impl_->draw(nullptr,0,false,0,fraction,true);
+    if(trace)trace(MotionGpuStage::inverse);
     impl_->draw(y,0,false,0,fraction);impl_->draw(uv,1,false,0,fraction);
+#if NVOF_EXPERIMENTAL_TUNING
+    impl_->tuningChannel->rendered();
+#endif
 }
 void MotionSynthesizer::render_midpoint(ID3D11RenderTargetView* y,ID3D11RenderTargetView* uv) {
     render_phase(y,uv,0.5f);

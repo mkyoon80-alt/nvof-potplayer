@@ -103,8 +103,14 @@ private:
 class SurfaceAllocator final : public CBaseAllocator {
 public:
     explicit SurfaceAllocator(HRESULT* result,bool gpu=false)
-        : CBaseAllocator(NAME("Bounded NV12 texture samples"),nullptr,result),gpu_(gpu) { }
-    ~SurfaceAllocator() override {Free();}
+        : CBaseAllocator(NAME("Bounded NV12 texture samples"),nullptr,result),gpu_(gpu) {
+        returned_=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+        if(!returned_)*result=HRESULT_FROM_WIN32(GetLastError());
+    }
+    ~SurfaceAllocator() override {Free();if(returned_)CloseHandle(returned_);}
+    // A return hint, not a free-count semaphore. NOWAIT remains authoritative.
+    // Auto-reset permits at most one stale notification, without polling.
+    HANDLE returned_event() const noexcept {return returned_;}
     HRESULT set_gpu_mode(bool gpu) {
         CAutoLock lock(this);
         if(gpu==gpu_)return S_OK;
@@ -129,10 +135,13 @@ public:
     }
     STDMETHODIMP ReleaseBuffer(IMediaSample* sample) override {
         if(!sample)return E_POINTER;
+        Microsoft::WRL::ComPtr<IMemAllocator> lifetime(this);
         // Final sample Release is the only caller: no consumer can still read
         // the texture when it is dropped and the slot becomes available again.
         static_cast<SurfaceSample*>(static_cast<CMediaSample*>(sample))->clear_surface();
-        return CBaseAllocator::ReleaseBuffer(sample);
+        const HRESULT result=CBaseAllocator::ReleaseBuffer(sample);
+        if(SUCCEEDED(result))SetEvent(returned_);
+        return result;
     }
 protected:
     HRESULT Alloc() override {
@@ -156,6 +165,7 @@ protected:
     }
 private:
     bool gpu_=false;
+    HANDLE returned_=nullptr;
 };
 
 class OutputPin final : public CTransformOutputPin {
@@ -164,6 +174,11 @@ public:
         : CTransformOutputPin(NAME("NV12 CPU or D3D11 output"),owner,result,L"Output") { }
     bool surface_allocator() const noexcept {return surface_allocator_;}
     bool gpu_mode() const noexcept {return gpu_;}
+    // Streaming owns the allocator until Stop/flush joins the input worker.
+    HANDLE returned_event() const noexcept {
+        auto* allocator=surface_allocator_?dynamic_cast<SurfaceAllocator*>(m_pAllocator):nullptr;
+        return allocator?allocator->returned_event():nullptr;
+    }
     HRESULT allocator_properties(ALLOCATOR_PROPERTIES* properties) const noexcept {
         if(!properties)return E_POINTER;
         *properties={};

@@ -1,4 +1,5 @@
 #include "nvof/gpu_engine.hpp"
+#include "nvof/gpu_wait_service.hpp"
 #include "nvof/motion_synthesizer.hpp"
 #include <d3d11_4.h>
 #include "nvof/scene_cut.hpp"
@@ -39,6 +40,9 @@ DXGI_FORMAT plane_format(DXGI_FORMAT format,unsigned plane) {
 struct GpuFrucEngine::Impl {
     std::mutex mutex;
     bool trace_timing=false;
+    bool trace_gpu_timeline=false;
+    bool trace_every_pair=false;
+    uint64_t trace_epoch=0;
     GpuPairTiming timing{};
     GpuCompletionMode completion_mode=GpuCompletionMode::blocking;
     bool skip_identical_warp=true;
@@ -51,9 +55,35 @@ struct GpuFrucEngine::Impl {
     ComPtr<ID3D10Multithread> multithread;
     ComPtr<ID3DDeviceContextState> private_state;
     ComPtr<ID3D11Query> completion;
+    ComPtr<ID3D11DeviceContext3> context3;
+    HANDLE flush_event=nullptr;
     ComPtr<ID3D11DeviceContext4> context4;
     ComPtr<ID3D11Fence> completion_fence;
     HANDLE completion_event=nullptr;uint64_t fence_value=0;
+    GpuFrucEngine::WaitService wait_service;
+    struct TimelineSlot {
+        ComPtr<ID3D11Query> disjoint;
+        std::array<ComPtr<ID3D11Query>,12> stamps;
+        std::array<unsigned,4> stage_stamps{}; // Zero means no marker.
+        GpuTimelineSample sample{};
+        uint64_t epoch=0;
+        unsigned stamp_count=0;
+        bool pending=false;
+    };
+    std::array<TimelineSlot,4> timeline;
+    TimelineSlot* timeline_active=nullptr;
+    uint64_t timeline_pairs=0;
+    bool timeline_unavailable=false;
+    struct CaptureSlot {
+        ComPtr<ID3D11Query> disjoint;
+        std::array<ComPtr<ID3D11Query>,3> stamps;
+        int64_t pts=0;
+        uint64_t epoch=0;
+        bool pending=false;
+    };
+    std::array<CaptureSlot,4> captures;
+    CaptureSlot* capture_active=nullptr;
+    bool capture_unavailable=false;
     ComPtr<ID3D11ComputeShader> scene_compute;
     ComPtr<ID3D11Buffer> scene_buffer,scene_readback;
     ComPtr<ID3D11UnorderedAccessView> scene_uav;
@@ -79,14 +109,20 @@ struct GpuFrucEngine::Impl {
         explicit DeviceScope(Impl& o):owner(o){acquire();}
         void acquire(){
             if(!released)return;
+            using Clock=std::chrono::steady_clock;
+            auto tick=owner.trace_timing?Clock::now():Clock::time_point{};
+            auto mark=[&](double& elapsed){if(owner.trace_timing){const auto now=Clock::now();elapsed+=std::chrono::duration<double,std::milli>(now-tick).count();tick=now;}};
             if(owner.decoder_mutex){const DWORD wait=WaitForSingleObject(owner.decoder_mutex,10000);if(wait!=WAIT_OBJECT_0&&wait!=WAIT_ABANDONED)throw std::runtime_error("Timed out acquiring decoder D3D11 mutex");owns_mutex=true;}
+            mark(owner.timing.decoder_lock_ms);
             // MF decoders know the device manager, not our renderer mutex.
             // Hold the protected D3D context for the complete save/work/restore
             // sequence; per-call protection alone permits state interleaving.
             if(owner.multithread && owner.multithread->GetMultithreadProtected()) {
                 owner.multithread->Enter();owns_multithread=true;
             }
+            mark(owner.timing.multithread_lock_ms);
             owner.context1->SwapDeviceContextState(owner.private_state.Get(),&old_state);
+            mark(owner.timing.state_swap_ms);
             released=false;
         }
         void release() noexcept {
@@ -112,6 +148,12 @@ struct GpuFrucEngine::Impl {
             const D3D_FEATURE_LEVEL levels[]={D3D_FEATURE_LEVEL_11_1,D3D_FEATURE_LEVEL_11_0};D3D_FEATURE_LEVEL actual{};
             hr_check(device1->CreateDeviceContextState(0,levels,2,D3D11_SDK_VERSION,__uuidof(ID3D11Device),&actual,&private_state),"CreateDeviceContextState");
             D3D11_QUERY_DESC query_desc{D3D11_QUERY_EVENT,0};hr_check(device->CreateQuery(&query_desc,&completion),"Create GPU completion query");
+            // A context event marks completion of the submitted D3D11 work
+            // without inserting a cross-API fence signal into the host queue.
+            // Keep ALL contexts: decode/copy/compute dependencies must not be
+            // dropped merely to make the first analysis wait appear shorter.
+            if(completion_mode==GpuCompletionMode::context_ordered&&SUCCEEDED(context.As(&context3)))
+                flush_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
             ComPtr<ID3D11Device5> device5;
             if(SUCCEEDED(device.As(&device5))&&SUCCEEDED(context.As(&context4))&&SUCCEEDED(device5->CreateFence(0,D3D11_FENCE_FLAG_NONE,IID_PPV_ARGS(&completion_fence)))){
                 completion_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!completion_event)completion_fence.Reset();
@@ -154,6 +196,7 @@ struct GpuFrucEngine::Impl {
             }
         }
         if(completion_event){CloseHandle(completion_event);completion_event=nullptr;}
+        if(flush_event){CloseHandle(flush_event);flush_event=nullptr;}
     }
     void validate(const GpuFrame& f,bool allow_p010=true) const {
         if(!f.texture||f.width<2||f.height<2||f.width>8192||f.height>8192||(f.width&1)||(f.height&1))throw std::invalid_argument("GPU frame must be even-size NV12");
@@ -161,39 +204,262 @@ struct GpuFrucEngine::Impl {
         if((desc.Format!=DXGI_FORMAT_NV12&&!(allow_p010&&desc.Format==DXGI_FORMAT_P010))||desc.Width<UINT(f.width)||desc.Height<UINT(f.height)||desc.ArraySize<=f.array_slice||desc.SampleDesc.Count!=1||desc.MipLevels!=1)throw std::invalid_argument("GPU NV12 texture format, dimensions or array slice invalid");
         ComPtr<ID3D11Device> source_device;f.texture->GetDevice(&source_device);if(source_device.Get()!=device.Get())throw std::invalid_argument("GPU input texture belongs to another D3D11 device");
     }
+    void begin_capture(int64_t pts) noexcept {
+        // Only detailed tracing, once playback resources already exist. Do
+        // not allocate diagnostic queries before the first visible original.
+        if(!trace_every_pair||!trace_gpu_timeline||capture_unavailable||
+            !native_synthesizer||native_synthesizer->analysis_info().width==0)return;
+        for(auto& slot:captures) {
+            if(slot.pending)continue;
+            if(!slot.disjoint) {
+                D3D11_QUERY_DESC desc{D3D11_QUERY_TIMESTAMP_DISJOINT,0};
+                if(FAILED(device->CreateQuery(&desc,&slot.disjoint))){capture_unavailable=true;return;}
+                desc.Query=D3D11_QUERY_TIMESTAMP;
+                for(auto& stamp:slot.stamps)if(FAILED(device->CreateQuery(&desc,&stamp))){capture_unavailable=true;return;}
+            }
+            slot.pts=pts;slot.epoch=trace_epoch;capture_active=&slot;
+            context->Begin(slot.disjoint.Get());context->End(slot.stamps[0].Get());return;
+        }
+    }
+    void capture_copied() noexcept {if(capture_active)context->End(capture_active->stamps[1].Get());}
+    void end_capture() noexcept {
+        if(!capture_active)return;
+        context->End(capture_active->stamps[2].Get());context->End(capture_active->disjoint.Get());
+        capture_active->pending=true;capture_active=nullptr;
+    }
+    void collect_captures() noexcept {
+        for(auto& slot:captures) {
+            if(!slot.pending)continue;
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT frequency{};
+            const HRESULT ready=context->GetData(slot.disjoint.Get(),&frequency,sizeof(frequency),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if(ready==S_FALSE)continue;
+            if(FAILED(ready)||frequency.Disjoint||!frequency.Frequency){slot.pending=false;continue;}
+            std::array<UINT64,3> ticks{};bool complete=true,invalid=false;
+            for(unsigned i=0;i<ticks.size();++i) {
+                const HRESULT hr=context->GetData(slot.stamps[i].Get(),&ticks[i],sizeof(ticks[i]),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                if(hr==S_FALSE){complete=false;break;}
+                if(FAILED(hr)||(i&&ticks[i]<ticks[i-1])){invalid=true;break;}
+            }
+            if(!complete)continue;
+            slot.pending=false;if(invalid||slot.epoch!=trace_epoch)continue;
+            if(timing.capture_sample_count<timing.capture_samples.size()) {
+                const double scale=1000.0/double(frequency.Frequency);
+                timing.capture_samples[timing.capture_sample_count++]={slot.pts,
+                    double(ticks[1]-ticks[0])*scale,double(ticks[2]-ticks[1])*scale,double(ticks[2]-ticks[0])*scale};
+            }
+        }
+    }
+    // Never wait/flush for diagnostics. Slots are read on later pairs and reused
+    // only after GetData says they are complete; unread samples can be skipped.
+    void collect_timeline() noexcept {
+        if(!trace_gpu_timeline)return;
+        for(auto& slot:timeline) {
+            if(!slot.pending)continue;
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT frequency{};
+            const HRESULT ready=context->GetData(slot.disjoint.Get(),&frequency,sizeof(frequency),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if(ready==S_FALSE)continue;
+            if(FAILED(ready)||frequency.Disjoint||!frequency.Frequency) {
+                slot.pending=false;++timing.gpu_samples_invalid;continue;
+            }
+            std::array<UINT64,12> ticks{};bool complete=true,invalid=false;
+            for(unsigned i=0;i<slot.stamp_count;++i) {
+                const HRESULT hr=context->GetData(slot.stamps[i].Get(),&ticks[i],sizeof(ticks[i]),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                if(hr==S_FALSE){complete=false;break;}
+                if(FAILED(hr)||(i&&ticks[i]<ticks[i-1])){invalid=true;break;}
+            }
+            if(!complete)continue;
+            slot.pending=false;
+            if(slot.epoch!=trace_epoch)continue;
+            if(invalid||slot.stamp_count<2*slot.sample.waits+2||slot.sample.waits>3) {
+                ++timing.gpu_samples_invalid;continue;
+            }
+            auto sample=slot.sample;
+            const double scale=1000.0/double(frequency.Frequency);
+            const unsigned tail_begin=2*sample.waits,tail_end=slot.stamp_count-1;
+            for(unsigned i=0;i<tail_begin;++i) {
+                const double ms=double(ticks[i+1]-ticks[i])*scale;
+                if(i&1){sample.gap_ms+=ms;sample.gap_each_ms[i/2]=ms;}
+                else {
+                    sample.work_ms+=ms;
+                    if(i==0)sample.input_ms=ms;
+                    if(i==2&&sample.waits>=2)sample.analysis_ms=ms;
+                }
+            }
+            sample.tail_ms=double(ticks[tail_end]-ticks[tail_begin])*scale;
+            sample.work_ms+=sample.tail_ms;
+            const auto& stage=slot.stage_stamps;
+            if(stage[0]>=tail_begin&&stage[0]>0&&stage[0]<stage[1]&&stage[1]<stage[2]&&stage[2]<tail_end) {
+                sample.stages_measured=true;
+                sample.repair_ms=double(ticks[stage[0]]-ticks[tail_begin])*scale;
+                sample.glyph_ms=double(ticks[stage[1]]-ticks[stage[0]])*scale;
+                sample.layers_ms=double(ticks[stage[2]]-ticks[stage[1]])*scale;
+                sample.phase_ms=double(ticks[tail_end]-ticks[stage[2]])*scale;
+                if(stage[3]>stage[2]&&stage[3]<tail_end) {
+                    sample.inverse_measured=true;
+                    sample.inverse_ms=double(ticks[stage[3]]-ticks[stage[2]])*scale;
+                    sample.output_ms=double(ticks[tail_end]-ticks[stage[3]])*scale;
+                }
+            }
+            if(timing.gpu_sample_count<timing.gpu_samples.size())timing.gpu_samples[timing.gpu_sample_count++]=sample;
+            else ++timing.gpu_samples_skipped;
+        }
+    }
+    void begin_timeline(int64_t pts,bool continuous) noexcept {
+        collect_captures();
+        collect_timeline();
+        // Normal tracing samples every eight continuous pairs. Detailed
+        // diagnosis samples every pair so a previous frame's expensive output
+        // cannot be mistaken for unexplained waiting on the following frame.
+        // Cold/cut paths remain observable in CPU timings.
+        if(!trace_gpu_timeline||timeline_unavailable||!continuous)return;
+        if((++timeline_pairs%8)&&!trace_every_pair)return;
+        for(auto& slot:timeline) {
+            if(slot.pending)continue;
+            if(!slot.disjoint) {
+                D3D11_QUERY_DESC desc{D3D11_QUERY_TIMESTAMP_DISJOINT,0};
+                if(FAILED(device->CreateQuery(&desc,&slot.disjoint))){timeline_unavailable=true;++timing.gpu_samples_invalid;return;}
+                desc.Query=D3D11_QUERY_TIMESTAMP;
+                for(auto& stamp:slot.stamps)if(FAILED(device->CreateQuery(&desc,&stamp))){timeline_unavailable=true;++timing.gpu_samples_invalid;return;}
+            }
+            slot.sample={};slot.stage_stamps={};slot.epoch=trace_epoch;slot.sample.pts=pts;slot.sample.begin_tick=GetTickCount64();slot.stamp_count=0;
+            timeline_active=&slot;context->Begin(slot.disjoint.Get());timeline_stamp();return;
+        }
+        ++timing.gpu_samples_skipped;
+    }
+    void timeline_stamp() noexcept {
+        if(timeline_active&&timeline_active->stamp_count<timeline_active->stamps.size())
+            context->End(timeline_active->stamps[timeline_active->stamp_count++].Get());
+    }
+    void timeline_stage(MotionGpuStage stage) noexcept {
+        if(!timeline_active||!trace_every_pair)return;
+        // Leave one timestamp available for the final end marker.
+        if(timeline_active->stamp_count+1>=timeline_active->stamps.size())return;
+        timeline_active->stage_stamps[unsigned(stage)]=timeline_active->stamp_count;
+        timeline_stamp();
+    }
+    void end_timeline() noexcept {
+        if(!timeline_active)return;
+        timeline_stamp();context->End(timeline_active->disjoint.Get());
+        auto& sample=timeline_active->sample;sample.end_tick=GetTickCount64();
+        sample.cpu_wait_ms=timing.wait_completion_ms;sample.cpu_resume_ms=timing.context_resume_ms;sample.cpu_submit_ms=timing.wait_submit_ms;
+        sample.cpu_arm_ms=timing.event_arm_ms;sample.cpu_sleep_ms=timing.event_sleep_ms;
+        timeline_active->pending=true;timeline_active=nullptr;
+    }
+    struct TimelineScope {
+        Impl& owner;DeviceScope& device;
+        TimelineScope(Impl& impl,DeviceScope& scope,int64_t pts,bool continuous):owner(impl),device(scope){owner.begin_timeline(pts,continuous);}
+        ~TimelineScope(){
+            // An exceptional wait can lose the shared lock. Abandon that
+            // diagnostic query rather than touching the host context unlocked.
+            if(device.released){owner.timeline_active=nullptr;owner.timeline_unavailable=true;}
+            else owner.end_timeline();
+        }
+    };
     // A terminal completion wait needs the shared context only to submit its
     // fence/query. Restore the host's state before releasing the device locks,
     // then keep waiting for exactly the same GPU completion boundary. The
     // engine mutex and output leases remain held; neither samples nor mutable
     // engine state can be reused while the renderer prepares unrelated work.
     void wait_gpu(DeviceScope* terminal_scope=nullptr){
+        using Clock=std::chrono::steady_clock;
+        const bool measure=trace_timing&&terminal_scope;
+        const auto submitted=measure?Clock::now():Clock::time_point{};
+        if(context3&&flush_event){
+            if(measure){++timing.event_wait_calls;++timing.flush_event_wait_calls;}
+            // Single in-flight auto-reset event, serialized by the engine
+            // mutex. The wait consumes it before any subsequent Flush1.
+            context3->Flush1(D3D11_CONTEXT_TYPE_ALL,flush_event);
+            if(terminal_scope)terminal_scope->release();
+            const auto released=measure?Clock::now():Clock::time_point{};
+            if(measure)timing.wait_submit_ms+=std::chrono::duration<double,std::milli>(released-submitted).count();
+            const DWORD result=wait_for_completion(flush_event,terminal_scope);
+            if(result!=WAIT_OBJECT_0){
+                // Never reuse an event whose old completion may arrive later.
+                // Keep the handle alive until teardown and use the existing
+                // fence/query path if the caller attempts recovery.
+                context3.Reset();
+                throw std::runtime_error("D3D11 context completion event timeout");
+            }
+            hr_check(device->GetDeviceRemovedReason(),"D3D11 context completion device state");
+            if(measure){
+                const double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-released).count();
+                timing.event_sleep_ms+=elapsed;timing.wait_completion_ms+=elapsed;
+            }
+            return;
+        }
         if(completion_fence&&completion_event){
+            if(measure)++timing.event_wait_calls;
             const auto value=++fence_value;hr_check(context4->Signal(completion_fence.Get(),value),"Signal D3D11 completion fence");context->Flush();
             if(terminal_scope)terminal_scope->release();
-            if(completion_fence->GetCompletedValue()<value){hr_check(completion_fence->SetEventOnCompletion(value,completion_event),"Set D3D11 completion event");
-                if(WaitForSingleObject(completion_event,10000)!=WAIT_OBJECT_0)throw std::runtime_error("D3D11 completion fence timeout");}
-            hr_check(device->GetDeviceRemovedReason(),"D3D11 completion device state");return;
+            const auto released=measure?Clock::now():Clock::time_point{};
+            if(measure)timing.wait_submit_ms+=std::chrono::duration<double,std::milli>(released-submitted).count();
+            if(completion_fence->GetCompletedValue()<value){
+                const auto arm=measure?Clock::now():Clock::time_point{};
+                hr_check(completion_fence->SetEventOnCompletion(value,completion_event),"Set D3D11 completion event");
+                const auto sleeping=measure?Clock::now():Clock::time_point{};
+                if(wait_for_completion(completion_event,terminal_scope)!=WAIT_OBJECT_0)throw std::runtime_error("D3D11 completion fence timeout");
+                if(measure){
+                    timing.event_arm_ms+=std::chrono::duration<double,std::milli>(sleeping-arm).count();
+                    timing.event_sleep_ms+=std::chrono::duration<double,std::milli>(Clock::now()-sleeping).count();
+                }
+            }
+            hr_check(device->GetDeviceRemovedReason(),"D3D11 completion device state");
+            if(measure)timing.wait_completion_ms+=std::chrono::duration<double,std::milli>(Clock::now()-released).count();
+            return;
         }
+        if(measure)++timing.query_wait_calls;
         context->End(completion.Get());context->Flush();
         if(terminal_scope)terminal_scope->release();
+        const auto released=measure?Clock::now():Clock::time_point{};
+        if(measure)timing.wait_submit_ms+=std::chrono::duration<double,std::milli>(released-submitted).count();
         const auto begin=GetTickCount64();BOOL ready=FALSE;
         for(;;){
             HRESULT hr;
             if(terminal_scope){DeviceScope poll(*this);hr=context->GetData(completion.Get(),&ready,sizeof(ready),D3D11_ASYNC_GETDATA_DONOTFLUSH);}
             else hr=context->GetData(completion.Get(),&ready,sizeof(ready),D3D11_ASYNC_GETDATA_DONOTFLUSH);
-            hr_check(hr,"D3D11 GPU completion");if(hr==S_OK&&ready)return;
+            hr_check(hr,"D3D11 GPU completion");if(hr==S_OK&&ready){
+                if(measure)timing.wait_completion_ms+=std::chrono::duration<double,std::milli>(Clock::now()-released).count();
+                return;
+            }
             if(GetTickCount64()-begin>10000)throw std::runtime_error("D3D11 GPU completion timeout");
+            if(terminal_scope&&wait_service)service_outputs();
             SwitchToThread();
         }
     }
-    void wait_and_resume(DeviceScope& scope){
+    HANDLE service_outputs() {
         const auto begin=trace_timing?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+        HANDLE event=wait_service();
+        if(trace_timing){++timing.wait_service_calls;timing.wait_service_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();}
+        return event;
+    }
+    DWORD wait_for_completion(HANDLE event,DeviceScope* released_scope) {
+        if(!released_scope||!wait_service)return WaitForSingleObject(event,10000);
+        return wait_gpu_event(event,[this]{return service_outputs();},10000);
+    }
+    void wait_and_resume(DeviceScope& scope){
+        timeline_stamp();
+        const double previous_wait=timing.wait_completion_ms;
+        if(timeline_active)++timeline_active->sample.waits;
+        const auto begin=trace_timing?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+        if(trace_timing)++timing.shared_wait_calls;
         // Only the device/context locks are released. The engine mutex keeps
         // analysis resources, NVOFA session, sources and output leases private.
         // Resume captures the renderer's NEW state, not the pre-wait snapshot.
         try {wait_gpu(&scope);}catch(...){scope.acquire();throw;}
+        const auto resume=trace_timing?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
         scope.acquire();
-        if(trace_timing)timing.shared_wait_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+        if(trace_timing){
+            const auto end=std::chrono::steady_clock::now();
+            timing.context_resume_ms+=std::chrono::duration<double,std::milli>(end-resume).count();
+            timing.shared_wait_ms+=std::chrono::duration<double,std::milli>(end-begin).count();
+            if(timing.shared_wait_calls<=timing.wait_each_ms.size()) {
+                timing.wait_each_ms[timing.shared_wait_calls-1]=timing.wait_completion_ms-previous_wait;
+                timing.resume_each_ms[timing.shared_wait_calls-1]=std::chrono::duration<double,std::milli>(end-resume).count();
+            }
+        }
+        timeline_stamp();
+        if(timeline_active&&timeline_active->sample.waits<=timeline_active->sample.wait_ms.size())
+            timeline_active->sample.wait_ms[timeline_active->sample.waits-1]=timing.wait_completion_ms-previous_wait;
     }
     ComPtr<ID3D11Texture2D> make_texture(DXGI_FORMAT format,int w,int h){
         D3D11_TEXTURE2D_DESC desc{};desc.Width=w;desc.Height=h;desc.MipLevels=1;desc.ArraySize=1;desc.Format=format;desc.SampleDesc.Count=1;desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
@@ -217,7 +483,7 @@ struct GpuFrucEngine::Impl {
         return {slot->texture,0,w,h,pts,slot};
     }
     struct SceneAnalysis {SceneDecision decision;bool identical=false;};
-    SceneAnalysis scene(const GpuFrame& a,const GpuFrame& b,DeviceScope& scope){
+    void queue_scene(const GpuFrame& a,const GpuFrame& b){
         auto ta=shader_source_texture(a),tb=shader_source_texture(b);
         const auto format=texture_format(a);
         auto va=source_view(ta.Get(),plane_format(format,0)),vb=source_view(tb.Get(),plane_format(format,0));
@@ -227,14 +493,18 @@ struct GpuFrucEngine::Impl {
         ID3D11ShaderResourceView* views[]={va.Get(),vb.Get(),ua.Get(),ub.Get()};ID3D11UnorderedAccessView* uav=scene_uav.Get();ID3D11Buffer* constants=weight_buffer.Get();
         context->CSSetShader(scene_compute.Get(),nullptr,0);context->CSSetConstantBuffers(0,1,&constants);context->CSSetShaderResources(0,4,views);context->CSSetUnorderedAccessViews(0,1,&uav,nullptr);context->Dispatch(((std::max)(UINT(a.width),64U)+15)/16,((std::max)(UINT(a.height),36U)+15)/16,1);
         ID3D11ShaderResourceView* empty[4]={};uav=nullptr;context->CSSetShaderResources(0,4,empty);context->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
-        context->CopyResource(scene_readback.Get(),scene_buffer.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
+        context->CopyResource(scene_readback.Get(),scene_buffer.Get());
+    }
+    SceneAnalysis read_scene(DeviceScope& scope,bool copy_completed=false){
+        D3D11_MAPPED_SUBRESOURCE mapped{};
         const bool shared=completion_mode==GpuCompletionMode::context_ordered;
-        HRESULT mappedResult=context->Map(scene_readback.Get(),0,D3D11_MAP_READ,shared?D3D11_MAP_FLAG_DO_NOT_WAIT:0,&mapped);
-        const ULONGLONG deadline=GetTickCount64()+1000;
-        while(shared && mappedResult==DXGI_ERROR_WAS_STILL_DRAWING) {
-            if(GetTickCount64()>=deadline)throw std::runtime_error("Scene statistics readback timed out");
+        HRESULT mappedResult=context->Map(scene_readback.Get(),0,D3D11_MAP_READ,shared&&!copy_completed?D3D11_MAP_FLAG_DO_NOT_WAIT:0,&mapped);
+        if(shared && mappedResult==DXGI_ERROR_WAS_STILL_DRAWING) {
             wait_and_resume(scope);
-            mappedResult=context->Map(scene_readback.Get(),0,D3D11_MAP_READ,D3D11_MAP_FLAG_DO_NOT_WAIT,&mapped);
+            // The fence/query completed this private staging copy. Finish its
+            // CPU mapping once; DO_NOT_WAIT can still report STILL_DRAWING
+            // here and needlessly submit another full shared-context fence.
+            mappedResult=context->Map(scene_readback.Get(),0,D3D11_MAP_READ,0,&mapped);
         }
         hr_check(mappedResult,"Read aggregate scene statistics");
         SceneStats statistics{};memcpy(&statistics,mapped.pData,sizeof(statistics));uint32_t difference=0;memcpy(&difference,static_cast<const uint8_t*>(mapped.pData)+sizeof(statistics),sizeof(difference));context->Unmap(scene_readback.Get(),0);return {classify_scene(statistics),difference==0};
@@ -275,6 +545,7 @@ struct GpuFrucEngine::Impl {
         // removes decoder padding without reading video pixels back to the CPU.
         D3D11_BOX box{0,0,0,UINT(input.width),UINT(input.height),1};
         context->CopySubresourceRegion(p010_capture.Get(),0,0,0,0,input.texture.Get(),input.array_slice,&box);
+        capture_copied();
         for(unsigned plane=0;plane<2;++plane) {
             auto target=target_view(output.texture.Get(),plane?DXGI_FORMAT_R16G16_UNORM:DXGI_FORMAT_R16_UNORM);
             draw_plane(target.Get(),p010_views[plane].Get(),nullptr,plane?input.width/2:input.width,plane?input.height/2:input.height,0,p010_pixel_shader.Get());
@@ -289,12 +560,14 @@ MotionAnalysisInfo GpuFrucEngine::analysis_info() const {
     return impl_->native_synthesizer?impl_->native_synthesizer->analysis_info():MotionAnalysisInfo{};
 }
 GpuFrucEngine::~GpuFrucEngine()=default;
-void GpuFrucEngine::enable_timing(bool enabled){std::lock_guard<std::mutex> lock(impl_->mutex);impl_->trace_timing=enabled;}
+void GpuFrucEngine::enable_timing(bool enabled,bool gpu_timeline,bool every_pair){std::lock_guard<std::mutex> lock(impl_->mutex);impl_->trace_timing=enabled;impl_->trace_gpu_timeline=enabled&&gpu_timeline;impl_->trace_every_pair=enabled&&gpu_timeline&&every_pair;}
 GpuPairTiming GpuFrucEngine::pair_timing()const{std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->timing;}
 std::string GpuFrucEngine::device_name()const{return impl_->name;}
 bool GpuFrucEngine::queued_completion()const{return impl_->completion_mode==GpuCompletionMode::context_ordered;}
+void GpuFrucEngine::set_wait_service(WaitService service){std::lock_guard<std::mutex> lock(impl_->mutex);impl_->wait_service=std::move(service);}
 void GpuFrucEngine::reset()noexcept{
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    ++impl_->trace_epoch; // Discard late diagnostic results from the old seek.
     try{
         Impl::DeviceScope scope(*impl_);
         if(impl_->native_synthesizer) {
@@ -303,17 +576,28 @@ void GpuFrucEngine::reset()noexcept{
         }
     }catch(...){OutputDebugStringA("NVOF: shared D3D11 lock unavailable during history reset\n");}
 }
-GpuFrame GpuFrucEngine::copy(const GpuFrame& input){
+GpuFrame GpuFrucEngine::copy(const GpuFrame& input,bool submit_now){
     std::lock_guard<std::mutex> lock(impl_->mutex);impl_->validate(input,true);Impl::DeviceScope device(*impl_);
     D3D11_TEXTURE2D_DESC desc{};input.texture->GetDesc(&desc);
     auto result=impl_->make_output(input.width,input.height,input.pts,desc.Format);
     result.hdr=input.hdr;
+    impl_->begin_capture(input.pts);
+    // End the disjoint query even if a view allocation throws. An incomplete
+    // copy marker is never collected, and a later pair may reuse the slot.
+    struct CaptureScope {
+        Impl& owner;bool completed=false;
+        ~CaptureScope(){if(completed)owner.end_capture();else if(owner.capture_active){owner.context->End(owner.capture_active->disjoint.Get());owner.capture_active=nullptr;}}
+    } capture{*impl_};
     if(desc.Format==DXGI_FORMAT_P010)impl_->normalize_p010(input,result);
     else {
         D3D11_BOX box{0,0,0,UINT(input.width),UINT(input.height),1};
         impl_->context->CopySubresourceRegion(result.texture.Get(),0,0,0,0,input.texture.Get(),input.array_slice,&box);
+        impl_->capture_copied();
     }
-    if(!queued_completion())impl_->wait_gpu(&device);return result;
+    capture.completed=true;impl_->end_capture();
+    if(!queued_completion())impl_->wait_gpu(&device);
+    else if(submit_now)impl_->context->Flush();
+    return result;
 }
 GpuFrame GpuFrucEngine::midpoint(const GpuFrame& previous,const GpuFrame& current){
     const auto time=previous.pts+(current.pts-previous.pts)/2;auto batch=interpolate_pair(previous,current,{time});
@@ -337,10 +621,37 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
         Impl::DeviceScope scope(*impl_);
         mark(impl_->timing.context_wait_ms);
         try {
-            if(impl_->cached_texture.Get()!=previous.texture.Get()||impl_->cached_pts!=previous.pts||
-               impl_->cached_slice!=previous.array_slice)impl_->native_synthesizer->invalidate_history();
-            const auto analysis=impl_->scene(previous,current,scope);
-            mark(impl_->timing.scene_ms);
+            const bool continuous=impl_->cached_texture.Get()==previous.texture.Get()&&impl_->cached_pts==previous.pts&&
+               impl_->cached_slice==previous.array_slice;
+            Impl::TimelineScope timeline(*impl_,scope,current.pts,continuous&&impl_->native_synthesizer->analysis_info().width!=0);
+            MotionSynthesizer::GpuStageMark trace;
+            if(impl_->timeline_active&&impl_->trace_every_pair)trace=[&](MotionGpuStage stage){impl_->timeline_stage(stage);};
+            if(!continuous)impl_->native_synthesizer->invalidate_history();
+            impl_->queue_scene(previous,current);
+            Impl::SceneAnalysis analysis{};
+            // The NVOFA input-completion fence can also finish this pair's
+            // scene readback, including the first pair and after seek.
+            // Both source pictures are uploaded and the same-pair gate runs
+            // before OF execution; no previous pair's decision is reused.
+            // prepare() creates its resources before submitting inputs. Avoid
+            // an extra scene-only wait/context handoff during renderer startup.
+            const bool combined=queued_completion();
+            if(combined) {
+                if(impl_->trace_timing)++impl_->timing.combined_scene_pairs;
+                mark(impl_->timing.scene_ms);
+                auto a=impl_->shader_source_texture(previous),b=impl_->shader_source_texture(current);
+                impl_->native_synthesizer->prepare(a.Get(),b.Get(),previous.width,previous.height,
+                    [&]{impl_->wait_and_resume(scope);},[&]{
+                        analysis=impl_->read_scene(scope,true);
+                        return !analysis.decision.cut&&!analysis.identical;
+                    },trace);
+                // The combined input/scene wait belongs to preparation. These
+                // stage timings measure CPU wall time, not isolated GPU work.
+                mark(impl_->timing.prepare_ms);
+            }else {
+                analysis=impl_->read_scene(scope);
+                mark(impl_->timing.scene_ms);
+            }
             if(analysis.decision.cut) {
                 impl_->native_synthesizer->invalidate_history();
                 result.quality.scene_cut=true;impl_->cached_texture.Reset();impl_->cached_lease.reset();return result;
@@ -349,11 +660,13 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
                 for(auto pts:timestamps) {auto exact=previous;exact.pts=pts;result.frames.push_back(std::move(exact));}
                 result.quality.identical_warp_skipped=true;impl_->native_synthesizer->invalidate_history();
             }else{
-                auto a=impl_->shader_source_texture(previous),b=impl_->shader_source_texture(current);
-                MotionSynthesizer::GpuWait wait;
-                if(queued_completion())wait=[&]{impl_->wait_and_resume(scope);};
-                impl_->native_synthesizer->prepare(a.Get(),b.Get(),previous.width,previous.height,wait);
-                mark(impl_->timing.prepare_ms);
+                if(!combined) {
+                    auto a=impl_->shader_source_texture(previous),b=impl_->shader_source_texture(current);
+                    MotionSynthesizer::GpuWait wait;
+                    if(queued_completion())wait=[&]{impl_->wait_and_resume(scope);};
+                    impl_->native_synthesizer->prepare(a.Get(),b.Get(),previous.width,previous.height,wait,{},trace);
+                    mark(impl_->timing.prepare_ms);
+                }
                 result.quality.repetition_known=true;
                 for(size_t i=0;i<timestamps.size();++i) {
                     if(!impl_->native_synthesizer->reliable()) {
@@ -365,7 +678,9 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
                     auto y=impl_->target_view(output.texture.Get(),plane_format(texture_format(previous),0));
                     auto uv=impl_->target_view(output.texture.Get(),plane_format(texture_format(previous),1));
                     const float fraction=(std::min)(std::nextafter(1.0f,0.0f),float(double(timestamps[i]-previous.pts)/double(current.pts-previous.pts)));
-                    impl_->native_synthesizer->render_phase(y.Get(),uv.Get(),fraction);
+                    // One inverse/output split is meaningful only for x2.
+                    // Larger batches retain a single complete phase duration.
+                    impl_->native_synthesizer->render_phase(y.Get(),uv.Get(),fraction,timestamps.size()==1?trace:MotionSynthesizer::GpuStageMark{});
                     result.frames.push_back(std::move(output));result.quality.native_synthesized_mask|=uint32_t(1)<<i;
                 }
             }
@@ -373,9 +688,19 @@ PhaseBatch<GpuFrame> GpuFrucEngine::interpolate_pair(const GpuFrame& previous,co
             impl_->cached_texture=current.texture;impl_->cached_lease=current.lease;
             impl_->cached_pts=current.pts;impl_->cached_slice=current.array_slice;
             if(!queued_completion())impl_->wait_gpu(&scope);
+            else if(result.quality.native_synthesized_mask) {
+                // Submit the output batch before downstream can
+                // park this thread waiting for a renderer sample/presentation.
+                // Flush is asynchronous: retain the shared-context completion
+                // contract and the existing OF session, with no new GPU wait.
+                // Include the final diagnostic timestamp in the same submission.
+                impl_->end_timeline();
+                impl_->context->Flush();
+                if(impl_->trace_timing)++impl_->timing.queued_output_flushes;
+            }
             mark(impl_->timing.completion_ms);
             return result;
-        }catch(...){if(!scope.released)impl_->native_synthesizer->invalidate_history();throw;}
+        }catch(...){if(!scope.released)impl_->native_synthesizer->reset();throw;}
     }
     throw std::logic_error("Native synthesizer unavailable");
 }

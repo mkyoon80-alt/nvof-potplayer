@@ -5,6 +5,7 @@
 #include "nvof/gpu_phase_pipeline.hpp"
 #include <d3d10_1.h>
 #include <fstream>
+#include <cstdlib>
 // Comparison files use NV12 for both input formats. Read every 16-bit P010
 // component before reducing it to 8 bits; copying only width bytes would
 // interleave low/high bytes and discard half of each row. Full 10-bit precision
@@ -52,6 +53,13 @@ int wmain(int argc,wchar_t** argv){try{
  check(D3D11CreateDevice(adapter.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_VIDEO_SUPPORT|D3D11_CREATE_DEVICE_BGRA_SUPPORT,levels,2,D3D11_SDK_VERSION,&device,nullptr,&context),"D3D");
  ComPtr<ID3D10Multithread> lock;check(context.As(&lock),"context protection");lock->SetMultithreadProtected(TRUE);
  GpuFrucEngine engine(std::filesystem::path(argv[1]),device.Get(),context.Get(),nullptr,optimized?GpuCompletionMode::context_ordered:GpuCompletionMode::blocking,optimized,optimized&&!native,optimized&&!native,native?GpuInterpolationBackend::native_experimental:GpuInterpolationBackend::fruc,flowDimension,static_cast<MotionCostMode>(costMode),options);
+#if NVOF_EXPERIMENTAL_TUNING
+ // Diagnostic-only handshake: the controller applies a validated IPC snapshot
+ // before the first pair and reads its acknowledgement before engine teardown.
+ const bool controlled=std::getenv("NVOF_TUNING_CONTROL")!=nullptr;
+ if(controlled){std::cout<<"TUNING_READY "<<GetCurrentProcessId()<<std::endl;
+  std::string command;require(bool(std::getline(std::cin,command))&&command=="run","Missing tuning run command");}
+#endif
  std::ifstream input(std::filesystem::path(argv[2]),std::ios::binary),timestamps{std::filesystem::path(argv[3])};require(bool(input)&&bool(timestamps),"Input missing");
  std::ofstream raw(directory/L"output.nv12",std::ios::binary),events(directory/L"pairs.csv"),outtimes(directory/L"output.csv");
  events<<"source_index,previous_pts,current_pts,phase_pts,scene_cut,repeated_mask,identical_skipped,midpoint_pass,process_ms,completed_ms,analysis_width,analysis_height,grid,cost_buffers\n";
@@ -89,6 +97,11 @@ int wmain(int argc,wchar_t** argv){try{
   } else require(capturedBytes==current,"NV12 capture changed the decoded original");
   pipeline.push(captured,source_index==0,emit);++source_index;
  }
- pipeline.finish(duration,emit);engine.reset();require(bool(raw),"Output write failure");
+ pipeline.finish(duration,emit);raw.flush();events.flush();outtimes.flush();require(bool(raw),"Output write failure");
+#if NVOF_EXPERIMENTAL_TUNING
+ if(controlled){std::cout<<"TUNING_DONE"<<std::endl;
+  std::string command;require(bool(std::getline(std::cin,command))&&command=="quit","Missing tuning quit command");}
+#endif
+ engine.reset();
  std::cout<<"PASS source="<<source_index<<" output="<<output_index<<" originals_exact="<<originals<<" cuts="<<cut<<" repeats="<<repeated<<" skipped="<<skipped<<" optimized="<<optimized<<" p010="<<p010<<" nominal_duration="<<duration<<std::endl;return 0;
 }catch(const std::exception&e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

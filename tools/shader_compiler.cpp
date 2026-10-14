@@ -18,7 +18,8 @@ int wmain(int argc,wchar_t** wide) {
         std::string generated="#pragma once\nnamespace nvof::shaders::"+std::string(argv[3])+" {\n";
         for(int i=5;i<argc;i+=2) {
             Microsoft::WRL::ComPtr<ID3DBlob> code,errors;
-            HRESULT hr=D3DCompile(source.data(),source.size(),argv[4],nullptr,nullptr,argv[i],argv[i+1],D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&code,&errors);
+            const D3D_SHADER_MACRO defines[]={{"NVOF_EXPERIMENTAL_TUNING", NVOF_EXPERIMENTAL_TUNING?"1":"0"},{nullptr,nullptr}};
+            HRESULT hr=D3DCompile(source.data(),source.size(),argv[1],defines,D3D_COMPILE_STANDARD_FILE_INCLUDE,argv[i],argv[i+1],D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&code,&errors);
             if(FAILED(hr)) { if(errors)std::cerr<<static_cast<const char*>(errors->GetBufferPointer()); return 3; }
             generated+="inline constexpr unsigned char "+std::string(argv[i])+"[] = {\n";
             auto bytes=static_cast<const unsigned char*>(code->GetBufferPointer());

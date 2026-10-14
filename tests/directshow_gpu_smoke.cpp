@@ -14,6 +14,7 @@
 #include <mferror.h>
 #include <evr.h>
 #include "nvof/d3d11_transport.hpp"
+#include "gpu_completion_gate.hpp"
 #include <wrl/client.h>
 #include <atomic>
 #include <chrono>
@@ -45,6 +46,12 @@ bool p010_media=false;
 bool reject_p010_media=false;
 unsigned hdr_transfer=0;
 bool dovi_fixture=false;
+bool async_lifecycle=false;
+bool stream_bench=false;
+bool cached_stream=false;
+bool preview_separation=false;
+bool preroll_prepare=false,output_ahead=false,wait_output=false,wait_output_error=false;
+uint64_t output_digest=14695981039346656037ULL;
 std::function<void(IMediaSample*,ID3D11Device*,ID3D11DeviceContext*)> inspect_gpu_output;
 unsigned recover_transfer=0;
 int color_fixture=0; // 0 default, 1 legacy VideoInfo, 2 explicitly tagged VideoInfo2.
@@ -202,6 +209,11 @@ public:
         if(!surface)return E_UNEXPECTED;
         ComPtr<nvof::transport::TextureSample> before_assignment;
         check(sample.As(&before_assignment),"stable GPU sample interface before assignment");
+        // Avoid CPU construction/upload starving the input worker in the
+        // completion-gate test. Two immutable alternating GPU inputs model a
+        // decoder that already has pictures ready; no slice is overwritten.
+        ComPtr<ID3D11Texture2D> texture=(wait_output||cached_stream)?gate_sources_[index&1]:nullptr;
+        if(!texture) {
         const int coded_height=kHeight+8;
         std::vector<BYTE> pixels(kWidth*coded_height*3/2,128);
         for(int y=0;y<coded_height;++y)for(int x=0;x<kWidth;++x)
@@ -212,13 +224,14 @@ public:
         description.Width=kWidth;description.Height=coded_height;description.MipLevels=1;description.ArraySize=2;
         description.Format=p010_fixture?DXGI_FORMAT_P010:DXGI_FORMAT_NV12;description.SampleDesc.Count=1;
         description.Usage=D3D11_USAGE_DEFAULT;description.BindFlags=D3D11_BIND_SHADER_RESOURCE;
-        ComPtr<ID3D11Texture2D> texture;
         check(device->CreateTexture2D(&description,nullptr,&texture),"synthetic decoder array texture");
         if(p010_fixture) {
             std::vector<uint16_t> words(pixels.size());
             for(size_t i=0;i<pixels.size();++i)words[i]=uint16_t(pixels[i])<<8;
             context->UpdateSubresource(texture.Get(),1,nullptr,words.data(),kWidth*2,0);
         } else context->UpdateSubresource(texture.Get(),1,nullptr,pixels.data(),kWidth,0);
+        if(wait_output||cached_stream)gate_sources_[index&1]=texture;
+        }
         REFERENCE_TIME start=index*kDuration,stop=start+kDuration;
         surface->assign({texture,1,kWidth,kHeight,start});
         if(hdr_transfer==MFVideoTransFunc_2084) {
@@ -267,6 +280,7 @@ public:
     }
 private:
     CMediaType type_;
+    ComPtr<ID3D11Texture2D> gate_sources_[2];
 };
 // Models a decoder whose raw output is untagged but its compressed input
 // retains codec/container colour information.
@@ -345,6 +359,8 @@ public:
     STDMETHODIMP_(UINT) GetD3D11AdapterIndex() override {return renderer_adapter_hint;}
     bool borrowed_mutex_valid()const {DWORD flags=0;return !borrowed_mutex_ || GetHandleInformation(borrowed_mutex_,&flags)!=FALSE;}
     void hold_all(){std::lock_guard<std::mutex> guard(results_lock_);hold_all_=true;}
+    void release_all(){std::lock_guard<std::mutex> guard(results_lock_);hold_all_=false;retained_.clear();}
+    void release_one(){std::lock_guard<std::mutex> guard(results_lock_);if(!retained_.empty())retained_.erase(retained_.begin());}
     long allocator_capacity()const{return allocator_capacity_;}
     size_t gpu_count()const{return gpu_count_;}
     size_t cpu_count()const{return cpu_count_;}
@@ -383,6 +399,8 @@ public:
     STDMETHODIMP Receive(IMediaSample* sample) override {
         HRESULT hr=CBaseInputPin::Receive(sample);
         if (hr != S_OK) return hr;
+        const HRESULT injected=next_receive_result_.exchange(S_OK);
+        if(injected!=S_OK)return injected;
         // Base Receive validates a dynamic type; a concrete renderer adopts it.
         if (m_SampleProps.dwSampleFlags & AM_SAMPLE_TYPECHANGED) {
             hr=SetMediaType(reinterpret_cast<const CMediaType*>(m_SampleProps.pMediaType));
@@ -456,6 +474,7 @@ public:
     }
     HRESULT Inactive() override { SetEvent(unblock_); return CBaseInputPin::Inactive(); }
     void block_next() { ResetEvent(unblock_); ResetEvent(entered_); block_=true; }
+    void fail_next(HRESULT result) {next_receive_result_=result;}
     bool wait_entered() { return WaitForSingleObject(entered_,5000)==WAIT_OBJECT_0; }
     size_t count() { std::lock_guard<std::mutex> guard(results_lock_); return times.size(); }
     REFERENCE_TIME last() { std::lock_guard<std::mutex> guard(results_lock_); return times.empty() ? -1 : times.back(); }
@@ -472,6 +491,7 @@ private:
     ComPtr<ID3D11DeviceContext> native_context_;
     std::vector<ComPtr<IMediaSample>> retained_;
     std::atomic<bool> block_{false};
+    std::atomic<HRESULT> next_receive_result_{S_OK};
     HANDLE unblock_=nullptr, entered_=nullptr,borrowed_mutex_=nullptr;
 };
 class Sink final : public CBaseFilter {
@@ -635,7 +655,7 @@ void run_case(IClassFactory* factory,ID3D11Device* device,ID3D11DeviceContext* c
     }
 }
 void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t source_den,
-    int64_t expected_num,int64_t expected_den,bool gpu,const std::string& reason,REFERENCE_TIME header_duration=-1) {
+    int64_t expected_num,int64_t expected_den,bool gpu,const std::string& reason,REFERENCE_TIME header_duration=-1,bool scrub_preview=false,bool pause_resume=false) {
     if(source_num>0)kDuration=(10000000LL*source_den+source_num/2)/source_num;
     declared_duration=header_duration>=0?header_duration:source_num>0?kDuration:0;
     const REFERENCE_TIME expected_duration=expected_num>0?(10000000LL*expected_den+expected_num/2)/expected_num:0;
@@ -696,11 +716,17 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
         const long capacity=sink->pin().allocator_capacity();
         if(capacity<std::clamp(2L*multiple,4L,32L) || capacity>32)
             throw std::runtime_error("native output cannot retain two bounded source intervals");
+        wchar_t expected_capacity[16]{};
+        if(GetEnvironmentVariableW(L"NVOF_TEST_EXPECT_OUTPUT_CAPACITY",expected_capacity,_countof(expected_capacity)) &&
+            capacity!=_wtoi(expected_capacity))throw std::runtime_error("incorrect negotiated output headroom");
     }
-    ComPtr<IMediaControl> control;check(graph.As(&control),"policy control");check(control->Run(),"policy Run");
+    ComPtr<IMediaControl> control;check(graph.As(&control),"policy control");
+    check(preroll_prepare?control->Pause():control->Run(),"policy initial state");
     wchar_t local[32768]{};GetEnvironmentVariableW(L"LOCALAPPDATA",local,_countof(local));
     std::ifstream state(std::filesystem::path(local)/L"NvofPotPlayer"/L"status.json");
     std::ostringstream captured;captured<<state.rdbuf();const auto json=captured.str();
+    // Release the Windows read handle before playback replaces status.json.
+    state.close();
     const std::string expected_reason=interpolate?"":reason;
     if(json.find("\"bypassReason\":\""+expected_reason+"\"")==std::string::npos ||
        json.find(interpolate?"\"state\":\"waiting\"":"\"state\":\"bypass\"")==std::string::npos)
@@ -711,18 +737,156 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
         return gpu?source->pin().push_gpu(index,device.Get(),context.Get(),false,true,false,no_stop,changed):
             source->pin().push(index,false,no_stop,changed);
     };
-    const int frame_count=header_duration>=0?144:6;
+    const int frame_count=header_duration>=0?144:cached_stream?360:stream_bench?72:6;
+    auto await_outputs=[&](size_t count) {
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(20);
+        while(sink->pin().count()<count && std::chrono::steady_clock::now()<deadline)Sleep(1);
+        if(sink->pin().count()<count)throw std::runtime_error("timed out waiting for queued output");
+    };
+    if(preroll_prepare || output_ahead) {
+        const long multiple=long(expected_num*source_den/(expected_den*source_num));
+        auto trace_contains=[&](const char* marker) {
+            std::ifstream trace(std::filesystem::path(local)/L"NvofPotPlayer"/L"filter.log");
+            std::ostringstream text;text<<trace.rdbuf();return text.str().find(marker)!=std::string::npos;
+        };
+        auto wait_marker=[&](const char* marker) {
+            const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+            while(!trace_contains(marker) && std::chrono::steady_clock::now()<deadline)Sleep(5);
+            return trace_contains(marker);
+        };
+        if(output_ahead)sink->pin().hold_all();
+        check(push(0),"first original before any preparation");
+        if(sink->pin().count()!=1)throw std::runtime_error("first original was buffered");
+        int input_count=2;
+        if(preroll_prepare) {
+            check(push(1),"queue first real pair during preroll");
+            Sleep(50);
+            const bool prepared=trace_contains("startup pair prepared after first original");
+            const bool held=sink->pin().count()==1;
+            check(control->Run(),"Run after first pair preparation");
+            if(!held)throw std::runtime_error("preparation advanced the paused renderer");
+            std::cout<<"PREROLL prepared="<<prepared<<" firstOriginalImmediate=1 pausedOutputs=1\n";
+        }else {
+            input_count=24;
+            std::atomic<HRESULT> produced{E_PENDING};
+            std::thread producer([&]{HRESULT hr=S_OK;for(int i=1;i<input_count && hr==S_OK;++i)hr=push(i);produced=hr;});
+            bool prepared=false,pool_held=false;
+            try {
+                await_outputs(size_t(sink->pin().allocator_capacity()));
+                prepared=wait_marker("output ahead prepared pending=");
+                Sleep(50);pool_held=sink->pin().count()==size_t(sink->pin().allocator_capacity());
+                wchar_t shrink[8]{};
+                if(GetEnvironmentVariableW(L"NVOF_TEST_LIVE_SHRINK",shrink,_countof(shrink)) && shrink[0]==L'1') {
+                    std::cout<<"READY_SHRINK"<<std::endl;
+                    std::string proceed;std::getline(std::cin,proceed);
+                    if(proceed!="continue")throw std::runtime_error("Missing live shrink command");
+                }
+                if(wait_output) {
+                    Sleep(200); // Let the bounded prepared queue fill as well.
+                    GpuCompletionGate gate(device.Get());gate.arm(context.Get());
+                    const auto before=sink->pin().count();
+                    bool injected=false;
+                    for(int i=0;i<14;++i){
+                        sink->pin().release_one();Sleep(8);
+                        if(wait_output_error&&!injected&&trace_contains("ready outputs delivered during GPU wait")){
+                            sink->pin().fail_next(VFW_E_TIMEOUT);injected=true;
+                        }
+                    }
+                    const bool serviced=trace_contains("ready outputs delivered during GPU wait");
+                    const auto during=sink->pin().count()-before;
+                    if(!wait_output_error) {
+                        check(control->Pause(),"Pause during GPU completion service");
+                        const auto paused=sink->pin().count();
+                        sink->pin().release_one();Sleep(20);
+                        gate.release();Sleep(20);
+                        if(sink->pin().count()!=paused)throw std::runtime_error("completion service emitted while paused");
+                        check(control->Run(),"Resume after serviced GPU completion");
+                    } else gate.release();
+                    std::cout<<"WAIT_OUTPUT servicedBeforeGpuRelease="<<serviced<<" delivered="<<during<<'\n';
+                }
+                sink->pin().release_all();
+                const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+                while(produced==E_PENDING && std::chrono::steady_clock::now()<deadline)Sleep(1);
+                if(produced==E_PENDING)throw std::runtime_error("output headroom producer stalled after release");
+            }catch(...) {source->pin().DeliverBeginFlush();producer.join();throw;}
+            producer.join();
+            if(wait_output_error) {
+                if(produced!=VFW_E_TIMEOUT || !trace_contains("output during GPU wait failure="))
+                    throw std::runtime_error("Renderer failure inside completion service was not propagated");
+                const auto count=sink->pin().count();
+                if(source->pin().DeliverEndOfStream()!=VFW_E_TIMEOUT || sink->pin().count()!=count)
+                    throw std::runtime_error("Completion service retried failed renderer output");
+                check(control->Stop(),"Stop after completion service failure");
+                std::cout<<"PASS renderer timeout during GPU completion service, no retry, EOS error/Stop\n";
+                return;
+            }
+            check(produced,"output headroom producer");
+            if(!pool_held)throw std::runtime_error("allocator capacity was bypassed");
+            std::cout<<"AHEAD preparedWithFullPool="<<prepared<<" capacity="<<sink->pin().allocator_capacity()<<'\n';
+        }
+        check(source->pin().DeliverEndOfStream(),"headroom EOS drains all prepared output");
+        if(sink->pin().count()!=size_t(input_count*multiple))throw std::runtime_error("headroom lost an output");
+        for(size_t i=0;i<sink->pin().times.size();++i) {
+            if(sink->pin().times[i]!=int64_t(i)*10000000LL*expected_den/expected_num ||
+               sink->pin().ends[i]!=int64_t(i+1)*10000000LL*expected_den/expected_num)
+                throw std::runtime_error("headroom changed output cadence");
+        }
+        check(control->Stop(),"headroom Stop");
+        std::cout<<"HEADROOM output="<<sink->pin().count()<<" digest="<<output_digest<<'\n';
+        if(preroll_prepare)for(bool stop:{false,true}) {
+            check(control->Pause(),"cancel preparation initial Pause");
+            const size_t before=sink->pin().count();
+            check(push(0),"cancel preparation immediate first");check(push(1),"cancel preparation pair");
+            Sleep(250);
+            const bool held=sink->pin().count()==before+1;
+            const auto begin=std::chrono::steady_clock::now();
+            check(stop?filter->Stop():source->pin().DeliverBeginFlush(),"cancel preparation without Run");
+            if(std::chrono::steady_clock::now()-begin>std::chrono::seconds(2) || !held)
+                throw std::runtime_error("initial preparation blocked cancellation or advanced the paused output");
+            if(stop)check(control->Stop(),"preparation graph Stop");
+            else check(source->pin().DeliverEndFlush(),"preparation EndFlush");
+            check(control->Run(),"preparation restart");
+            check(push(100),"preparation restart first original");
+            if(sink->pin().count()!=before+2 || sink->pin().last()!=100*kDuration)
+                throw std::runtime_error("cancelled initial pair leaked into new segment");
+            check(control->Stop(),"preparation final Stop");
+        }
+        return;
+    }
+    if(pause_resume)check(control->Pause(),"policy initial preroll");
+    const auto stream_begin=std::chrono::steady_clock::now();double first_ms=0;
+    auto steady_begin=stream_begin;size_t steady_outputs=0;
     for(int i=0;i<frame_count;++i) {
         check(push(i),"policy source frame");
+        if(cached_stream && i==7) {
+            await_outputs(1+size_t(i*expected_num*source_den/(expected_den*source_num)));
+            steady_outputs=sink->pin().count();steady_begin=std::chrono::steady_clock::now();
+        }
+        if(i==0)first_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-stream_begin).count();
+        if(pause_resume&&i==0)check(control->Run(),"policy run after preroll");
         if(i==0 && (sink->pin().count()!=1 || !sink->pin().discontinuities.back()))
             throw std::runtime_error("policy first original delayed or missing discontinuity");
         if(!interpolate && (sink->pin().count()!=size_t(i+1) || sink->pin().times.back()!=i*kDuration || sink->pin().ends.back()!=(i+1)*kDuration))
             throw std::runtime_error("bypass changed original frame count or timestamps");
+        if(pause_resume && (i==1 || i==3 || i==5)) {
+            await_outputs(1+size_t(i*expected_num*source_den/(expected_den*source_num)));
+            const size_t before_pause=sink->pin().count();
+            check(control->Pause(),"policy Pause");
+            OAFilterState paused=State_Stopped;
+            check(control->GetState(1000,&paused),"policy paused state");
+            if(paused!=State_Paused)throw std::runtime_error("graph did not enter paused state");
+            Sleep(80);
+            if(sink->pin().count()!=before_pause)throw std::runtime_error("pause generated output without new input");
+            check(control->Run(),"policy resume");
+            // The normal rational-clock/count checks below also cover these
+            // boundaries. Pause must retain the adjacent interpolation pair.
+        }
     }
-    if(interpolate && sink->pin().count()<=size_t(frame_count))throw std::runtime_error("selected source did not interpolate");
     check(push(frame_count,true),"policy missing stop timestamp");
     if(!interpolate && (sink->pin().count()!=size_t(frame_count+1) || sink->pin().ends.back()!=(frame_count+1)*kDuration))
         throw std::runtime_error("bypass synthesized invalid missing stop duration");
+    const size_t before_eos=sink->pin().count();check(source->pin().DeliverEndOfStream(),"policy EOS");
+    if(interpolate && sink->pin().count()<=size_t(frame_count))throw std::runtime_error("selected source did not interpolate");
     if(interpolate) {
         for(size_t i=0;i<sink->pin().times.size();++i) {
             const int64_t tick=int64_t(i)*10000000LL*expected_den/expected_num;
@@ -731,17 +895,82 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
                 throw std::runtime_error("negotiated target does not match delivered rational clock");
         }
     }
-    const size_t before_eos=sink->pin().count();check(source->pin().DeliverEndOfStream(),"policy EOS");
+    if(pause_resume)std::cout<<"pause/resume=3, held output and continuous rational timestamps=OK\n";
     if(interpolate && header_duration<0 && expected_num*source_den%(expected_den*source_num)==0) {
         const int multiple=int(expected_num*source_den/(expected_den*source_num));
         if(sink->pin().count()!=size_t((frame_count+1)*multiple))throw std::runtime_error("Integer output count including EOS is incorrect");
     }
     if(!interpolate && sink->pin().count()!=before_eos)throw std::runtime_error("bypass emitted an interpolated EOS tail");
+    if(stream_bench) {
+        if(cached_stream) {
+            const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-steady_begin).count();
+            std::cout<<"CACHED steadyMs="<<ms<<" output="<<sink->pin().count()-steady_outputs
+                <<" fps="<<(sink->pin().count()-steady_outputs)*1000.0/ms<<" excludes=decode,present,cold-start\n";
+        }
+        const double total_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-stream_begin).count();
+        check(control->Stop(),"stream benchmark Stop");
+        std::cout<<"STREAM firstMs="<<first_ms<<" totalMs="<<total_ms<<" source="<<frame_count+1<<" output="<<sink->pin().count()<<" digest="<<output_digest<<'\n';
+        return;
+    }
     check(source->pin().DeliverBeginFlush(),"policy seek flush");check(source->pin().DeliverEndFlush(),"policy seek end");
     check(source->pin().DeliverNewSegment(100*kDuration,INT64_MAX,1),"policy seek segment");
     const size_t before_seek=sink->pin().count();check(push(100),"policy seek original");
     if(sink->pin().count()!=before_seek+1 || sink->pin().times.back()!=100*kDuration || !sink->pin().discontinuities.back())
         throw std::runtime_error("policy seek did not deliver immediate clean original");
+    if(preview_separation) {
+        sink->pin().block_next();
+        std::atomic<bool> returned{false};
+        std::thread producer([&]{push(101);returned=true;});
+        const bool entered=sink->pin().wait_entered();
+        Sleep(30);
+        const bool separated=returned;
+        // Always release the renderer before joining, including the old
+        // synchronous implementation. A regression must fail, not deadlock.
+        const HRESULT flushed=source->pin().DeliverBeginFlush();producer.join();
+        check(flushed,"preview separation cleanup");
+        check(source->pin().DeliverEndFlush(),"preview separation cleanup end");
+        check(control->Stop(),"preview separation Stop");
+        std::cout<<"PREVIEW rendererBlocked="<<entered<<" producerReturned="<<separated<<'\n';
+        if(!entered || !separated)throw std::runtime_error("seek preview blocked the decoder on renderer output");
+        return;
+    }
+    if(scrub_preview) {
+        // Repeated slider requests must not start a new batch of five phases
+        // between requests. Also cover backward seeks and segment-relative PTS.
+        for(int position:{102,104,3,1,0}) {
+            Sleep(120); // Each new request must extend the settling window.
+            check(source->pin().DeliverBeginFlush(),"scrub flush");
+            check(source->pin().DeliverEndFlush(),"scrub end flush");
+            check(source->pin().DeliverNewSegment(position*kDuration,INT64_MAX,1),"scrub segment");
+            const size_t before=sink->pin().count();
+            check(push(-1),"scrub preroll");
+            if(sink->pin().count()!=before)throw std::runtime_error("scrub preroll leaked");
+            for(int i=0;i<3;++i) {
+                check(push(position+i),"scrub original");
+                await_outputs(before+size_t(i+1));
+                if(sink->pin().count()!=before+size_t(i+1) ||
+                   sink->pin().times.back()!=(position+i)*kDuration ||
+                   sink->pin().ends.back()!=(position+i+1)*kDuration)
+                    throw std::runtime_error("scrub started interpolation before seeking settled");
+            }
+        }
+        Sleep(240);
+        size_t before=sink->pin().count();
+        const REFERENCE_TIME preview_end=sink->pin().ends.back();
+        check(push(3),"scrub resume original");
+        await_outputs(before+1);
+        if(sink->pin().count()!=before+1 || sink->pin().times.back()!=preview_end)
+            throw std::runtime_error("scrub resume reused a stale endpoint or left a clock gap");
+        before=sink->pin().count();
+        check(push(4),"scrub resume pair");
+        await_outputs(before+size_t(expected_num*source_den/(expected_den*source_num)));
+        if(sink->pin().count()<=before+1 || !sink->pin().valid)
+            throw std::runtime_error("scrub failed to resume interpolation on a fresh adjacent pair");
+        for(size_t i=before;i<sink->pin().count();++i)
+            if(sink->pin().times[i]!=sink->pin().ends[i-1])
+                throw std::runtime_error("scrub resume timestamps overlap or leave a gap");
+        std::cout<<"scrub previews=15 originals, preroll=0, fresh resume/continuous timestamps=OK\n";
+    }
     if((gpu || cpu_gpu_output) && interpolate && expected_num>200*expected_den) {
         // Exercise the larger high-rate pool, not only the x2/default pool.
         // Both seek and Stop must cancel an upstream producer even when the
@@ -796,6 +1025,63 @@ void run_rate_policy_case(IClassFactory* factory,int64_t source_num,int64_t sour
         // they are different exact output clocks and need renegotiation.
         reinterpret_cast<VIDEOINFOHEADER2*>(changed.pbFormat)->AvgTimePerFrame=417000;
         if(SUCCEEDED(push(101,false,&changed)))throw std::runtime_error("x2 rational clock changed without renegotiation");
+    }
+    if(async_lifecycle) {
+        const size_t multiple=size_t(expected_num*source_den/(expected_den*source_num));
+        // Queue two samples while paused. A third must block until Run, and
+        // neither queued sample may reach the renderer while paused.
+        check(source->pin().DeliverBeginFlush(),"queued pause reset");
+        check(source->pin().DeliverEndFlush(),"queued pause reset end");Sleep(220);
+        size_t before=sink->pin().count();check(push(0),"queued first original");
+        if(sink->pin().count()!=before+1)throw std::runtime_error("async first picture delayed");
+        check(control->Pause(),"queued Pause");
+        check(push(1),"paused queue one");check(push(2),"paused queue two");
+        std::atomic<bool> done{false};HRESULT pushed=S_OK;
+        std::thread blocked([&]{pushed=push(3);done=true;});
+        Sleep(80);const bool bounded=!done && sink->pin().count()==before+1;
+        check(control->Run(),"queued resume");blocked.join();check(pushed,"queued producer resume");
+        await_outputs(before+1+3*multiple);
+        if(!bounded)throw std::runtime_error("paused queue was unbounded or emitted output");
+        for(size_t i=before+1;i<sink->pin().count();++i)
+            if(sink->pin().times[i]!=sink->pin().ends[i-1])throw std::runtime_error("queued resume changed output clock");
+        for(bool stop:{false,true}) {
+            check(source->pin().DeliverBeginFlush(),"blocked worker reset");
+            check(source->pin().DeliverEndFlush(),"blocked worker reset end");
+            check(push(0),"blocked worker first");
+            sink->pin().block_next();
+            // This call must return even though its output is held inside
+            // the renderer, including inside the 200 ms preview window.
+            // It proves decoder/output separation directly.
+            check(push(1),"async source returns before renderer");
+            if(!sink->pin().wait_entered())throw std::runtime_error("worker did not enter renderer");
+            check(push(2),"blocked worker queue one");check(push(3),"blocked worker queue two");
+            done=false;std::thread producer([&]{push(4);done=true;});
+            Sleep(80);const bool full=!done;
+            const auto begin=std::chrono::steady_clock::now();
+            const HRESULT hr=stop?filter->Stop():source->pin().DeliverBeginFlush();
+            producer.join();check(hr,"cancel full input queue and blocked renderer");
+            if(!full || std::chrono::steady_clock::now()-begin>std::chrono::seconds(2))
+                throw std::runtime_error("input queue cancellation was not bounded/prompt");
+            if(stop){check(control->Stop(),"queued graph stop");check(control->Run(),"queued restart");}
+            else check(source->pin().DeliverEndFlush(),"queued seek end");
+            before=sink->pin().count();check(push(100),"queued seek immediate original");
+            if(sink->pin().count()!=before+1 || sink->pin().last()!=100*kDuration)
+                throw std::runtime_error("old queued samples leaked after seek/restart");
+        }
+        check(source->pin().DeliverBeginFlush(),"deferred failure reset");
+        check(source->pin().DeliverEndFlush(),"deferred failure reset end");Sleep(220);
+        check(push(0),"deferred failure first");before=sink->pin().count();
+        check(source->pin().push_gpu(1,device.Get(),context.Get(),false,true,true),"enqueue invalid MF sample");
+        if(SUCCEEDED(source->pin().DeliverEndOfStream()) || sink->pin().count()!=before)
+            throw std::runtime_error("deferred GPU sample failure was lost or fell back to CPU");
+        if(SUCCEEDED(push(2)))throw std::runtime_error("worker failure did not propagate to the next producer");
+        check(source->pin().DeliverBeginFlush(),"renderer timeout reset");
+        check(source->pin().DeliverEndFlush(),"renderer timeout reset end");Sleep(220);
+        check(push(0),"renderer timeout first");before=sink->pin().count();
+        sink->pin().fail_next(VFW_E_TIMEOUT);check(push(1),"renderer timeout enqueue");
+        if(source->pin().DeliverEndOfStream()!=VFW_E_TIMEOUT || sink->pin().count()!=before)
+            throw std::runtime_error("renderer timeout was mistaken for a full allocator and retried");
+        std::cout<<"PASS async decoder return while renderer blocked, bounded paused queue, resume clock, full-queue flush/Stop/restart, deferred error propagation\n";
     }
     check(control->Stop(),"policy Stop");
     if((gpu || cpu_gpu_output) ? sink->pin().cpu_count()!=0 : sink->pin().gpu_count()!=0)throw std::runtime_error("rate policy changed frame transport");
@@ -897,6 +1183,10 @@ void check_hdr_storage() {
 }
 int wmain(int argc,wchar_t** argv) {
     if(argc<2){std::cerr<<"usage: directshow_gpu_smoke <NativeD3D11=1 filter.ax>\n";return 2;}
+    if(argc>10) {
+        kHeight=_wtoi(argv[10]);
+        if(kHeight<240 || kHeight>8192 || (kHeight&1)){std::cerr<<"invalid fixture height\n";return 2;}
+    }
     check_hdr_storage();
     p010_fixture=(argc>9 && wcscmp(argv[9],L"p010")==0) || (argc>2 && (wcscmp(argv[2],L"--p010-input")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0));
     p010_media=argc>9 && wcscmp(argv[9],L"p010-media")==0;
@@ -935,6 +1225,61 @@ int wmain(int argc,wchar_t** argv) {
     if(!module){std::cerr<<"load failed "<<GetLastError()<<'\n';return 3;}
     int result=0;
     try {
+        // Optional bounded first-pair readback for cross-build precision checks.
+        // Test host only: never enabled in player binaries or timing measurements.
+        wchar_t reference_path[32768]{},reference_limit[16]{};
+        const DWORD reference_length=GetEnvironmentVariableW(L"NVOF_TEST_PIXEL_REFERENCE",reference_path,32768);
+        GetEnvironmentVariableW(L"NVOF_TEST_PIXEL_FRAMES",reference_limit,16);
+        const unsigned reference_frames=unsigned((std::max)(1,(std::min)(16,_wtoi(reference_limit))));
+        const bool compare_reference=GetEnvironmentVariableW(L"NVOF_TEST_PIXEL_COMPARE",nullptr,0)!=0;
+        if(reference_length>=32768)throw std::runtime_error("reference path too long");
+        const std::filesystem::path reference_root(reference_path);
+        if(reference_length && !reference_root.is_absolute())throw std::runtime_error("reference path must be absolute");
+        if(reference_length && !compare_reference)std::filesystem::create_directories(reference_root);
+        if(reference_length || GetEnvironmentVariableW(L"NVOF_TEST_HASH_OUTPUT",nullptr,0))inspect_gpu_output=[=,index=0u,total=uint64_t(0)](IMediaSample* sample,ID3D11Device* device,ID3D11DeviceContext* context) mutable {
+            const unsigned frame=index++;
+            if(reference_length && frame>=reference_frames)return;
+            ComPtr<nvof::transport::TextureSample> surface;check(sample->QueryInterface(IID_PPV_ARGS(&surface)),"digest surface");
+            ComPtr<ID3D11Texture2D> texture;UINT slice=0;check(surface->GetD3D11Texture(0,&texture,&slice),"digest texture");
+            D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);
+            desc.ArraySize=1;desc.BindFlags=0;desc.MiscFlags=0;desc.Usage=D3D11_USAGE_STAGING;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+            ComPtr<ID3D11Texture2D> staging;check(device->CreateTexture2D(&desc,nullptr,&staging),"digest staging");
+            context->CopySubresourceRegion(staging.Get(),0,0,0,0,texture.Get(),slice,nullptr);
+            D3D11_MAPPED_SUBRESOURCE mapped{};check(context->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped),"digest map");
+            const size_t bytes=desc.Width*(desc.Format==DXGI_FORMAT_P010?2:1);
+            if(reference_length) {
+                std::vector<BYTE> pixels(bytes*desc.Height*3/2);
+                for(UINT y=0;y<desc.Height*3/2;++y)std::memcpy(pixels.data()+y*bytes,static_cast<const BYTE*>(mapped.pData)+y*mapped.RowPitch,bytes);
+                context->Unmap(staging.Get(),0);
+                total+=pixels.size();if(total>512ULL*1024*1024)throw std::runtime_error("reference exceeds 512 MiB budget");
+                const auto path=reference_root/(std::to_wstring(frame)+L".pixels");
+                const uint64_t header[]={desc.Width,desc.Height,uint64_t(desc.Format),pixels.size()};
+                if(!compare_reference) {
+                    if(std::filesystem::exists(path))throw std::runtime_error("reference already exists");
+                    std::ofstream file(path,std::ios::binary);file.write(reinterpret_cast<const char*>(header),sizeof(header));
+                    file.write(reinterpret_cast<const char*>(pixels.data()),std::streamsize(pixels.size()));
+                    if(!file)throw std::runtime_error("reference write failed");
+                } else {
+                    std::ifstream file(path,std::ios::binary);uint64_t saved[4]{};file.read(reinterpret_cast<char*>(saved),sizeof(saved));
+                    if(!file || std::memcmp(saved,header,sizeof(header)))throw std::runtime_error("reference format mismatch");
+                    std::vector<BYTE> previous(pixels.size());file.read(reinterpret_cast<char*>(previous.data()),std::streamsize(previous.size()));
+                    if(!file)throw std::runtime_error("reference read failed");
+                    uint64_t changed=0;unsigned maximum=0;const bool tenbit=desc.Format==DXGI_FORMAT_P010;
+                    const size_t count=pixels.size()/(tenbit?2:1);
+                    for(size_t i=0;i<count;++i) {
+                        const unsigned a=tenbit?(unsigned(pixels[i*2])|(unsigned(pixels[i*2+1])<<8))>>6:pixels[i];
+                        const unsigned b=tenbit?(unsigned(previous[i*2])|(unsigned(previous[i*2+1])<<8))>>6:previous[i];
+                        const unsigned delta=a>b?a-b:b-a;changed+=delta!=0;maximum=(std::max)(maximum,delta);
+                    }
+                    std::cout<<"PIXELS frame="<<frame<<" components="<<count<<" changed="<<changed<<" maxDelta="<<maximum<<'\n';
+                }
+                return;
+            }
+            for(UINT y=0;y<desc.Height*3/2;++y)for(size_t x=0;x<bytes;++x) {
+                output_digest^=static_cast<const BYTE*>(mapped.pData)[y*mapped.RowPitch+x];output_digest*=1099511628211ULL;
+            }
+            context->Unmap(staging.Get(),0);
+        };
         auto get_factory=reinterpret_cast<HRESULT(WINAPI*)(REFCLSID,REFIID,void**)>(GetProcAddress(module,"DllGetClassObject"));
         ComPtr<IClassFactory> factory;check(get_factory(kFilter,IID_PPV_ARGS(&factory)),"factory");
         ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
@@ -942,15 +1287,27 @@ int wmain(int argc,wchar_t** argv) {
             nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context),"D3D11 device");
         ComPtr<ID3D10Multithread> multithread;
         if(SUCCEEDED(context.As(&multithread)))multithread->SetMultithreadProtected(TRUE);
-        if(argc>2 && (wcscmp(argv[2],L"--rounded-duration")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0)) {
+        if(argc>2 && wcscmp(argv[2],L"--scrub-preview")==0) {
+            run_rate_policy_case(factory.Get(),24000,1001,120000,1001,
+                argc<=7 || wcscmp(argv[7],L"cpu")!=0,"selected",-1,true);
+        } else if(argc>2 && (wcscmp(argv[2],L"--rounded-duration")==0 || wcscmp(argv[2],L"--rounded-duration-p010")==0)) {
             run_rate_policy_case(factory.Get(),24000,1001,1000,21,true,"selected",420000);
             std::cout<<"PASS 42ms header with 23.976 PTS through MF GPU transport; P010="<<p010_fixture<<std::endl;
-        } else if(argc>=9 && (wcscmp(argv[2],L"--rate-policy")==0 || wcscmp(argv[2],L"--metadata-legacy")==0 || wcscmp(argv[2],L"--metadata-tagged")==0)) {
+        } else if(argc>=9 && (wcscmp(argv[2],L"--wait-output")==0 || wcscmp(argv[2],L"--preroll-prepare")==0 || wcscmp(argv[2],L"--output-ahead")==0 || wcscmp(argv[2],L"--rate-policy")==0 || wcscmp(argv[2],L"--preview-separation")==0 || wcscmp(argv[2],L"--stream-bench")==0 || wcscmp(argv[2],L"--async-lifecycle")==0 || wcscmp(argv[2],L"--pause-resume")==0 || wcscmp(argv[2],L"--metadata-legacy")==0 || wcscmp(argv[2],L"--metadata-tagged")==0)) {
+            preroll_prepare=wcscmp(argv[2],L"--preroll-prepare")==0;
+            wait_output=wcscmp(argv[2],L"--wait-output")==0;
+            wait_output_error=wait_output&&GetEnvironmentVariableW(L"NVOF_TEST_WAIT_OUTPUT_ERROR",nullptr,0)>0;
+            output_ahead=wait_output || wcscmp(argv[2],L"--output-ahead")==0;
+            preview_separation=wcscmp(argv[2],L"--preview-separation")==0;
+            async_lifecycle=wcscmp(argv[2],L"--async-lifecycle")==0;
+            stream_bench=wcscmp(argv[2],L"--stream-bench")==0;
+            wchar_t flag[8]{};
+            cached_stream=stream_bench && GetEnvironmentVariableW(L"NVOF_TEST_CACHED_STREAM",flag,_countof(flag)) && flag[0]==L'1';
             if(!recover_transfer)color_fixture=wcscmp(argv[2],L"--metadata-legacy")==0?1:wcscmp(argv[2],L"--metadata-tagged")==0?2:0;
             if(color_fixture && !recover_transfer){check_malformed_media(factory.Get());check_explicit_metadata_preservation(factory.Get());}
             const std::wstring wide_reason=argv[8];
             run_rate_policy_case(factory.Get(),_wtoi64(argv[3]),_wtoi64(argv[4]),_wtoi64(argv[5]),_wtoi64(argv[6]),
-                wcscmp(argv[7],L"mf")==0,std::string(wide_reason.begin(),wide_reason.end()));
+                wcscmp(argv[7],L"mf")==0,std::string(wide_reason.begin(),wide_reason.end()),-1,false,wcscmp(argv[2],L"--pause-resume")==0);
         } else {
         check_color_rejection(factory.Get(),device.Get(),context.Get());
         run_case(factory.Get(),device.Get(),context.Get(),false,false,false,true); // Native renderer + CPU decoder.

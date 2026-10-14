@@ -93,6 +93,13 @@ int wmain(int argc,wchar_t** argv){try{
         }
     }
     std::cout<<"QUALITY mode="<<mode<<" pairs="<<count<<" raw_diff="<<rawDifferent<<"/"<<rawTotal<<" output_different="<<pixelDifferent<<" worst_mse="<<worst<<" baseline="<<worstBase<<" bad_pairs="<<badPairs<<std::endl;
+    if(options.session_mode==MotionSessionMode::persistent) {
+        require(nvof::MotionSessionTestAccess::sessions(candidate)==1,"Discontinuities recreated compatible analysis resources");
+        candidate.invalidate_history();
+        require(!candidate.reliable(),"Invalidated pair remained renderable");
+        bool rejected=false;try{candidate.render_midpoint(rt[0].Get(),rt[1].Get());}catch(const std::logic_error&){rejected=true;}
+        require(rejected,"Seek retained a renderable stale pair");
+    }
     auto a=upload(device.Get(),vertical(0),w,h,0),b=upload(device.Get(),vertical(10),w,h,166666);
     for(auto* s:{&baseline,&candidate}){s->invalidate_history();std::array<double,6> sums{};double total=0;
         for(int i=0;i<36;++i){auto start=std::chrono::steady_clock::now();s->prepare(a.texture.Get(),b.texture.Get(),w,h);s->render_midpoint(rt[0].Get(),rt[1].Get());drain(device.Get(),context.Get());

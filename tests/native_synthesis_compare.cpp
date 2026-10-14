@@ -97,6 +97,8 @@ int wmain(int argc,wchar_t** argv){try{
     for(auto backend:{GpuInterpolationBackend::native_experimental}) {
         const char* name=backend==GpuInterpolationBackend::fruc?"fruc":"native";
         GpuFrucEngine engine(argv[1],device.Get(),context.Get(),nullptr,GpuCompletionMode::context_ordered,true,false,false,backend,flow);
+        engine.enable_timing(true,true,true);
+        unsigned gpu_profile_samples=0,gpu_stage_samples=0,gpu_capture_samples=0;
         std::cout<<"DEVICE "<<engine.device_name()<<" backend="<<name<<std::endl;
         for(int scene=0;scene<4;++scene) {
             engine.reset();Error error,held;
@@ -105,10 +107,39 @@ int wmain(int argc,wchar_t** argv){try{
                 auto a=fixture(qw,qh,i,scene),b=fixture(qw,qh,i+1,scene),truth=fixture(qw,qh,i+.5,scene);
                 auto last=engine.copy(upload(device.Get(),b,qw,qh,int64_t(i+1)*166666));
                 auto result=engine.interpolate_pair(first,last,{first.pts+83333});
+                const auto profile=engine.pair_timing();
+                for(unsigned sample=0;sample<profile.capture_sample_count;++sample) {
+                    const auto& p=profile.capture_samples[sample];++gpu_capture_samples;
+                    require(p.copy_ms>=0&&p.normalize_ms>=0&&std::abs(p.total_ms-p.copy_ms-p.normalize_ms)<0.001,
+                        "Capture GPU timing is invalid or overlaps");
+                    require(p.pts>=0&&p.pts<=last.pts,"Capture timing belongs to a future source");
+                }
+                for(unsigned sample=0;sample<profile.gpu_sample_count;++sample) {
+                    const auto& p=profile.gpu_samples[sample];++gpu_profile_samples;
+                    require(p.end_tick>=p.begin_tick&&p.work_ms>=0&&p.gap_ms>=0,"GPU timeline order is invalid");
+                    require(std::abs(p.cpu_wait_ms-p.wait_ms[0]-p.wait_ms[1]-p.wait_ms[2])<0.001,"Profiled CPU waits do not match their pair");
+                    require(p.cpu_arm_ms+p.cpu_sleep_ms<=p.cpu_wait_ms+0.001,"Event registration/sleep timings overlap");
+                    if(p.waits==2)require(std::abs(p.work_ms-p.input_ms-p.analysis_ms-p.tail_ms)<0.001,"GPU timeline bursts overlap or omit work");
+                    if(p.stages_measured) {
+                        ++gpu_stage_samples;
+                        require(std::abs(p.tail_ms-p.repair_ms-p.glyph_ms-p.layers_ms-p.phase_ms)<0.001,"GPU tail stages overlap or omit work");
+                        require(p.inverse_measured&&std::abs(p.phase_ms-p.inverse_ms-p.output_ms)<0.001,"Midpoint GPU stage partition is invalid");
+                    }
+                    std::cout<<"GPU_PROFILE waits="<<p.waits<<" work_ms="<<p.work_ms<<" gap_ms="<<p.gap_ms<<" cpu_wait_ms="<<p.cpu_wait_ms<<std::endl;
+                }
                 require(!result.quality.scene_cut&&result.frames.size()==1,"Unexpected fixture rejection");
                 auto actual=readback(device.Get(),context.Get(),result.frames[0]);
                 error.add(actual,truth,qw,qh);held.add(a,truth,qw,qh);
                 if(scene==1){
+                    if(i>0) {
+                        const auto timing=engine.pair_timing();
+                        std::cout<<"SYNC pair="<<i<<" waits="<<timing.shared_wait_calls<<" combined="<<timing.combined_scene_pairs<<std::endl;
+                        require(timing.combined_scene_pairs==1,"Continuous motion did not combine scene/input completion");
+                        require(timing.shared_wait_calls>=1&&timing.shared_wait_calls<=2,"Continuous motion lost input synchronization or added a redundant completion boundary");
+                        require(timing.event_wait_calls+timing.query_wait_calls==timing.shared_wait_calls,"Completion path counts do not cover all waits");
+                        const double parts=timing.wait_submit_ms+timing.wait_completion_ms+timing.context_resume_ms;
+                        require(parts>0 && parts<=timing.shared_wait_ms+0.001,"Shared wait subintervals overlap or were not measured");
+                    }
                     auto panError=mse(actual,truth,qw,qh);
                     std::cout<<"PAN_PAIR backend="<<name<<" pair="<<i<<" mse="<<panError<<std::endl;
                     require(panError<1.0,"First or subsequent fast-pan midpoint is incorrect");
@@ -123,6 +154,8 @@ int wmain(int argc,wchar_t** argv){try{
                 require(error.sq/error.count<10.0,"Fine stationary contours over motion degraded");
             if(scene==1)require(error.sq<held.sq,"Continuous-motion synthesis is worse than holding source");
         }
+        require(gpu_profile_samples>=32&&gpu_stage_samples>=16,"Detailed timeline missed consecutive pairs or motion stages");
+        require(gpu_capture_samples>=32,"Detailed GPU tracing omitted input capture");
         if(backend==GpuInterpolationBackend::native_experimental) {
             // A long vertical pan with changing speed exercises successive input
             // allocations. Short, constant-speed horizontal fixtures missed a

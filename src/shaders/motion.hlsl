@@ -20,6 +20,19 @@ cbuffer Parameters:register(b0) {
     float4 mode; // flow grid, UV plane, downsample source index, interpolation fraction
 };
 cbuffer PixelFormat:register(b1) {uint tenBit;uint3 formatPadding;};
+// Production uses compile-time constants. Research shaders receive the same
+// values through b2, latched once per source pair by MotionSynthesizer.
+#if NVOF_EXPERIMENTAL_TUNING
+cbuffer LiveTuning:register(b2) {
+#define NVOF_TUNABLE(name, value, lo, hi, group, unit, description) float tune_##name;
+#include "../../include/nvof/tuning_parameters.def"
+#undef NVOF_TUNABLE
+};
+#else
+#define NVOF_TUNABLE(name, value, lo, hi, group, unit, description) static const float tune_##name = value;
+#include "../../include/nvof/tuning_parameters.def"
+#undef NVOF_TUNABLE
+#endif
 float codeScale() {return tenBit!=0?65535.0/65280.0:1.0;}
 float4 storeColor(float2 value) {
     if(tenBit!=0)value=clamp(round(value*1020.0),0.0,1023.0)*64.0/65535.0;
@@ -80,7 +93,10 @@ bool repeatedPatch(float2 p,float2 period,bool next) {
 float glyphPatchCost(float2 p,float2 v,bool next,out bool glyph) {
     float scale=max(size.x/size.z,size.y/size.w);
     float error=0,ink=0,dark=0,bright=0,neutral=0,black=0;
-    [unroll]for(int y=-3;y<=3;++y)[unroll]for(int x=-4;x<=4;++x) {
+    // Keep long patch scans as loops: duplicating every sample greatly expands
+    // the driver shader program and stalls its first submission. Sampling order
+    // and evidence thresholds remain the same.
+    [loop]for(int y=-3;y<=3;++y)[loop]for(int x=-4;x<=4;++x) {
         float2 q=p+float2(x,y)*2.0*scale;
         if(!inside(q)||!inside(q+v)){glyph=false;return 255.0;}
         float a=yAt(q,next)*255.0,b=yAt(q+v,!next)*255.0;
@@ -115,7 +131,7 @@ float2 repairGlyphAlias(float2 p,float2 original,bool next) {
         // Validate both the neighboring trajectory and the actual glyph. A
         // smaller flow is not preferred merely because it is smaller.
         bool ignored;float cost=glyphPatchCost(p,v,next,ignored);
-        if(cost<10.0&&cost<oldCost*0.4&&cost<bestCost) {best=v;bestCost=cost;}
+        if(cost<tune_glyph_photo_max&&cost<oldCost*tune_glyph_improvement_ratio&&cost<bestCost) {best=v;bestCost=cost;}
     }
     return best;
 }
@@ -125,7 +141,7 @@ float2 repairGlyphAlias(float2 p,float2 original,bool next) {
 float strokePatchCost(float2 p,float2 v,float2 normal,bool next) {
     float scale=max(size.x/size.z,size.y/size.w);
     float2 tangent=normal.yx;float error=0,peak=0;
-    [unroll]for(int y=-3;y<=3;++y)[unroll]for(int x=-2;x<=2;++x) {
+    [loop]for(int y=-3;y<=3;++y)[loop]for(int x=-2;x<=2;++x) {
         float2 q=p+(normal*float(x*4)+tangent*float(y*16))*scale;
         if(!inside(q)||!inside(q+v))return 255.0;
         float delta=abs(yAt(q,next)-yAt(q+v,!next))*255.0;
@@ -163,7 +179,7 @@ float2 repairParallelStrokeAlias(float2 p,float2 original,bool next) {
         float2 candidate=0.5*(a+b);
         if(length(original-candidate)<8.0*scale)continue;
         float cost=strokePatchCost(p,candidate,normal,next);
-        if(cost<3.0&&cost<oldCost*0.4&&cost<bestCost){best=candidate;bestCost=cost;}
+        if(cost<tune_stroke_photo_max&&cost<oldCost*tune_stroke_improvement_ratio&&cost<bestCost){best=candidate;bestCost=cost;}
     }
     return best;
 }
@@ -209,13 +225,13 @@ float2 repairNearStaticAlias(float2 p,float2 original,bool next) {
         float difference=abs(yAt(q,next)-yAt(q+v,!next))*255.0;
         error+=difference;peak=max(peak,difference);
     }
-    if(error<49.0*3.0&&error<oldError*0.35&&peak<16.0)return v;
+    if(error<49.0*tune_near_static_photo_max&&error<oldError*tune_near_static_improvement_ratio&&peak<tune_near_static_peak_max)return v;
     return original;
 }
 float movingStrokeCost(float2 p,float2 v,float2 normal,bool next) {
     float scale=max(size.x/size.z,size.y/size.w),error=0;
     float2 tangent=normal.yx;
-    [unroll]for(int y=-3;y<=3;++y)[unroll]for(int x=-2;x<=2;++x) {
+    [loop]for(int y=-3;y<=3;++y)[loop]for(int x=-2;x<=2;++x) {
         float2 q=p+(normal*float(x*8)+tangent*float(y*32))*scale;
         if(!inside(q)||!inside(q+v))return 255.0;
         error+=abs(yAt(q,next)-yAt(q+v,!next))*255.0;
@@ -255,7 +271,7 @@ bool periodicStroke(float2 p,bool next,out float2 normal) {
 // A thin foreground line over a repeating background fails the peak check.
 float periodicSurfaceMatch(float2 p,float2 period,bool next) {
     float scale=max(size.x/size.z,size.y/size.w),error=0,peak=0;
-    [unroll]for(int y=-2;y<=2;++y)[unroll]for(int x=-2;x<=2;++x) {
+    [loop]for(int y=-2;y<=2;++y)[loop]for(int x=-2;x<=2;++x) {
         float2 q=p+float2(x,y)*2.0*scale;
         if(!inside(q)||!inside(q+period))return 0.0;
         float delta=abs(yAt(q,next)-yAt(q+period,next))*255.0;
@@ -281,8 +297,8 @@ float2 repairMovingPattern(float2 p,float2 original,bool next) {
         float2 a=p-tangent*radius*scale,b=p+tangent*radius*scale;
         if(!inside(a)||!inside(b))continue;
         float2 va=flow(a,next),vb=flow(b,next),v=0.5*(va+vb);
-        if(length(v)<32.0*scale||length(original-v)<4.0*scale)continue;
-        if(length(va-vb)>max(1.5*scale,0.2*length(v)))continue;
+        if(length(v)<tune_pattern_min_motion*scale||length(original-v)<4.0*scale)continue;
+        if(length(va-vb)>max(tune_pattern_donor_abs*scale,tune_pattern_donor_relative*length(v)))continue;
         if(matchCost(a,va,next)>8.0||matchCost(b,vb,next)>8.0)continue;
         float2 difference=original-v;
         if(abs(dot(difference,tangent))>0.3*abs(dot(difference,normal))+2.0*scale)continue;
@@ -290,7 +306,7 @@ float2 repairMovingPattern(float2 p,float2 original,bool next) {
         // Both reverse estimates may share the same periodic alias.
         // Wide image agreement and opposing donors provide independent evidence.
         float cost=movingStrokeCost(p,v,normal,next);
-        if(cost<10.0&&cost<oldCost*0.85&&cost<oldCost-1.0&&cost<bestCost&&periodicSurfaceMatch(p,original-v,next)>0.5){bestCost=cost;best=v;}
+        if(cost<tune_pattern_photo_max&&cost<oldCost*tune_pattern_improvement_ratio&&cost<oldCost-tune_pattern_improvement_margin&&cost<bestCost&&periodicSurfaceMatch(p,original-v,next)>0.5){bestCost=cost;best=v;}
     }
     return best;
 }
@@ -307,7 +323,7 @@ int2 repairMotion(float4 screen:SV_Position):SV_Target {
     // repair, zero = propagation. Small displacements are deliberately excluded;
     // broad repair of low-confidence occlusions regresses faces and hands.
     // Propagation additionally needs a large alias and repeated source detail.
-    if(length(original)/scale>(mode.w>0.0?32.0:64.0)) {
+    if(length(original)/scale>(mode.w>0.0?tune_repair_min_motion:tune_repair_propagation_min_motion)) {
         float2 normal;bool periodic=periodicStroke(p,next,normal)&&normal.x>0.5;
         [loop]for(int k=0;k<33;++k) {
             int d=(k-1)%4+1;
@@ -322,7 +338,7 @@ int2 repairMotion(float4 screen:SV_Position):SV_Target {
             if(inside(p+v)&&(cf<1.5 || (fb>8.0&&support<1.5&&length(v)+16.0*scale<length(original)))) {
                 float cp=matchCost(p,v,next),cost=cp+2.0*min(cf,8.0);
                 if(cf>=1.5){if(cp>=10.0)continue;cost=cp+2.0+support;}
-                if(cp<12.0&&length(v)+16.0*scale<length(original)&&(cost<bestCost*0.6 || (cost<bestCost+2.0&&length(v)+16.0*scale<length(best)))) {
+                if(cp<tune_repair_photo_max&&length(v)+16.0*scale<length(original)&&(cost<bestCost*tune_repair_improvement_ratio || (cost<bestCost+2.0&&length(v)+16.0*scale<length(best)))) {
                     // A shorter, still-large vector can be another repetition.
                     // Reverse-flow agreement alone cannot resolve that alias.
                     if(length(v)>32.0*scale&&periodic&&periodicSurfaceMatch(p,original-v,next)>0.5&&!(cp+0.5<photo&&cp<photo*0.8))continue;
@@ -372,9 +388,9 @@ float evidence(float2 q,float2 p,bool next) {
     float photo=abs(yAt(q,next)-yAt(end,!next))*255.0;
     float2 chroma=abs(uvAt(q,next)-uvAt(end,!next))*255.0;
     photo=max(photo,max(chroma.x,chroma.y));
-    return (1-smoothstep(0.4*scale,2.0*scale,fb))*
-        (1-smoothstep(0.25*scale,1.0*scale,residual))*
-        (1-smoothstep(8.0,28.0,photo));
+    return (1-smoothstep(tune_evidence_fb_low*scale,tune_evidence_fb_high*scale,fb))*
+        (1-smoothstep(tune_evidence_residual_low*scale,tune_evidence_residual_high*scale,residual))*
+        (1-smoothstep(tune_evidence_photo_low,tune_evidence_photo_high,photo));
 }
 // Fixed-point inversion oscillates where adjacent motion layers have steep
 // gradients. Use a bounded Newton step with backtracking; never accept a step
@@ -421,11 +437,11 @@ float warpReliability(float2 q,float2 p,bool next,float fraction) {
     // A positive Jacobian can still stretch a mixed foreground/background
     // vector into an occlusion streak. Penalize extreme expansion, retaining
     // unit translations, image-verified mappings, and modest camera scaling.
-    float expansion=max(0.0,determinant-1.5)*(1.0-patch);
+    float expansion=max(0.0,determinant-tune_warp_expansion_start)*(1.0-patch);
     geometric/=1.0+expansion*expansion*expansion*expansion;
-    float bad=photo/12.0;
+    float bad=photo/tune_warp_photo_scale;
     return geometric/(1.0+bad*bad*bad*bad)/
-        (1.0+dot(residual,residual)/(0.25*scale*scale));
+        (1.0+dot(residual,residual)/(tune_warp_residual_variance*scale*scale));
 }
 
 // Cost belongs to the hardware vector at the same source-grid coordinate.
@@ -477,14 +493,14 @@ float2 inversePosition(float2 p,bool next,float fraction,int policy) {
     float2 residual=best+fraction*v-p;
     float2 jx=float2(1,0)+fraction*dx,jy=float2(0,1)+fraction*dy;
     float determinant=jx.x*jy.y-jy.x*jx.y;
-    if(quality<0.4&&(determinant<0.25||dot(residual,residual)>0.25*scale*scale)) {
+    if(quality<tune_inverse_retry_quality&&(determinant<0.25||dot(residual,residual)>0.25*scale*scale)) {
         [loop]for(int k=0;k<5;++k) {
             float2 direction=k==1?float2(1,0):k==2?float2(-1,0):k==3?float2(0,1):float2(0,-1);
             float2 seed=k==0?p+fraction*flow(p,!next):p-fraction*flow(p+direction*32.0*scale,next);
             float2 q=solveInverse(p,next,fraction,seed);
             if(!inside(q))continue;
             float score=candidateQuality(q,p,next,fraction,policy);
-            if(score>quality*1.2+0.001){best=q;quality=score;}
+            if(score>quality*tune_inverse_score_gain+0.001){best=q;quality=score;}
         }
     }
     return best;
@@ -626,7 +642,7 @@ float2 stationaryLayer(float2 p) {
         float delta=(av-bv)*255.0;
         error+=local*delta*delta;weight+=local;
     }
-    if(error/weight>=4.0)return 0.0;
+    if(error/weight>=tune_stationary_error_high)return 0.0;
     float detail=0,plateDetail=0;
     [unroll]for(int k=0;k<4;++k) {
         float2 d=k==0?float2(8,0):(k==1?float2(-8,0):(k==2?float2(0,8):float2(0,-8)));
@@ -652,7 +668,7 @@ float2 stationaryLayer(float2 p) {
         }
     }
     // Flat, similarly colored areas are not evidence of a stationary object.
-    float still=(1.0-smoothstep(1.0,4.0,error/weight))*smoothstep(24.0,64.0,detail);
+    float still=(1.0-smoothstep(tune_stationary_error_low,tune_stationary_error_high,error/weight))*smoothstep(tune_stationary_detail_low,tune_stationary_detail_high,detail);
     // Stationary evidence must also beat the moving correspondence across
     // the neighborhood; a flat interior alone can hide displaced fine lines.
     if(still>0.0) {

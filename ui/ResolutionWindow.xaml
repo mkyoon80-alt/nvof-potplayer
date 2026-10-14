@@ -1,0 +1,44 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="해상도별 출력 설정" Width="520" Height="640" MinWidth="480" MinHeight="600"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="White" Foreground="{DynamicResource Ink}"
+        FontFamily="Segoe UI, Malgun Gothic" FontSize="13" UseLayoutRounding="True" SnapsToDevicePixels="True">
+  <Grid Background="{DynamicResource Surface}">
+    <Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <ScrollViewer x:Name="ResolutionScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="20,16,20,12" Focusable="False">
+      <StackPanel>
+        <TextBlock Text="해상도별 출력" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,6"/>
+        <TextBlock Text="세로 높이 기준 · 1920×800 영상은 720p 구간에 적용됩니다." Style="{DynamicResource Subtle}" Margin="0,0,0,10"/>
+        <Grid Margin="0,0,0,10">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions>
+          <TextBlock x:Name="CommonOutputLabel" Text="기본 출력" FontWeight="SemiBold" VerticalAlignment="Center"/>
+          <ComboBox x:Name="CommonOutputChoice" Grid.Column="1" Style="{DynamicResource OutputSelect}" AutomationProperties.LabeledBy="{Binding ElementName=CommonOutputLabel}"/>
+        </Grid>
+        <Border BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8">
+          <StackPanel>
+            <Border Background="{DynamicResource QuietSurface}" CornerRadius="7,7,0,0" BorderBrush="{DynamicResource Divider}" BorderThickness="0,0,0,1" Padding="12,6">
+              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="141"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                <TextBlock Text="원본 세로 해상도" FontSize="12" Foreground="{DynamicResource SecondaryInk}"/>
+                <TextBlock Grid.Column="1" Text="출력 설정" FontSize="12" Foreground="{DynamicResource SecondaryInk}"/>
+              </Grid>
+            </Border>
+            <StackPanel x:Name="ResolutionRows"/>
+          </StackPanel>
+        </Border>
+        <TextBlock x:Name="ResolutionEligibilityHint" Style="{DynamicResource Subtle}" Margin="0,10,0,0"/>
+        <TextBlock Text="상한은 정수배로 적용: 25 fps · 최대 120 fps → 100 fps" Style="{DynamicResource Subtle}" Margin="0,4,0,0"/>
+      </StackPanel>
+    </ScrollViewer>
+    <Border Grid.Row="1" BorderBrush="{DynamicResource Divider}" BorderThickness="0,1,0,0" Background="{DynamicResource QuietSurface}" Padding="20,10">
+      <StackPanel>
+        <TextBlock x:Name="ResolutionSaveNotice" Text="저장 후 영상을 다시 열면 적용됩니다." Style="{DynamicResource Subtle}" Margin="0,0,0,8" AutomationProperties.LiveSetting="Polite"/>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Button x:Name="ResolutionResetButton" Content="모두 기본 설정" HorizontalAlignment="Left" Style="{DynamicResource GhostButton}"/>
+          <Button x:Name="ResolutionCancelButton" Grid.Column="1" Content="취소" MinWidth="72" IsCancel="True"/>
+          <Button x:Name="ResolutionSaveButton" Grid.Column="3" Content="저장" MinWidth="72" Style="{DynamicResource PrimaryButton}" IsDefault="True"/>
+        </Grid>
+      </StackPanel>
+    </Border>
+  </Grid>
+</Window>

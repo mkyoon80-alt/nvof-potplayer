@@ -24,6 +24,8 @@ namespace NvofControl
         private readonly string path;
         [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
         private static extern uint GetPrivateProfileInt(string section, string key, int fallback, string file);
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
+        private static extern uint GetPrivateProfileString(string section,string key,string fallback,StringBuilder value,uint size,string file);
         [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool WritePrivateProfileString(string section, string key, string value, string file);
@@ -33,6 +35,29 @@ namespace NvofControl
         public int OutputFpsLimit { get { int value=(int)GetPrivateProfileInt("Nvof", "OutputFpsLimit", 60, path); return Array.IndexOf(OutputLimits,value)>=0?value:60; } }
         public int OutputMode { get { return GetPrivateProfileInt("Nvof", "OutputMode", 0, path)==1?1:0; } }
         public int OutputMultiplier { get { int value=(int)GetPrivateProfileInt("Nvof", "OutputMultiplier", 2, path); return value>=2&&value<=5?value:2; } }
+        public bool ResolutionRulesEnabled {get {return GetPrivateProfileInt("Nvof","ResolutionRulesEnabled",0,path)!=0;}}
+        public int[] ResolutionRules {get {var text=new StringBuilder(256);GetPrivateProfileString("Nvof","ResolutionRules","",text,256,path);return ResolutionSettings.Parse(text.ToString());}}
+        public void SetResolutionRulesEnabled(bool value) {Write("ResolutionRulesEnabled",value?"1":"0");}
+        public void SetResolutionConfiguration(int[] rules,int common)
+        {
+            if(common==0 || common==-1 || !ResolutionSettings.Valid(common))throw new ArgumentOutOfRangeException("common");
+            var changes=new Dictionary<string,string> {
+                {"ResolutionRules",ResolutionSettings.Serialize(rules)}, {"ResolutionRulesEnabled","1"},
+                {"OutputMode",common<0?"1":"0"},
+                {common<0?"OutputMultiplier":"OutputFpsLimit",Math.Abs(common).ToString(CultureInfo.InvariantCulture)}
+            };
+            // Publish the whole draft together. An open editor, Cancel and a
+            // failed save never expose half of a resolution table to playback.
+            string temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";
+            try {
+                if(File.Exists(path))File.Copy(path,temporary);
+                foreach(var change in changes)
+                    if(!WritePrivateProfileString("Nvof",change.Key,change.Value,temporary))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                WritePrivateProfileString(null,null,null,temporary);
+                if(File.Exists(path))File.Replace(temporary,path,null);else File.Move(temporary,path);
+            } finally {if(File.Exists(temporary))File.Delete(temporary);}
+        }
         public void SetOutputMode(int value) { if(value!=0&&value!=1)throw new ArgumentOutOfRangeException("value"); Write("OutputMode",value.ToString(CultureInfo.InvariantCulture)); }
         public void SetOutputMultiplier(int value) { if(value<2||value>5)throw new ArgumentOutOfRangeException("value"); Write("OutputMultiplier",value.ToString(CultureInfo.InvariantCulture)); }
         public void SetOutputFpsLimit(int value)
@@ -81,6 +106,8 @@ namespace NvofControl
         public bool DoubleRate;
         public int OutputFpsLimit, OutputMultiple, OutputMode, OutputMultiplier;
         public int InputHeightLimit, InputHeight;
+        public bool ResolutionRulesEnabled;
+        public int ResolutionBand, ResolutionRule;
         public bool? GpuCorrection, AppearanceProtection;
         public long MidpointPassFrames, AppearancePassFrames;
         public string TransportLabel
@@ -150,6 +177,9 @@ namespace NvofControl
                 status.OutputMultiple = Value<int>(data, "outputMultiple", 0);
                 status.OutputMode = Value<int>(data, "outputMode", 0);
                 status.OutputMultiplier = Value<int>(data, "outputMultiplier", 2);
+                status.ResolutionRulesEnabled=Value<bool>(data,"resolutionRulesEnabled",false);
+                status.ResolutionBand=Value<int>(data,"resolutionBand",0);
+                status.ResolutionRule=Value<int>(data,"resolutionRule",0);
                 status.GpuCorrection = Value<bool?>(data, "gpuMidpointCorrection", null);
                 status.AppearanceProtection = Value<bool?>(data, "appearanceProtection", null);
                 status.MidpointPassFrames = Value<long>(data, "midpointPassFrames", 0);
@@ -298,6 +328,8 @@ namespace NvofControl
         private RadioButton heightAll, height1080, height1440;
         private ComboBox outputMode, outputValue;
         private int selectedLimit=60, selectedMultiplier=2;
+        private int commonOutputMode;
+        private int[] resolutionRules=new int[7];
         private bool updatingOutput;
         private TextBlock notice, statusTitle, statusDetail, registerNotice;
         private System.Windows.Shapes.Ellipse statusDot;
@@ -318,6 +350,10 @@ namespace NvofControl
             enabled = Find<ToggleButton>("EnabledToggle");
             outputRateHint = Find<TextBlock>("OutputRateHint");
             outputMode = Find<ComboBox>("OutputModeChoice"); outputValue = Find<ComboBox>("OutputValueChoice");
+            Find<Button>("ResolutionEditButton").Click+=delegate {
+                var editor=CreateResolutionEditor();editor.Window.Owner=window;editor.Window.ShowDialog();
+                Find<Button>("ResolutionEditButton").Focus();
+            };
             heightAll=Find<RadioButton>("HeightAll");height1080=Find<RadioButton>("Height1080");height1440=Find<RadioButton>("Height1440");
             for (int index = 0; index < inputRates.Length; index++)
                 inputRates[index] = Find<CheckBox>("InputRate" + index);
@@ -417,7 +453,8 @@ namespace NvofControl
             loading = true;
             enabled.IsChecked = settings.Enabled;
             selectedLimit=settings.OutputFpsLimit; selectedMultiplier=settings.OutputMultiplier;
-            outputMode.SelectedIndex=settings.OutputMode;
+            commonOutputMode=settings.OutputMode;resolutionRules=settings.ResolutionRules;
+            outputMode.SelectedIndex=settings.ResolutionRulesEnabled?2:commonOutputMode;
             RefreshOutputValues();
             heightAll.IsChecked=settings.InputHeightLimit==0;
             height1080.IsChecked=settings.InputHeightLimit==1080;
@@ -446,7 +483,7 @@ namespace NvofControl
         {
             rateSelectionHint.Text = SelectedRateMask() == 0
                 ? "선택한 항목이 없어 모든 영상을 원본 프레임으로 재생합니다."
-                : "23.976·29.97·59.94 fps는 각각 24·30·60에 포함됩니다.";
+                : "23.976 → 24 · 29.97 → 30 · 59.94 → 60에 포함";
         }
         private void SaveInputRates()
         {
@@ -458,26 +495,45 @@ namespace NvofControl
         private void RefreshOutputValues()
         {
             updatingOutput=true;
-            bool multiple=outputMode.SelectedIndex==1;
+            bool custom=outputMode.SelectedIndex==2;
+            bool multiple=outputMode.SelectedIndex==1 || (custom && commonOutputMode==1);
+            outputValue.Visibility=custom?Visibility.Collapsed:Visibility.Visible;
+            Find<Button>("ResolutionEditButton").Visibility=custom?Visibility.Visible:Visibility.Collapsed;
             outputValue.Items.Clear();
             foreach(int value in multiple ? new int[] {2,3,4,5} : SettingsStore.OutputLimits)
                 outputValue.Items.Add(new ComboBoxItem { Content=multiple?"×"+value:"최대 "+value+" fps", Tag=value });
             int selected=multiple?selectedMultiplier:selectedLimit;
             foreach(ComboBoxItem item in outputValue.Items) if((int)item.Tag==selected) outputValue.SelectedItem=item;
-            Find<TextBlock>("OutputValueLabel").Text=multiple?"배수":"FPS 상한";
+            Find<TextBlock>("OutputValueLabel").Text=custom?"사용자 설정":multiple?"배수":"FPS 상한";
             updatingOutput=false;
             UpdateOutputHint();
         }
         private void UpdateOutputHint()
         {
-            if(outputMode.SelectedIndex==1)
+            if(outputMode.SelectedIndex==2)
+                outputRateHint.Text="세로 높이에 맞는 출력 설정을 적용합니다.\n기본 출력: "+ResolutionSettings.Label(commonOutputMode==1?-selectedMultiplier:selectedLimit);
+            else if(outputMode.SelectedIndex==1)
                 outputRateHint.Text="24 → "+(24*selectedMultiplier)+" fps · 30 → "+(30*selectedMultiplier)+" fps\n선택한 배수로 보간하며, 원본 프레임을 유지합니다.";
             else {
                 int m24=Math.Max(1,selectedLimit/24),m25=Math.Max(1,selectedLimit/25);
                 outputRateHint.Text="24 → "+(24*m24)+" fps · 25 → "+(25*m25)+" fps\n상한 안에서 가능한 가장 큰 정수배로 보간합니다.";
             }
         }
-        private string OutputChoiceLabel() { return outputMode.SelectedIndex==1?"원본 배수 ×"+selectedMultiplier:"최대 "+selectedLimit+" fps · 정수배"; }
+        private string OutputChoiceLabel() { return outputMode.SelectedIndex==2?"해상도별 설정":outputMode.SelectedIndex==1?"원본 배수 ×"+selectedMultiplier:"최대 "+selectedLimit+" fps · 정수배"; }
+        public ResolutionEditor CreateResolutionEditor(bool fixture=false)
+        {
+            int[] rules=fixture?new int[]{0,120,120,120,-3,-2,-1}:(int[])resolutionRules.Clone();
+            var editor=new ResolutionEditor(window,rules,commonOutputMode==1?-selectedMultiplier:selectedLimit,
+                SelectedHeightLimit(),SelectedRateMask(),delegate(int[] values,int common) {
+                    if(!preview)settings.SetResolutionConfiguration(values,common);
+                    resolutionRules=(int[])values.Clone();commonOutputMode=common<0?1:0;
+                    if(common<0)selectedMultiplier=-common;else selectedLimit=common;
+                    loading=true;outputMode.SelectedIndex=2;RefreshOutputValues();loading=false;
+                    Notify("해상도별 설정 저장됨 · 영상을 다시 열면 적용됩니다.",false);
+                });
+            if(fixture)((TextBlock)editor.Window.FindName("ResolutionSaveNotice")).Text="미리보기 · 설정 예시 (실제 저장값이 아닙니다)";
+            return editor;
+        }
         private int SelectedHeightLimit() { return height1080.IsChecked==true?1080:height1440.IsChecked==true?1440:0; }
         private static string HeightLabel(int value) { return value==0?"전체":value+"p 이하"; }
         private void SaveHeightLimit()
@@ -490,11 +546,17 @@ namespace NvofControl
         {
             ComboBoxItem item=outputValue.SelectedItem as ComboBoxItem;
             if(item==null)return;
-            if(outputMode.SelectedIndex==1)selectedMultiplier=(int)item.Tag;else selectedLimit=(int)item.Tag;
+            if(outputMode.SelectedIndex<2) {
+                commonOutputMode=outputMode.SelectedIndex;
+                if(commonOutputMode==1)selectedMultiplier=(int)item.Tag;else selectedLimit=(int)item.Tag;
+            }
             UpdateOutputHint();
             if(loading || preview)return;
             try {
-                if(modeChanged)settings.SetOutputMode(outputMode.SelectedIndex);
+                if(modeChanged) {
+                    if(outputMode.SelectedIndex<2)settings.SetOutputMode(outputMode.SelectedIndex);
+                    settings.SetResolutionRulesEnabled(outputMode.SelectedIndex==2);
+                }
                 else if(outputMode.SelectedIndex==1)settings.SetOutputMultiplier(selectedMultiplier);
                 else settings.SetOutputFpsLimit(selectedLimit);
                 Notify("저장됨 · 영상을 다시 열면 적용됩니다.",false);
@@ -547,7 +609,12 @@ namespace NvofControl
             }
             else if (status.State == "bypass")
             {
-                if (status.BypassReason == "source-height")
+                if (status.BypassReason == "resolution-rule")
+                {
+                    statusTitle.Text=recent?"해상도별 설정 · 원본 재생":"마지막 재생 상태 · 해상도별 보간 꺼짐";
+                    statusDetail.Text=status.InputHeight+"p · "+Fps(status.InputFps)+" fps · 이 구간은 ‘보간 안 함’으로 설정되어 있습니다.";
+                }
+                else if (status.BypassReason == "source-height")
                 {
                     statusTitle.Text=recent?"해상도 조건으로 원본 재생":"마지막 재생 상태 · 해상도 조건으로 제외";
                     statusDetail.Text=status.InputHeight+"p · "+Fps(status.OutputFps)+" fps · 적용 기준: "+HeightLabel(status.InputHeightLimit);
@@ -617,6 +684,8 @@ namespace NvofControl
                 if (inputRates[index].IsChecked == true) selectedLabels.Add(rateLabels[index]);
             text.AppendLine("보간할 원본 프레임: " + (selectedLabels.Count == 0 ? "선택 없음" : String.Join(", ", selectedLabels.ToArray()) + " fps"));
             text.AppendLine("보간할 세로 해상도: "+HeightLabel(SelectedHeightLimit()));
+            if(outputMode.SelectedIndex==2)for(int i=0;i<7;++i)
+                text.AppendLine(ResolutionSettings.BandLabel(i)+": "+ResolutionSettings.Label(resolutionRules[i]));
             text.AppendLine("영상 전달: " + status.TransportLabel);
             if(!String.IsNullOrEmpty(status.InputFormat))text.AppendLine("입력 형식: "+status.InputFormat+(status.InputFormat=="P010"?" · 10bit":status.InputFormat=="NV12"?" · 8bit":""));
             if(!String.IsNullOrEmpty(status.OutputFormat))text.AppendLine("출력 형식: "+status.OutputFormat+(status.OutputFormat=="P010"?" · 10bit":" · 8bit"));
@@ -630,6 +699,7 @@ namespace NvofControl
                 text.AppendLine("출력 프레임: " + status.OutputFrames);
                 text.AppendLine("재생에 적용된 세로 해상도: "+HeightLabel(status.InputHeightLimit)+" · 입력 "+status.InputHeight+"p");
                 text.AppendLine("재생에 적용된 원본 프레임 선택: " + status.InputRateMask);
+                if(status.ResolutionRulesEnabled)text.AppendLine("재생에 적용된 해상도별 설정: "+(status.ResolutionBand==0?"480p 미만":status.ResolutionBand+"p 이상")+" · "+ResolutionSettings.Label(status.ResolutionRule));
                 text.AppendLine("재생에 적용된 출력 모드: " + (status.OutputMode==1 ? "원본 배수 ×"+status.OutputMultiplier+" · 실제 ×"+status.OutputMultiple : status.OutputFpsLimit > 0 ? "최대 " + status.OutputFpsLimit + " fps · 실제 ×" + status.OutputMultiple : status.DoubleRate ? "원본의 두 배 (×2)" : "이전 필터 · 보고 없음"));
                 if (!String.IsNullOrEmpty(status.BypassReason)) text.AppendLine("원본 재생 이유: " + (status.BypassReason == "source-height" ? "세로 해상도 조건에서 제외" : status.BypassReason == "source-rate" ? "원본 프레임 선택에서 제외" : status.BypassReason == "disabled" ? "보간 사용 꺼짐" : status.BypassReason == "at-or-above-target" ? "상한 내 정수배 없음" : status.BypassReason == "unknown-source-rate" ? "원본 FPS 확인 불가" : status.BypassReason == "output-rate-unsupported" ? "출력 FPS가 지원 범위 밖" : status.BypassReason));
                 text.AppendLine("마지막 기록: " + status.UpdatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"));
@@ -810,6 +880,12 @@ namespace NvofControl
             if(state=="limit120") { fixture.State="active";fixture.OutputFps=120000.0/1001;fixture.OutputFpsLimit=120;fixture.OutputMultiple=5;fixture.Transport="d3d11-gpu";selectedLimit=120;outputMode.SelectedIndex=0;RefreshOutputValues(); }
             if(state=="limit240") { selectedLimit=240;outputMode.SelectedIndex=0;RefreshOutputValues(); fixture.State="active";fixture.OutputFps=239.760;fixture.OutputFpsLimit=240;fixture.OutputMultiple=10; }
             if(state=="multiple5") { selectedMultiplier=5;outputMode.SelectedIndex=1;RefreshOutputValues(); fixture.State="active";fixture.OutputFps=119.880;fixture.OutputMode=1;fixture.OutputMultiplier=5;fixture.OutputMultiple=5; }
+            if(state=="resolution" || state=="resolution-editor" || state=="resolution-disabled") {
+                selectedLimit=120;commonOutputMode=0;outputMode.SelectedIndex=2;RefreshOutputValues();
+                fixture.State="active";fixture.Transport="d3d11-gpu";fixture.OutputFps=119.880;
+                fixture.ResolutionRulesEnabled=true;fixture.ResolutionBand=1080;fixture.ResolutionRule=120;
+                if(state=="resolution-disabled")enabled.IsChecked=false;
+            }
             if (state == "error") fixture.Message = "Preview: GPU initialization failed.";
             if (state == "double" || state == "double-expanded")
             {
@@ -831,6 +907,14 @@ namespace NvofControl
                 fixture.BypassReason = state == "unknown-rate" ? "unknown-source-rate" : "output-rate-unsupported";
                 fixture.InputFps = state == "unknown-rate" ? 0 : 600;
                 fixture.OutputFps = fixture.InputFps;
+            }
+            if (state == "rates-mixed" || state == "rates-none")
+            {
+                for(int i=0;i<inputRates.Length;++i)inputRates[i].IsChecked=state=="rates-mixed" && (i==0 || i==2 || i==4);
+                UpdateRateHint();
+                fixture.State=state=="rates-none"?"bypass":"active";fixture.BypassReason="source-rate";
+                fixture.Transport="d3d11-gpu";fixture.InputRateMask=SelectedRateMask();
+                if(state=="rates-none")fixture.OutputFps=fixture.InputFps;
             }
             ShowStatus(fixture);
             notice.Text = "미리보기 · 상태 예시 (실제 실행 기록이 아닙니다)";
@@ -875,6 +959,7 @@ namespace NvofControl
                     int height = Int32.Parse(Arg(args, "--preview-height", "501"), CultureInfo.InvariantCulture);
                     if (width < 360 || width > 3000 || height < 300 || height > 3000) throw new ArgumentOutOfRangeException("preview size");
                     controller.PreviewState(state);
+                    if(state=="resolution-editor")window=controller.CreateResolutionEditor(true).Window;
                     string focusedName = Arg(args, "--preview-focus", "");
                     if (!String.IsNullOrEmpty(focusedName))
                     {
@@ -886,6 +971,22 @@ namespace NvofControl
                     content.Measure(new Size(width, height));
                     content.Arrange(new Rect(0, 0, width, height));
                     content.UpdateLayout();
+                    string menuName = Arg(args, "--preview-menu", "");
+                    if (!String.IsNullOrEmpty(menuName))
+                    {
+                        ComboBox combo = window.FindName(menuName) as ComboBox;
+                        if (combo == null) throw new ArgumentException("Unknown menu preview target.");
+                        combo.ApplyTemplate();
+                        Popup popup = combo.Template.FindName("PART_Popup", combo) as Popup;
+                        if (popup == null || popup.Child == null) throw new InvalidOperationException("Select menu template is missing.");
+                        // Render the actual template tree without opening a window or altering settings.
+                        content = (FrameworkElement)popup.Child;
+                        width = (int)Math.Ceiling(combo.ActualWidth);
+                        content.Measure(new Size(width, Double.PositiveInfinity));
+                        height = (int)Math.Ceiling(content.DesiredSize.Height);
+                        content.Arrange(new Rect(0, 0, width, height));
+                        content.UpdateLayout();
+                    }
                     double scale = Double.Parse(Arg(args, "--preview-scale", "1"), CultureInfo.InvariantCulture);
                     if (scale < 1 || scale > 3) throw new ArgumentOutOfRangeException("preview scale");
                     RenderTargetBitmap bitmap = new RenderTargetBitmap((int)Math.Ceiling(width * scale), (int)Math.Ceiling(height * scale), 96 * scale, 96 * scale, PixelFormats.Pbgra32);
@@ -984,6 +1085,21 @@ namespace NvofControl
                 try{store.SetOutputMode(2);}catch(ArgumentOutOfRangeException){badMode=true;}
                 try{store.SetOutputMultiplier(6);}catch(ArgumentOutOfRangeException){badMultiple=true;}
                 if(!badMode||!badMultiple)throw new Exception("Unsupported output choice accepted.");
+                if(store.ResolutionRulesEnabled || ResolutionSettings.Serialize(store.ResolutionRules)!="0,0,0,0,0,0,0")throw new Exception("Legacy INI changed resolution behavior.");
+                File.AppendAllText(settingsPath,"\r\nKeepThis=42\r\n[Unrelated]\r\nValue=retained\r\n");
+                var customRules=new int[]{0,240,144,120,-3,-2,-1};
+                store.SetResolutionConfiguration(customRules,120);
+                if(!store.ResolutionRulesEnabled || store.OutputMode!=0 || store.OutputFpsLimit!=120 ||
+                    ResolutionSettings.Serialize(store.ResolutionRules)!="0,240,144,120,-3,-2,-1" || !File.ReadAllText(settingsPath).Contains("Value=retained"))throw new Exception("Atomic resolution save or unrelated settings preservation failed.");
+                store.SetResolutionConfiguration(customRules,-3);
+                if(store.OutputMode!=1 || store.OutputMultiplier!=3 || store.OutputFpsLimit!=120)throw new Exception("Common selection lost remembered cap.");
+                store.SetResolutionRulesEnabled(false);
+                if(store.ResolutionRulesEnabled || store.ResolutionRules[6]!=-1)throw new Exception("Turning custom rules off lost choices.");
+                string beforeInvalid=File.ReadAllText(settingsPath);bool badRule=false;
+                try{store.SetResolutionConfiguration(new int[]{0,0,0,0,0,0,119},120);}catch(ArgumentOutOfRangeException){badRule=true;}
+                if(!badRule || File.ReadAllText(settingsPath)!=beforeInvalid)throw new Exception("Invalid rules partially changed settings.");
+                foreach(string invalid in new[]{"","0,120","0,0,0,0,0,0,0,0","0,0,0,0,0,0,119","0,0,0,0,0,0,+120","0,0,0,0,0,0,120junk"})
+                    if(ResolutionSettings.Serialize(ResolutionSettings.Parse(invalid))!="0,0,0,0,0,0,0")throw new Exception("Invalid resolution syntax accepted.");
                 string uninstallFixture=Path.Combine(folder,"uninstaller");
                 Directory.CreateDirectory(uninstallFixture);
                 File.WriteAllText(Path.Combine(uninstallFixture,"unins000.exe"),"old");
@@ -1055,6 +1171,50 @@ namespace NvofControl
                 if(!((TextBlock)testWindow.FindName("OutputRateHint")).Text.Contains("24 → 48"))throw new Exception("Cap mode must not imply exact 60 fps.");
                 mode.SelectedIndex=1;
                 if((int)((ComboBoxItem)value.SelectedItem).Tag!=5)throw new Exception("Mode switch forgot last multiplier.");
+                mode.SelectedIndex=2;
+                var editButton=(Button)testWindow.FindName("ResolutionEditButton");
+                if(value.Visibility!=Visibility.Collapsed || editButton.Visibility!=Visibility.Visible)throw new Exception("Custom editor entry missing.");
+                ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=false;
+                if(editButton.IsEnabled)throw new Exception("Master-off left custom controls active.");
+                ((ToggleButton)testWindow.FindName("EnabledToggle")).IsChecked=true;
+                int draftSaves=0;
+                var draft=new ResolutionEditor(testWindow,customRules,120,1080,63,delegate(int[] rules,int common){++draftSaves;store.SetResolutionConfiguration(rules,common);});
+                string beforeDraft=File.ReadAllText(settingsPath);
+                draft.Choices[3].SelectedIndex=0;
+                if(draftSaves!=0 || File.ReadAllText(settingsPath)!=beforeDraft || customRules[3]!=120)throw new Exception("Draft edits leaked before Save.");
+                ((Button)draft.Window.FindName("ResolutionResetButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                if(ResolutionSettings.Serialize(draft.Rules)!="0,0,0,0,0,0,0" || draftSaves!=0)throw new Exception("Reset must affect only the draft.");
+                ((Button)draft.Window.FindName("ResolutionCancelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                if(draftSaves!=0 || File.ReadAllText(settingsPath)!=beforeDraft)throw new Exception("Cancel wrote settings.");
+                var savedEditor=new ResolutionEditor(testWindow,customRules,-2,0,63,delegate(int[] rules,int common){++draftSaves;store.SetResolutionConfiguration(rules,common);});
+                savedEditor.SaveDraft();
+                if(draftSaves!=1 || store.OutputMultiplier!=2 || store.ResolutionRules[6]!=-1)throw new Exception("Editor save did not commit draft.");
+                foreach(int width in new[]{504,464}) {
+                    FrameworkElement editorClient=(FrameworkElement)savedEditor.Window.Content;
+                    editorClient.Measure(new Size(width,601));editorClient.Arrange(new Rect(0,0,width,601));editorClient.UpdateLayout();
+                    foreach(string name in new[]{"CommonOutputChoice","ResolutionChoice0","ResolutionChoice6","ResolutionSaveButton","ResolutionCancelButton","ResolutionResetButton"}) {
+                        var item=(FrameworkElement)savedEditor.Window.FindName(name);
+                        var bounds=item.TransformToAncestor(editorClient).TransformBounds(new Rect(0,0,item.ActualWidth,item.ActualHeight));
+                        if(bounds.Left<0 || bounds.Right>width || bounds.Bottom>601)throw new Exception("Resolution editor clipped: "+name);
+                    }
+                }
+                System.Windows.Input.FocusManager.SetFocusedElement(savedEditor.Window,savedEditor.Choices[3]);
+                if(!savedEditor.Choices[3].IsFocused || String.IsNullOrEmpty(System.Windows.Automation.AutomationProperties.GetName(savedEditor.Choices[3])))throw new Exception("Resolution choice focus/label missing.");
+                var styledChoice=savedEditor.Choices[3];
+                styledChoice.ApplyTemplate();
+                var menu=styledChoice.Template.FindName("PART_Popup",styledChoice) as Popup;
+                var trigger=styledChoice.Template.FindName("DropDownToggle",styledChoice) as ToggleButton;
+                if(menu==null || menu.Child==null || trigger==null || trigger.Focusable || trigger.IsTabStop)
+                    throw new Exception("Custom select must retain native popup and a single keyboard tab stop.");
+                var openBinding=System.Windows.Data.BindingOperations.GetBinding(trigger,ToggleButton.IsCheckedProperty);
+                if(openBinding==null || openBinding.Path.Path!="IsDropDownOpen" || openBinding.Mode!=System.Windows.Data.BindingMode.TwoWay)
+                    throw new Exception("Select trigger must synchronize native open/close state.");
+                var menuContent=(FrameworkElement)menu.Child;
+                menuContent.Measure(new Size(260,Double.PositiveInfinity));menuContent.Arrange(new Rect(0,0,260,menuContent.DesiredSize.Height));menuContent.UpdateLayout();
+                var selectedMenuItem=(ComboBoxItem)styledChoice.SelectedItem;selectedMenuItem.ApplyTemplate();
+                var selectionMark=selectedMenuItem.Template.FindName("Check",selectedMenuItem) as System.Windows.Shapes.Path;
+                if(selectionMark==null || selectionMark.Visibility!=Visibility.Visible)throw new Exception("Menu selection must remain visible without relying only on color.");
+                savedEditor.Window.Close();mode.SelectedIndex=1;
                 testController.PreviewState("error");
                 if (!((TextBox)testWindow.FindName("DiagnosticsText")).Text.Contains("AnotherLongExampleFolder")) throw new Exception("Full action error details must remain available without expanding the footer.");
                 foreach (int width in new int[] { 504, 464 })
@@ -1070,6 +1230,9 @@ namespace NvofControl
                         Rect bounds = item.TransformToAncestor(client).TransformBounds(new Rect(0, 0, item.ActualWidth, item.ActualHeight));
                         if (bounds.Left < 0 || bounds.Right > width || bounds.Top < 0 || bounds.Bottom > footerTop) throw new Exception("Essential control clipped at " + width + ": " + controlName);
                     }
+                    var hint=(TextBlock)testWindow.FindName("OutputRateHint");double shownHeight=hint.ActualHeight;
+                    hint.Measure(new Size(hint.ActualWidth,Double.PositiveInfinity));
+                    if(hint.DesiredSize.Height-hint.Margin.Top-hint.Margin.Bottom>shownHeight+0.5)throw new Exception("Output explanation text is internally clipped at "+width);
                 }
                 if(testWindow.FindName("EnhancementsTab")!=null || ((TabControl)testWindow.FindName("SettingsTabs")).Items.Count!=3)throw new Exception("Obsolete enhancements tab remains.");
                 testController.ConfigurePackageUi(false);

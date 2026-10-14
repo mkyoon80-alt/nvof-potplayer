@@ -1,0 +1,12 @@
+# Merge only this table into your MCP client's config; adjust both absolute paths.
+# This server exposes only the five quality (tuning_*) tools.
+[mcp_servers.nvof_tuning]
+command = 'C:\path\to\python.exe'
+args = ['F:\path\to\NvofPotPlayer\tools\tuning_mcp.py']
+startup_timeout_sec = 10
+tool_timeout_sec = 10
+
+# Optional: if the experimental player/host uses NVOF_TUNING_DIR, use the same
+# absolute directory here. Otherwise both use LOCALAPPDATA/NvofPotPlayer/Tuning.
+# [mcp_servers.nvof_tuning.env]
+# NVOF_TUNING_DIR = 'F:\path\to\NvofPotPlayer\build\tuning-state'

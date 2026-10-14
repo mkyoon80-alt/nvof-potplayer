@@ -11,6 +11,7 @@
 *.pdb
 *.user
 *.suo
+__pycache__/
 .vs/
 /ui/bin/
 /ui/obj/

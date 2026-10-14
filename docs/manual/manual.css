@@ -22,3 +22,23 @@
 
 /* Keep the four setup steps readable before the mobile navigation breakpoint. */
 @media(min-width:721px) and (max-width:1100px){.quick-path{flex-wrap:wrap;justify-content:flex-start}.quick-path a{flex:1 1 40%}.quick-path svg{display:none}}
+
+/* v0.4.9: clear reading hierarchy and primary / outline actions. */
+.intro-actions{display:flex;flex-wrap:wrap;gap:10px;margin:26px 0 32px}
+.button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 16px;border:1px solid var(--line);border-radius:6px;background:var(--white);color:var(--ink);font-size:14px;font-weight:600;text-decoration:none}
+.button:hover{background:var(--tint);border-color:var(--accent);text-decoration:none}
+.button.primary{background:var(--accent);border-color:var(--accent);color:var(--white)}
+.button.primary:hover{background:#114c33;border-color:#114c33}
+.button:active{transform:translateY(1px)}
+.release-note{padding:24px 0;border-top:1px solid var(--line)}
+.release-note h2{margin-bottom:12px}.release-note p{margin-bottom:12px}
+.text-links{display:flex;flex-wrap:wrap;gap:4px 22px;font-size:14px}
+.text-links a{display:inline-flex;align-items:center;min-height:44px}
+.nav-group{font-weight:600;font-size:12px;color:var(--ink);margin:22px 0 8px}
+nav>a{min-height:44px;display:flex;align-items:center}
+button,.language-link{min-height:44px}.language-link{display:inline-flex;align-items:center}
+#performance h3{margin-top:28px}#performance tbody th{width:26%}
+#performance td{min-width:230px}#performance .table-wrap{margin:24px 0 30px}
+#hdr-display h3{font-size:23px}#diagnostic-logging{scroll-margin-top:100px}
+@media(max-width:600px){.intro-actions{display:grid}.button{text-align:center}.text-links{gap:4px 16px}.quick-path{flex-direction:column;align-items:stretch;gap:8px}.quick-path svg{display:none}.quick-path a{min-height:44px}}
+@media print{.intro-actions{display:none}.release-note{padding-top:0;border:0}.text-links a{min-height:0}.table-wrap{overflow:visible}#performance td{min-width:0}}
