@@ -65,12 +65,20 @@ int main() {
             "60.006 fps must bypass at 60 and double at 120");
         // Published UI choices: caps retain source originals and direct modes
         // ignore the remembered cap. Invalid new keys preserve old defaults.
-        const int caps[]={60,72,75,100,120,144,240};
-        const int expected24[]={2,3,3,4,5,6,10},expected25[]={2,2,3,4,4,5,9};
-        for(int i=0;i<7;++i) {
+        const int caps[]={60,72,75,100,120,144,160,240};
+        const int expected24[]={2,3,3,4,5,6,6,10},expected25[]={2,2,3,4,4,5,6,9};
+        for(int i=0;i<8;++i) {
             require(nvof::output_multiple(416667,caps[i])==expected24[i],"24p expanded cap mismatch");
             require(nvof::output_multiple(400000,caps[i])==expected25[i],"25p expanded cap mismatch");
             require(nvof::output_multiple(10000000,caps[i])<=33,"Expanded cap exceeds phase pool");
+        }
+        for(const auto c : {Case{417083,{144000,1001},{0,1},6,0},
+            Case{333333,{150,1},{0,1},5,0},Case{200000,{150,1},{0,1},3,0},
+            Case{166667,{120,1},{0,1},2,0},Case{125000,{160,1},{0,1},2,0},
+            Case{62500,{160,1},{0,1},1,0},Case{41667,{240,1},{0,1},1,0}}) {
+            const auto rate=nvof::capped_source_rate(c.duration,160);
+            require(rate.num==c.low.num && rate.den==c.low.den,"160 fps cap retimed the source or lost cadence");
+            require(nvof::output_multiple(c.duration,160)==c.lowMultiple,"160 fps multiplier mismatch");
         }
         for(int multiple=2;multiple<=5;++multiple)for(int64_t duration:{417083LL,416667LL,400000LL,333300LL,166667LL}) {
             const auto source=nvof::canonical_source_rate(duration);

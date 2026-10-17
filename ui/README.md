@@ -28,7 +28,7 @@ The controller reads and writes `NvofPotPlayer.ini` beside the executable and fi
 | --- | --- | --- |
 | `Enabled` | `1` or `0` | `1` |
 | `OutputMode` | `0` = FPS cap, `1` = direct source multiplier | `0` |
-| `OutputFpsLimit` | `60`, `72`, `75`, `100`, `120`, `144`, `240` | `60` |
+| `OutputFpsLimit` | `60`, `72`, `75`, `100`, `120`, `144`, `160`, `240` | `60` |
 | `OutputMultiplier` | `2`, `3`, `4`, `5` | `2` |
 | `ResolutionRulesEnabled` | `1` = use per-height rules, `0` = common output only | `0` |
 | `ResolutionRules` | Seven comma-separated rule values, in ascending height-band order (below) | `0,0,0,0,0,0,0` |

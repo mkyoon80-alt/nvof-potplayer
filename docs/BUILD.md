@@ -8,8 +8,8 @@ Visual Studio 2022 C++, Windows SDK, CMake 3.20+, Git and official NVIDIA Optica
 
 ~~~powershell
 .\tools\fetch-build-deps.ps1
-.\tools\build.ps1 -BuildDirectory build\release0411\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
-.\ui\build-ui.ps1 -OutputDirectory ui\staging-release0411
+.\tools\build.ps1 -BuildDirectory build\release0412\native -OpticalFlowSdkIncludeDirectory "C:\SDKs\Optical_Flow_SDK_5.0.7\NvOFInterface"
+.\ui\build-ui.ps1 -OutputDirectory ui\staging-release0412
 ~~~
 
 The filter and register helper use static MSVC /MT. Shader bytecode is generated at build time. CMake never finds CUDA or builds the old FRUC bridge in this profile. Historical FRUC-specific research tests remain as source references but are not active build targets.
@@ -19,13 +19,13 @@ Supported CPU NV12 SDR and 10-bit samples upload to the GPU and return GPU surfa
 ## Package and manual
 
 ~~~powershell
-.\tools\build-local-package.ps1 -Version 0.4.11 -NativeDirectory build\release0411\native\Release -UiDirectory ui\staging-release0411
-python tools/build-manual-site.py --output build/release0411/manual-site
-python tools/build-manual-assets.py --site-dir build/release0411/manual-site --version 0.4.11 --language ko --output dist
-python tools/build-manual-assets.py --site-dir build/release0411/manual-site --version 0.4.11 --language en --output dist
+.\tools\build-local-package.ps1 -Version 0.4.12 -NativeDirectory build\release0412\native\Release -UiDirectory ui\staging-release0412
+python tools/build-manual-site.py --output build/release0412/manual-site
+python tools/build-manual-assets.py --site-dir build/release0412/manual-site --version 0.4.12 --language ko --output dist
+python tools/build-manual-assets.py --site-dir build/release0412/manual-site --version 0.4.12 --language en --output dist
 ~~~
 
-The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. v0.4.11 is distributed as a standalone ZIP. The optional developer tool tools/build-installer.ps1 still supports Inno Setup 7.1.0; the compiler is not shipped.
+The package includes the published .NET/WPF controller, native filter, register helper, settings, manual and notices. FRUC/CUDA and NVIDIA driver files are rejected. v0.4.12 is distributed as a standalone ZIP. The optional developer tool tools/build-installer.ps1 still supports Inno Setup 7.1.0; the compiler is not shipped.
 
 Old runtime acquisition scripts are unnecessary. tools/install-phase-upgrade.ps1 is retired to prevent accidental installation of FRUC. Earlier acquisition evidence remains in config/legacy-runtime-manifest.json and Git history, not in the current package.
 

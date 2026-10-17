@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(NvofPotPlayer VERSION 0.4.11 LANGUAGES CXX RC)
+project(NvofPotPlayer VERSION 0.4.12 LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -181,3 +181,10 @@ add_test(NAME cpu_upload_gpu COMMAND cpu_upload_gpu)
 target_link_libraries(cpu_upload_gpu PRIVATE d3d12)
 add_executable(cpu10_sequence tests/cpu10_sequence.cpp)
 target_link_libraries(cpu10_sequence PRIVATE nvof_gpu_engine nvof_mf_bridge)
+
+# Regressions for decoder scan flags with HEVC/AV1 10-bit output.
+add_executable(hevc_scan_tests tests/hevc_scan_tests.cpp)
+target_include_directories(hevc_scan_tests PRIVATE include)
+add_test(NAME hevc_scan COMMAND hevc_scan_tests)
+add_executable(directshow_bitdepth_rate tests/directshow_bitdepth_rate.cpp)
+target_link_libraries(directshow_bitdepth_rate PRIVATE nvof_mf_bridge strmbase strmiids ole32 oleaut32 uuid winmm advapi32 d3d11 dxgi d3d12 bcrypt)

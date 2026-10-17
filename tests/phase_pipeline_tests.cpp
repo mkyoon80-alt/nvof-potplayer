@@ -332,7 +332,7 @@ void quantized_pipeline_cadence() {
 void integer_limit_cadence() {
     constexpr int count=60;
     for(int64_t duration : {417083LL,416667LL,416600LL,400000LL,333667LL,333333LL,333300LL,333001LL,333000LL,200000LL,166833LL,166667LL,166650LL,83333LL})
-    for(int limit : {60,72,75,100,120,144,240}) for(int mode=0;mode<3;++mode) {
+    for(int limit : {60,72,75,100,120,144,160,240}) for(int mode=0;mode<3;++mode) {
         const Rate source=canonical_source_rate(duration),target=capped_source_rate(duration,limit);
         const int multiple=output_multiple(duration,limit);int calls=0,outputs=0;
         const int64_t origin=quantized_source_pts(source,0,1234567,mode);

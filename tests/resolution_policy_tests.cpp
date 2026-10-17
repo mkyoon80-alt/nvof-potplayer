@@ -28,6 +28,14 @@ int main() {
         const auto inherited=resolve_resolution_output(360,true,rules,1,120,4);
         require(inherited.mode==1 && inherited.multiplier==4,"inherit lost common mode");
         require(!resolve_resolution_output(0,true,rules,0,60,2).disabled,"unknown height must inherit");
+        const auto cap160Rules=parse_resolution_rules("0,0,0,160,0,120,-4");
+        require(cap160Rules==ResolutionRules{0,0,0,160,0,120,-4},"160 fps rule rejected");
+        for(int height : {1080,2160,4320,1080}) {
+            const auto selected=resolve_resolution_output(height,true,cap160Rules,0,160,2);
+            const int multiple=selected_output_multiple(333333,selected.mode,selected.limit,selected.multiplier);
+            require(multiple==(height==1080?5:4),"resolution transition retained stale 160 fps rule");
+        }
+        require(resolve_resolution_output(2160,false,cap160Rules,0,160,2).limit==160,"disabled rules lost common 160 fps cap");
         std::cout<<"PASS resolution ranges 1..8192, settings parsing, inheritance, cap/multiplier/off\n";
     } catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

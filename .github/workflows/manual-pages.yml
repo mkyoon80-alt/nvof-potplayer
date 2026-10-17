@@ -15,6 +15,7 @@ on:
       - 'docs/THIN-OVERLAY-TRIAL.md'
       - 'docs/ADAPTER-SWITCH-TRIAL.md'
       - 'docs/SEEK-PREVIEW.ko.md'
+      - 'docs/TENBIT-SCAN-TRIAL.md'
       - 'licenses/**'
       - 'THIRD_PARTY_NOTICES.md'
       - 'tools/build-manual-site.py'

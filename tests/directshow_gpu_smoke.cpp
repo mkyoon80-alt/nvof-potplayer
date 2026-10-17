@@ -36,6 +36,7 @@ using Microsoft::WRL::ComPtr;
 const CLSID kFilter = {0xedeca044, 0x78cd, 0x40eb, {0x8f, 0x37, 0x63, 0xd9, 0x47, 0xc5, 0x01, 0xa0}};
 int kWidth = 640, kHeight = 360;
 bool av1_fixture_header=false;
+bool av1_misflag=false;
 int av1_format=0;
 std::wstring vp9_case;
 REFERENCE_TIME kDuration = 417083;
@@ -92,6 +93,7 @@ CMediaType input_type() {
     if (!video) throw std::bad_alloc();
     *video = {};
     video->AvgTimePerFrame = declared_duration>=0?declared_duration:kDuration;
+    if(av1_misflag)video->dwInterlaceFlags=AMINTERLACE_IsInterlaced|AMINTERLACE_Field1First;
     video->dwPictAspectRatioX = 16;
     video->dwPictAspectRatioY = 9;
     video->rcSource = {0, 0, kWidth, kHeight};
@@ -312,6 +314,11 @@ public:
             const size_t header=av1_format==1?sizeof(VIDEOINFOHEADER):sizeof(VIDEOINFOHEADER2);
             auto* data=type.AllocFormatBuffer(ULONG(header+seq.size()));std::memset(data,0,header);
             if(!seq.empty())std::memcpy(data+header,seq.data(),seq.size());
+            if(av1_fixture_header && av1_format==2) {
+                auto* h=reinterpret_cast<VIDEOINFOHEADER2*>(data);
+                h->AvgTimePerFrame=kDuration;h->bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+                h->bmiHeader.biWidth=kWidth;h->bmiHeader.biHeight=kHeight;
+            }
             if(av1_format==2 && (vp9_case.find(L"flags-only")!=std::wstring::npos || vp9_case.find(L"conflict")!=std::wstring::npos)) {
                 DXVA2_ExtendedFormat flags{};flags.NominalRange=DXVA2_NominalRange_16_235;
                 flags.VideoPrimaries=MFVideoPrimaries_BT2020;flags.VideoTransferMatrix=MFVideoTransferMatrix_BT2020_10;
@@ -324,6 +331,10 @@ public:
         const size_t size=offsetof(MPEG2VIDEOINFO,dwSequenceHeader)+seq.size();
         auto* m=reinterpret_cast<MPEG2VIDEOINFO*>(type.AllocFormatBuffer(ULONG(size)));if(!m)return E_OUTOFMEMORY;
         std::memset(m,0,size);m->cbSequenceHeader=DWORD(seq.size());std::memcpy(m->dwSequenceHeader,seq.data(),seq.size());
+        if(av1_fixture_header) {
+            m->hdr.AvgTimePerFrame=kDuration;m->hdr.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+            m->hdr.bmiHeader.biWidth=kWidth;m->hdr.bmiHeader.biHeight=kHeight;
+        }
         return CopyMediaType(media,&type);
     }
 };
@@ -1230,6 +1241,9 @@ int wmain(int argc,wchar_t** argv) {
         if(std::wstring(argv[9]).find(L"sdr")!=std::wstring::npos){hdr_transfer=0;color_fixture=2;}
         if(std::wstring(argv[9]).find(L"vi1")!=std::wstring::npos)av1_format=1;
         if(std::wstring(argv[9]).find(L"vi2")!=std::wstring::npos)av1_format=2;
+        if(std::wstring(argv[9]).find(L"misflag")!=std::wstring::npos) {
+            av1_misflag=true;p010_media=true;color_fixture=0;
+        }
     }
     if(argc>9 && std::wstring(argv[9]).find(L"vp9-")==0) {
         vp9_case=argv[9];recover_transfer=vp9_case.find(L"hlg")!=std::wstring::npos?18:16;

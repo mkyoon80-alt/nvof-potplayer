@@ -4,15 +4,23 @@
 
 A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVIDIA Optical Flow and custom Newton-based synthesis. Choose FPS caps or ×2–×5 output, with GPU interpolation for native D3D11 and supported software-decoded video, including 10-bit HDR processing. **No VapourSynth, NvOFFRUC.dll, or separate CUDA runtime required.**
 
-**[Download v0.4.11](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.11)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
+**[Download v0.4.12](https://github.com/mkyoon80-alt/nvof-potplayer/releases/tag/v0.4.12)** · **[English manual](https://mkyoon80-alt.github.io/nvof-potplayer/en.html)** · **[한국어 매뉴얼](https://mkyoon80-alt.github.io/nvof-potplayer/)**
 
 팟플레이어 등 x64 DirectShow 플레이어용 NVIDIA 광학흐름 기반 프레임 보간 필터입니다. **FPS 상한 또는 원본 배수**를 골라 원본의 정수배로 보간합니다.
 
 압축을 풀어 사용하는 Windows x64 스탠드얼론 ZIP입니다. 필터·등록 도구·설정창과 .NET/WPF 런타임, 한국어·영어 오프라인 매뉴얼을 포함합니다. NVIDIA 드라이버와 팟플레이어는 별도로 필요합니다.
 
-## v0.4.11의 변경 사항
+## v0.4.12의 변경 사항
 
-방향키·재생바로 이동한 뒤 보간이 더 빨리 재개되도록 개선했습니다. 빠른 입력으로 원본 프레임이 과하게 쌓이는 것을 제한하고, 탐색 보호 구간을 200ms에서 100ms로 줄였습니다. 첫 화면 전 대기는 추가하지 않았으며 기존 화질과 고배수 재생 처리를 유지합니다. [탐색 개선과 검증 범위](docs/SEEK-PREVIEW.ko.md)
+HEVC·AV1 영상에서 10비트 출력을 켰을 때 원본 FPS를 두 배로 잘못 인식하거나 GPU 디코딩·보간 연결이 끊기는 문제를 수정했습니다. 실제 인터레이스 처리, 보간 화질과 재생·탐색 방식은 유지합니다.
+
+대상 옵션은 **F5 → 영상 → 비디오 버퍼 포맷 옆 ‘10비트 출력’**입니다. 23.976fps HEVC의 잘못된 두 배 인식을 바로잡고, AV1의 P010 10bit 하드웨어 입력을 연결 단계에서 판별합니다. 기존 INI를 보존하고 팟플레이어를 완전히 종료한 뒤 다시 실행하세요. [수정 및 검증 범위](docs/TENBIT-SCAN-TRIAL.md)
+
+Fixes incorrect doubled source FPS and failed GPU decoding/interpolation connections when 10-bit output is enabled for affected HEVC/AV1 video. Genuine interlaced processing, interpolation quality and playback/seek scheduling are retained.
+
+일반 출력과 해상도별 출력에 **최대 160fps**를 추가했습니다. 원본의 정수배를 유지하므로 24fps는 144fps, 30fps는 150fps, 60fps는 120fps로 출력합니다. 기존에 선택한 상한과 설정은 유지됩니다.
+
+Adds a **160fps cap** to common and per-resolution output settings. Integer cadence is preserved: 24fps outputs 144fps, 30fps outputs 150fps, and 60fps outputs 120fps. Existing selections and settings are retained.
 
 ### 포함된 주요 기능
 
@@ -25,7 +33,7 @@ A standalone DirectShow frame interpolation filter for PotPlayer, powered by NVI
 
 **남은 제한:** 시작 직후 큰 드랍과 탐색 직후 소량의 드랍이 남을 수 있습니다. 연속 재생은 크게 개선됐지만 소량의 누적 드랍도 보고돼 모든 소스의 드랍 0을 보장하지 않습니다. 첫 화면 전 버퍼 채우기 대기는 추가하지 않았습니다.
 
-FPS 상한 **60 / 72 / 75 / 100 / 120 / 144 / 240fps**, 원본 배수 **×2 / ×3 / ×4 / ×5**, 원본 FPS·세로 해상도 조건은 그대로 사용할 수 있습니다.
+FPS 상한 **60 / 72 / 75 / 100 / 120 / 144 / 160 / 240fps**, 원본 배수 **×2 / ×3 / ×4 / ×5**, 원본 FPS·세로 해상도 조건은 그대로 사용할 수 있습니다.
 
 24fps를 최대 60fps로 설정하면 **48fps**입니다. 72fps로 보려면 최대 72fps 또는 원본 ×3을 선택하세요. 정확한 목표 FPS로 변환하는 방식이 아니며, 높은 출력 FPS의 실시간 유지 여부는 GPU·영상·렌더러 설정에 따라 달라집니다.
 

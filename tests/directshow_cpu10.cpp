@@ -8,6 +8,9 @@
 
 CMediaType cpu_media;
 bool cpu_avc_sps=false,cpu_avc_interlaced=false;
+std::vector<uint8_t> cpu_hevc_sequence;
+std::wstring cpu_av1_case;
+unsigned cpu_hdr_transfer=MFVideoTransFunc_2084;
 bool cpu_weave=false,cpu_mixed=false;
 bool cpu_hdr_fixture=false,cpu_hdr_reconnect=false;
 bool cpu_offered_allocator=false;
@@ -65,8 +68,37 @@ public:
     CpuEncodedPin(CBaseFilter* f,CCritSec* l,HRESULT* h):CBaseInputPin(NAME("AVC input facts"),f,l,h,L"Compressed"){}
     HRESULT CheckMediaType(const CMediaType*) override {return S_OK;}
     STDMETHODIMP ConnectionMediaType(AM_MEDIA_TYPE* media) override {
-        if(cpu_hdr_fixture) {
-            auto seq=hevc_fixture::hvcc();CMediaType type;type.SetType(&MEDIATYPE_Video);
+        if(!cpu_av1_case.empty()) {
+            auto seq=av1_fixture::pq;
+            if(cpu_av1_case==L"av1-truncated")seq.pop_back();
+            if(cpu_av1_case==L"av1-missing")seq.clear();
+            CMediaType type;type.SetType(&MEDIATYPE_Video);
+            GUID codec=MEDIASUBTYPE_NV12;codec.Data1=MAKEFOURCC('A','V','0','1');
+            if(cpu_av1_case==L"av1-wrong-codec")codec.Data1=MAKEFOURCC('V','P','9','0');
+            if(cpu_av1_case==L"av1-wrong-guid")codec.Data4[7]^=1;
+            type.SetSubtype(&codec);
+            const bool vi1=cpu_av1_case==L"av1-vi1",vi2=cpu_av1_case==L"av1-vi2";
+            const size_t offset=vi1?sizeof(VIDEOINFOHEADER):vi2?sizeof(VIDEOINFOHEADER2):offsetof(MPEG2VIDEOINFO,dwSequenceHeader);
+            auto* bytes=type.AllocFormatBuffer(ULONG(offset+seq.size()));if(!bytes)return E_OUTOFMEMORY;
+            memset(bytes,0,offset+seq.size());memcpy(bytes+offset,seq.data(),seq.size());
+            VIDEOINFOHEADER2 h{};h.AvgTimePerFrame=kDuration;
+            h.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);h.bmiHeader.biWidth=kWidth;h.bmiHeader.biHeight=kHeight;
+            if(cpu_av1_case.find(L"av1-fields")==0)h.dwInterlaceFlags=AMINTERLACE_IsInterlaced;
+            if(cpu_av1_case==L"av1-size-mismatch")h.bmiHeader.biHeight+=2;
+            if(cpu_av1_case==L"av1-rate-mismatch")h.AvgTimePerFrame*=2;
+            if(cpu_av1_case==L"av1-no-rate")h.AvgTimePerFrame=0;
+            if(vi1) {
+                auto* p=reinterpret_cast<VIDEOINFOHEADER*>(bytes);p->bmiHeader=h.bmiHeader;p->AvgTimePerFrame=h.AvgTimePerFrame;
+                type.SetFormatType(&FORMAT_VideoInfo);
+            } else {
+                *reinterpret_cast<VIDEOINFOHEADER2*>(bytes)=h;
+                type.SetFormatType(vi2?&FORMAT_VideoInfo2:&FORMAT_MPEG2Video);
+                if(!vi2)reinterpret_cast<MPEG2VIDEOINFO*>(bytes)->cbSequenceHeader=DWORD(seq.size()+(cpu_av1_case==L"av1-bad-length"?1:0));
+            }
+            return CopyMediaType(media,&type);
+        }
+        if(cpu_hdr_fixture || !cpu_hevc_sequence.empty()) {
+            auto seq=cpu_hevc_sequence.empty()?hevc_fixture::hvcc(cpu_hdr_transfer==MFVideoTransFunc_HLG?18:16):cpu_hevc_sequence;CMediaType type;type.SetType(&MEDIATYPE_Video);
             GUID codec=MEDIASUBTYPE_NV12;codec.Data1=MAKEFOURCC('H','V','C','1');type.SetSubtype(&codec);type.SetFormatType(&FORMAT_MPEG2Video);
             const size_t bytes=offsetof(MPEG2VIDEOINFO,dwSequenceHeader)+seq.size();
             auto* h=reinterpret_cast<MPEG2VIDEOINFO*>(type.AllocFormatBuffer(ULONG(bytes)));if(!h)return E_OUTOFMEMORY;
@@ -86,8 +118,8 @@ public:
 class CpuSource final : public CBaseFilter {
 public:
     CpuSource(HRESULT* h):CBaseFilter(NAME("Software decoder fixture"),nullptr,&lock_,CLSID_NULL),pin_(this,&lock_,h),encoded_(this,&lock_,h){}
-    int GetPinCount() override{return cpu_avc_sps || cpu_hdr_fixture?2:1;}
-    CBasePin* GetPin(int n) override{return n==0?static_cast<CBasePin*>(&pin_):n==1 && (cpu_avc_sps || cpu_hdr_fixture)?&encoded_:nullptr;}
+    int GetPinCount() override{return cpu_avc_sps || cpu_hdr_fixture || !cpu_hevc_sequence.empty() || !cpu_av1_case.empty()?2:1;}
+    CBasePin* GetPin(int n) override{return n==0?static_cast<CBasePin*>(&pin_):n==1 && GetPinCount()==2?&encoded_:nullptr;}
     CpuPin pin_;
 private:CCritSec lock_;CpuEncodedPin encoded_;
 };

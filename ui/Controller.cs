@@ -31,7 +31,7 @@ namespace NvofControl
         private static extern bool WritePrivateProfileString(string section, string key, string value, string file);
         public SettingsStore(string path) { this.path = path; }
         public bool Enabled { get { return GetPrivateProfileInt("Nvof", "Enabled", 1, path) != 0; } }
-        public static readonly int[] OutputLimits = {60,72,75,100,120,144,240};
+        public static readonly int[] OutputLimits = {60,72,75,100,120,144,160,240};
         public int OutputFpsLimit { get { int value=(int)GetPrivateProfileInt("Nvof", "OutputFpsLimit", 60, path); return Array.IndexOf(OutputLimits,value)>=0?value:60; } }
         public int OutputMode { get { return GetPrivateProfileInt("Nvof", "OutputMode", 0, path)==1?1:0; } }
         public int OutputMultiplier { get { int value=(int)GetPrivateProfileInt("Nvof", "OutputMultiplier", 2, path); return value>=2&&value<=5?value:2; } }
@@ -1100,6 +1100,12 @@ namespace NvofControl
                 if(!badRule || File.ReadAllText(settingsPath)!=beforeInvalid)throw new Exception("Invalid rules partially changed settings.");
                 foreach(string invalid in new[]{"","0,120","0,0,0,0,0,0,0,0","0,0,0,0,0,0,119","0,0,0,0,0,0,+120","0,0,0,0,0,0,120junk"})
                     if(ResolutionSettings.Serialize(ResolutionSettings.Parse(invalid))!="0,0,0,0,0,0,0")throw new Exception("Invalid resolution syntax accepted.");
+                var cap160Rules=new int[]{0,0,0,160,0,120,-4};
+                store.SetResolutionConfiguration(cap160Rules,160);
+                var cap160Reload=new SettingsStore(settingsPath);
+                if(cap160Reload.OutputFpsLimit!=160 || cap160Reload.ResolutionRules[3]!=160 ||
+                    cap160Reload.ResolutionRules[5]!=120 || cap160Reload.ResolutionRules[6]!=-4 ||
+                    !File.ReadAllText(settingsPath).Contains("Value=retained"))throw new Exception("160 fps cap/rule persistence lost settings.");
                 string uninstallFixture=Path.Combine(folder,"uninstaller");
                 Directory.CreateDirectory(uninstallFixture);
                 File.WriteAllText(Path.Combine(uninstallFixture,"unins000.exe"),"old");

@@ -43,7 +43,7 @@ inline Rate canonical_source_rate(int64_t duration) noexcept {
 // A limit is not an exact resampling target: preserve originals and fill the
 // slots between them. Low rates stay within the engine's 32 generated phases.
 inline int normalize_output_limit(int limit) noexcept {
-    switch(limit) { case 60: case 72: case 75: case 100: case 120: case 144: case 240: return limit; default: return 60; }
+    switch(limit) { case 60: case 72: case 75: case 100: case 120: case 144: case 160: case 240: return limit; default: return 60; }
 }
 inline int normalize_output_mode(int mode) noexcept { return mode == 1 ? 1 : 0; }
 inline int normalize_output_multiplier(int multiple) noexcept { return multiple >= 2 && multiple <= 5 ? multiple : 2; }

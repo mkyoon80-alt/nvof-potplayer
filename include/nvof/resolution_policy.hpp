@@ -11,7 +11,7 @@ using ResolutionRules=std::array<int,7>;
 // direct multiplier; positive values select an existing integer-cadence cap.
 constexpr bool valid_resolution_rule(int rule) noexcept {
     return (rule>=-5 && rule<=0) || rule==60 || rule==72 || rule==75 ||
-        rule==100 || rule==120 || rule==144 || rule==240;
+        rule==100 || rule==120 || rule==144 || rule==160 || rule==240;
 }
 inline ResolutionRules parse_resolution_rules(std::string_view text) noexcept {
     ResolutionRules result{};

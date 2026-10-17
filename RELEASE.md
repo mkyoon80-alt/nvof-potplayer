@@ -1,3 +1,35 @@
+# v0.4.12 — HEVC·AV1 10비트 출력 수정 · 160fps 상한
+
+## 한국어
+
+HEVC·AV1 영상에서 10비트 출력을 켰을 때 원본 FPS를 두 배로 잘못 인식하거나 GPU 디코딩·보간 연결이 끊기는 문제를 수정했습니다. 실제 인터레이스 처리, 보간 화질과 재생·탐색 방식은 유지합니다.
+
+- 팟플레이어 **F5 → 영상 → 비디오 버퍼 포맷 옆 ‘10비트 출력’**을 켠 HEVC에서 잘못된 인터레이스 표시를 원본 헤더와 대조합니다. 23.976fps를 47.952fps로 계산하던 경우를 바로잡습니다.
+- AV1의 P010 10bit GPU 입력도 연결 단계에서 원본 프레임 구조·크기·주기를 확인해 하드웨어 디코딩과 보간을 연결합니다.
+- 필드 영상, 불완전하거나 상충하는 헤더는 기존 처리를 유지합니다. 화질 계산, HDR 색 정보 전달, 재생·탐색 스케줄링, 기본 설정은 변경하지 않았습니다.
+- 일반 출력과 해상도별 출력에 **최대 160fps**를 추가했습니다. 원본의 정수배를 유지하므로 24fps는 144fps, 30fps는 150fps, 60fps는 120fps로 출력합니다. 기존에 선택한 상한과 설정은 유지됩니다.
+- 한국어·영어 온라인 매뉴얼과 단일 HTML·오프라인 ZIP에 옵션 위치, 확인 방법, 검증 범위를 추가했습니다.
+
+**업데이트:** 팟플레이어와 설정창을 완전히 닫고 기존 폴더를 백업한 뒤 교체하세요. 기존 `NvofPotPlayer.ini`를 보존하세요. 10비트 출력·HDR·진단 설정을 자동으로 바꾸지 않습니다.
+
+**범위:** GPU 하드웨어 디코딩 지원 여부는 코덱·GPU·드라이버에 따라 달라집니다. 기존 시작·탐색 직후 드랍 및 HDR 과밝기 문제는 이번 수정의 해결 대상이 아닙니다.
+
+## English
+
+Fixes incorrect doubled source FPS and failed GPU decoding/interpolation connections when 10-bit output is enabled for affected HEVC/AV1 video. Genuine interlaced processing, interpolation quality and playback/seek scheduling are retained.
+
+- Resolves false interlace flags from reliable source headers before selecting frame rate and negotiating the GPU connection. Affected 23.976fps HEVC sources no longer count as 47.952fps.
+- Validates AV1 progressive source facts, dimensions and cadence before accepting the P010 10-bit native input path.
+- Keeps genuine fields and incomplete/conflicting source facts on the existing path. Synthesis, HDR metadata handling, scheduling and default settings are unchanged.
+- Adds a **160fps cap** to common and per-resolution output settings. Integer cadence is preserved: 24fps outputs 144fps, 30fps outputs 150fps, and 60fps outputs 120fps. Existing selections and settings are retained.
+- Updates Korean/English online guides, standalone HTML and offline manual ZIPs.
+
+Fully close PotPlayer and the controller, back up the folder, replace program files while preserving `NvofPotPlayer.ini`, and restart. This release does not enable 10-bit output or HDR automatically, add hardware codec support to unsupported GPUs, or claim to solve startup drops or HDR overbrightness.
+
+See [validation / 검증 범위](docs/TENBIT-SCAN-TRIAL.md).
+
+---
+
 # v0.4.11 — 탐색 후 보간 재개 단축
 
 ## 한국어
